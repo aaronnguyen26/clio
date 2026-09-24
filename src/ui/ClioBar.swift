@@ -1019,7 +1019,7 @@ struct ClioBarView: View {
         VStack(spacing: 0) {
             // Main Top Pill Bar
             HStack(spacing: 10) {
-                // Minimalist Obsidian Command Monogram
+                // Minimalist Obsidian Eclipse 'C' Monogram
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(ObsidianTheme.surfaceElevated)
@@ -1028,9 +1028,28 @@ struct ClioBarView: View {
                                 .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
                         )
                         .frame(width: 32, height: 32)
-                    Text("⌘")
-                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.platinum)
+                    Circle()
+                        .fill(Color(red: 0.16, green: 0.17, blue: 0.19))
+                        .frame(width: 18, height: 18)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(
+                                    AngularGradient(
+                                        gradient: Gradient(colors: [
+                                            ObsidianTheme.platinum,
+                                            ObsidianTheme.platinum.opacity(0.9),
+                                            Color.clear,
+                                            Color.clear,
+                                            Color.clear,
+                                            ObsidianTheme.platinum.opacity(0.7)
+                                        ]),
+                                        center: .center,
+                                        startAngle: .degrees(90),
+                                        endAngle: .degrees(450)
+                                    ),
+                                    lineWidth: 2.2
+                                )
+                        )
                 }
 
                 // Command Search Input

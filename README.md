@@ -1,11 +1,17 @@
-# Clio ⌘ — Autonomous Desktop Companion & Hands-Free Task Automator
+<p align="center">
+  <img src="assets/logo.png" width="160" height="160" alt="Clio Logo" style="border-radius: 36px;" />
+</p>
+
+<h1 align="center">Clio — Autonomous macOS Desktop Companion & Hands-Free Task Automator</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/macOS-14.0%2B-blue" alt="macOS 14+" />
+  <img src="https://img.shields.io/badge/UI-SwiftUI%20%7C%20AppKit-black" alt="SwiftUI" />
+  <img src="https://img.shields.io/badge/Backend-Python%203.12%2B-brightgreen" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/License-MIT-purple" alt="License" />
+</p>
 
 Clio is an autonomous macOS desktop companion and imitation-learning task automator. It observes user demonstrations (mouse clicks, keystrokes, gestures, dock activations, window movements), dissects them into declarative multi-step workflows, persists them in memory, and re-executes them hands-free using a virtual cursor overlay.
-
-![macOS 14+](https://img.shields.io/badge/macOS-14.0%2B-blue)
-![SwiftUI](https://img.shields.io/badge/UI-SwiftUI%20%7C%20AppKit-black)
-![Python 3.12+](https://img.shields.io/badge/Backend-Python%203.12%2B-brightgreen)
-![License](https://img.shields.io/badge/License-MIT-purple)
 
 ---
 
