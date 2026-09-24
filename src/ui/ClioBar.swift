@@ -1254,10 +1254,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static private(set) var shared: AppDelegate?
     var panel: SpotlightPanel?
     private var statusItem: NSStatusItem?
-    private var globalKeyMonitor: Any?
-    private var carbonHotKey1: EventHotKeyRef?
-    private var carbonHotKey2: EventHotKeyRef?
+    private var carbonHotKeys: [EventHotKeyRef] = []
     private var carbonEventHandler: EventHandlerRef?
+    private var globalKeyMonitor: Any?
+    private var localKeyMonitor: Any?
 
     override init() {
         super.init()
@@ -1318,7 +1318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let btn = statusItem?.button {
             btn.title = " ⌘ Clio "
-            btn.toolTip = "Clio Assistant — Click to toggle bar (⌥ Space)"
+            btn.toolTip = "Clio Assistant — Click or press ⌘⇧Space / ⌘⌥Space / ⌘K to toggle"
             btn.target = self
             btn.action = #selector(statusItemClicked)
         }
@@ -1329,7 +1329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupGlobalShortcut() {
-        // 1. Carbon HotKey for Option + Space (and Cmd + Shift + Space)
+        // 1. Carbon HotKeys (works globally across ALL apps without accessibility requirements)
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
@@ -1344,36 +1344,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         InstallEventHandler(GetApplicationEventTarget(), handler, 1, &eventType, nil, &carbonEventHandler)
 
-        // HotKey 1: Option + Space (kVK_Space is 49, optionKey is 2048)
-        let hotKeyID1 = EventHotKeyID(signature: OSType(0x434C494F), id: 1)
-        _ = RegisterEventHotKey(
-            UInt32(kVK_Space),
-            UInt32(optionKey),
-            hotKeyID1,
-            GetApplicationEventTarget(),
-            0,
-            &carbonHotKey1
-        )
+        let shortcuts: [(key: Int, mods: Int, id: UInt32)] = [
+            // Hotkey 1: Command + Shift + Space (⌘ ⇧ Space)
+            (Int(kVK_Space), Int(cmdKey | shiftKey), 1),
+            // Hotkey 2: Command + Option + Space (⌘ ⌥ Space)
+            (Int(kVK_Space), Int(cmdKey | optionKey), 2),
+            // Hotkey 3: Command + K (⌘ K)
+            (Int(kVK_ANSI_K), Int(cmdKey), 3),
+            // Hotkey 4: Command + Shift + K (⌘ ⇧ K)
+            (Int(kVK_ANSI_K), Int(cmdKey | shiftKey), 4),
+            // Hotkey 5: Command + Escape (⌘ Esc)
+            (Int(kVK_Escape), Int(cmdKey), 5),
+            // Hotkey 6: Option + Space (⌥ Space)
+            (Int(kVK_Space), Int(optionKey), 6),
+        ]
 
-        // HotKey 2: Cmd + Shift + Space (cmdKey 256 + shiftKey 512 = 768)
-        let hotKeyID2 = EventHotKeyID(signature: OSType(0x434C494F), id: 2)
-        _ = RegisterEventHotKey(
-            UInt32(kVK_Space),
-            UInt32(cmdKey | shiftKey),
-            hotKeyID2,
-            GetApplicationEventTarget(),
-            0,
-            &carbonHotKey2
-        )
+        for sc in shortcuts {
+            var ref: EventHotKeyRef?
+            let hotKeyID = EventHotKeyID(signature: OSType(0x434C494F), id: sc.id)
+            let err = RegisterEventHotKey(
+                UInt32(sc.key),
+                UInt32(sc.mods),
+                hotKeyID,
+                GetApplicationEventTarget(),
+                0,
+                &ref
+            )
+            if err == noErr, let r = ref {
+                carbonHotKeys.append(r)
+            }
+        }
 
         // 2. Global NSEvent monitor backup (when Accessibility is granted)
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // Option + Space or Cmd + Shift + Space
-            if event.keyCode == 49 && (event.modifierFlags.contains(.option) || (event.modifierFlags.contains(.command) && event.modifierFlags.contains(.shift))) {
-                Task { @MainActor in
-                    self?.togglePanel()
-                }
+            let mods = event.modifierFlags
+            let isCmd = mods.contains(.command)
+            let isOpt = mods.contains(.option)
+            let isShift = mods.contains(.shift)
+
+            // Command + Shift + Space, Command + Option + Space, Option + Space
+            if event.keyCode == 49 && ((isCmd && isShift) || (isCmd && isOpt) || isOpt) {
+                Task { @MainActor in self?.togglePanel() }
             }
+            // Command + K or Command + Shift + K
+            else if event.keyCode == 40 && isCmd {
+                Task { @MainActor in self?.togglePanel() }
+            }
+            // Command + Escape
+            else if event.keyCode == 53 && isCmd {
+                Task { @MainActor in self?.togglePanel() }
+            }
+        }
+
+        // 3. Local monitor so hotkeys work when Clio itself is focused
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let mods = event.modifierFlags
+            let isCmd = mods.contains(.command)
+            let isShift = mods.contains(.shift)
+            let isOpt = mods.contains(.option)
+
+            if event.keyCode == 49 && ((isCmd && isShift) || (isCmd && isOpt) || isOpt) {
+                self?.togglePanel()
+                return nil
+            } else if (event.keyCode == 40 || event.keyCode == 53) && isCmd {
+                self?.togglePanel()
+                return nil
+            }
+            return event
         }
     }
 
@@ -1383,12 +1420,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if let hk = carbonHotKey1 { UnregisterEventHotKey(hk) }
-        if let hk = carbonHotKey2 { UnregisterEventHotKey(hk) }
-        if let h = carbonEventHandler { RemoveEventHandler(h) }
-        if let monitor = globalKeyMonitor {
-            NSEvent.removeMonitor(monitor)
+        for hk in carbonHotKeys {
+            UnregisterEventHotKey(hk)
         }
+        carbonHotKeys.removeAll()
+        if let h = carbonEventHandler { RemoveEventHandler(h) }
+        if let monitor = globalKeyMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = localKeyMonitor { NSEvent.removeMonitor(monitor) }
         ServerLauncher.shared.terminate()
     }
 }

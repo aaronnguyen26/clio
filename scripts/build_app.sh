@@ -20,4 +20,23 @@ echo "==> Ad-hoc code signing Clio.app..."
 xattr -cr "${APP_BUNDLE}"
 codesign --force --deep --sign - "${APP_BUNDLE}"
 
-echo "==> Build complete: ${APP_BUNDLE}"
+echo "==> Installing to /Applications & ~/Applications for Spotlight Indexing..."
+rm -rf /Applications/Clio.app
+cp -R "${APP_BUNDLE}" /Applications/Clio.app
+mkdir -p ~/Applications
+rm -rf ~/Applications/Clio.app
+cp -R "${APP_BUNDLE}" ~/Applications/Clio.app
+rm -rf /Users/minhnguyen/Desktop/Clio.app
+cp -R "${APP_BUNDLE}" /Users/minhnguyen/Desktop/Clio.app
+
+# Clean attributes & register in macOS LaunchServices database
+xattr -cr /Applications/Clio.app ~/Applications/Clio.app /Users/minhnguyen/Desktop/Clio.app
+codesign --force --deep --sign - /Applications/Clio.app
+codesign --force --deep --sign - ~/Applications/Clio.app
+codesign --force --deep --sign - /Users/minhnguyen/Desktop/Clio.app
+
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Clio.app || true
+mdimport /Applications/Clio.app || true
+touch /Applications/Clio.app || true
+
+echo "==> Build and Spotlight registration complete!"
