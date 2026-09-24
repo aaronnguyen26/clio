@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Build artifacts & temp
+bin/clio-bar
+dist/
+main
+*.log
+Clio.app/
+.agents/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS & Editor
+.DS_Store
+.idea/
+.vscode/
+
+# SQLite databases
+*.db
+*.db-wal
+*.db-shm

@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clio — Autonomous Desktop Companion</title>
+  <style>
+    :root {
+      --bg-glass: rgba(13, 14, 16, 0.92);
+      --bg-glass-hover: rgba(26, 27, 30, 0.96);
+      --border-subtle: rgba(245, 246, 248, 0.10);
+      --border-focus: rgba(245, 246, 248, 0.35);
+      --text-main: #f5f6f8;
+      --text-muted: #8a909a;
+      --text-sub: #555a64;
+      --clio-mono: #f5f6f8;
+      --accent-grad: #141518;
+      --accent-pill: rgba(245, 246, 248, 0.08);
+      --success: #f5f6f8;
+      --warning: #8a909a;
+      --danger: #f5f6f8;
+      --radius-panel: 14px;
+      --radius-sm: 6px;
+      --radius-pill: 9999px;
+      --shadow-spotlight: 0 30px 80px rgba(0, 0, 0, 0.85), 0 8px 24px rgba(0, 0, 0, 0.65);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      min-height: 100vh;
+      background: #08090a;
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding-top: 12vh;
+      overflow-x: hidden;
+      user-select: none;
+    }
+
+    /* Ambient Desktop Simulation Background */
+    .desktop-wallpaper-hint {
+      position: fixed;
+      top: 24px;
+      display: flex;
+      gap: 16px;
+      font-size: 13px;
+      color: var(--text-sub);
+      pointer-events: none;
+    }
+    .desktop-wallpaper-hint span {
+      background: rgba(255, 255, 255, 0.05);
+      padding: 4px 12px;
+      border-radius: var(--radius-pill);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    /* Spotlight Floating Panel Container */
+    .spotlight-panel {
+      width: 700px;
+      max-width: 92vw;
+      background: var(--bg-glass);
+      backdrop-filter: blur(36px) saturate(190%);
+      -webkit-backdrop-filter: blur(36px) saturate(190%);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-panel);
+      box-shadow: var(--shadow-spotlight);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: all 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 1000;
+    }
+
+    /* Spotlight Search Bar Header */
+    .search-header {
+      display: flex;
+      align-items: center;
+      padding: 16px 20px;
+      gap: 14px;
+      position: relative;
+    }
+
+    .clio-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: #141518;
+      border: 1px solid rgba(245, 246, 248, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--text-main);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+      flex-shrink: 0;
+    }
+
+    .search-input-wrapper {
+      flex: 1;
+      display: flex;
+      align-items: center;
+    }
+
+    #search-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      font-size: 18px;
+      font-weight: 400;
+      color: var(--text-main);
+      letter-spacing: -0.2px;
+    }
+
+    #search-input::placeholder {
+      color: var(--text-sub);
+    }
+
+    /* Controls: Tone Selector & Virtual Cursor Pill */
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pill-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      background: rgba(245, 246, 248, 0.05);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-pill);
+      font-size: 11px;
+      font-weight: 500;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .pill-badge:hover {
+      background: rgba(245, 246, 248, 0.10);
+      color: var(--text-main);
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-main);
+      opacity: 0.8;
+      display: inline-block;
+    }
+    .status-dot.executing {
+      box-shadow: 0 0 8px rgba(245, 246, 248, 0.8);
+      animation: blink 1s infinite alternate;
+    }
+
+    @keyframes blink {
+      from { opacity: 0.3; }
+      to { opacity: 1; }
+    }
+
+    .record-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      background: rgba(245, 246, 248, 0.05);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-pill);
+      font-size: 11px;
+      font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--text-main);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .record-btn:hover {
+      background: rgba(245, 246, 248, 0.12);
+      border-color: rgba(245, 246, 248, 0.3);
+    }
+    .record-btn.recording {
+      background: #f5f6f8;
+      color: #08090a;
+      box-shadow: 0 0 12px rgba(245, 246, 248, 0.4);
+    }
+    .bg-mode-badge.active {
+      background: rgba(245, 246, 248, 0.08);
+      border-color: rgba(245, 246, 248, 0.3);
+      color: var(--text-main);
+    }
+
+    /* Quick Chips */
+    .quick-chips-row {
+      display: flex;
+      gap: 8px;
+      padding: 0 20px 14px 20px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .quick-chips-row::-webkit-scrollbar { display: none; }
+
+    .chip-button {
+      padding: 5px 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius-pill);
+      color: var(--text-muted);
+      font-size: 12px;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .chip-button:hover {
+      background: var(--accent-pill);
+      border-color: rgba(157, 80, 187, 0.4);
+      color: var(--text-main);
+    }
+
+    /* Divider */
+    .panel-divider {
+      height: 1px;
+      background: rgba(255, 255, 255, 0.08);
+      width: 100%;
+    }
+
+    /* Results / Workflows List */
+    .results-container {
+      max-height: 380px;
+      overflow-y: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+    }
+
+    .workflow-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: transparent;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .workflow-item:hover, .workflow-item.selected {
+      background: rgba(255, 255, 255, 0.09);
+    }
+
+    .workflow-item-left {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .workflow-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .workflow-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .workflow-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .badge-tag {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--text-muted);
+    }
+    .badge-tag.match {
+      background: rgba(48, 209, 88, 0.18);
+      color: #72f093;
+    }
+    .badge-tag.app {
+      background: rgba(45, 226, 230, 0.15);
+      color: #8bebf0;
+    }
+
+    .kbd-shortcut {
+      font-size: 11px;
+      padding: 3px 6px;
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.09);
+      color: var(--text-sub);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    /* Execution & Live Commentary Drawer */
+    .execution-drawer {
+      padding: 16px 20px;
+      background: rgba(20, 20, 24, 0.7);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .exec-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .exec-title-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .exec-spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(245, 246, 248, 0.2);
+      border-top-color: #f5f6f8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .exec-title {
+      font-size: 13px;
+      font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #f5f6f8;
+    }
+
+    .cancel-btn {
+      padding: 4px 10px;
+      background: rgba(245, 246, 248, 0.08);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #8a909a;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .cancel-btn:hover {
+      background: rgba(245, 246, 248, 0.15);
+      color: #f5f6f8;
+    }
+
+    /* Progress bar */
+    .progress-track {
+      width: 100%;
+      height: 3px;
+      background: rgba(245, 246, 248, 0.10);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: #f5f6f8;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    /* Telemetry & Virtual Cursor HUD */
+    .telemetry-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-muted);
+      padding: 4px 0;
+    }
+
+    .vc-status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #8a909a;
+      background: rgba(245, 246, 248, 0.05);
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    /* Commentary Stream */
+    .commentary-box {
+      max-height: 120px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 12px;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      scrollbar-width: thin;
+    }
+
+    .commentary-msg {
+      font-size: 12px;
+      line-height: 1.4;
+      color: #d1d1d6;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .commentary-msg .clio-icon {
+      color: var(--clio-cyan);
+      flex-shrink: 0;
+    }
+
+    /* Footer hints */
+    .panel-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 18px;
+      background: rgba(0, 0, 0, 0.2);
+      font-size: 11px;
+      color: var(--text-sub);
+    }
+    .footer-keys {
+      display: flex;
+      gap: 12px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .spotlight-panel, .clio-avatar, .progress-bar, .status-dot {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="desktop-wallpaper-hint">
+    <span>🛡️ R6: Zero-Disruption Background Mode</span>
+    <span>🎯 R7: Independent Virtual Cursor Active</span>
+    <span>⚡ Darwin ARM64 Native</span>
+  </div>
+
+  <main class="spotlight-panel" id="spotlight-panel" role="dialog" aria-modal="true" aria-label="Clio Spotlight Search Bar">
+    <!-- Search Header -->
+    <div class="search-header">
+      <div class="clio-avatar" title="Clio Autonomous Companion">✨</div>
+      <div class="search-input-wrapper">
+        <input
+          id="search-input"
+          type="text"
+          placeholder="Ask Clio or run a task... (e.g. 'write my weekly to-do list')"
+          autofocus
+          autocomplete="off"
+          spellcheck="false"
+          aria-autocomplete="list"
+          aria-controls="results-container"
+        />
+      </div>
+      <div class="header-actions">
+        <button class="record-btn" id="record-btn" title="Demonstrate a task to teach Clio">
+          <span id="record-dot">🔴</span>
+          <span id="record-label">Record Task</span>
+        </button>
+        <div class="pill-badge bg-mode-badge active" id="bg-mode-toggle" title="Toggle Background Execution (AI operates in background with its own mouse & keyboard without stealing focus)">
+          <span>⚡</span>
+          <span id="bg-mode-label">Background: ON</span>
+        </div>
+        <div class="pill-badge" id="tone-selector" title="Click to cycle companion tone">
+          <span id="tone-icon">🌟</span>
+          <span id="tone-label">Vibrant</span>
+        </div>
+        <div class="pill-badge" title="Clio runtime status">
+          <span class="status-dot" id="global-status-dot"></span>
+          <span id="global-status-text">Idle</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Chips Strip -->
+    <div class="quick-chips-row">
+      <button class="chip-button" data-query="write my weekly to-do list">📋 Notes Weekly To-Do</button>
+      <button class="chip-button" data-query="browse tech news">🌐 Safari Web Automation</button>
+      <button class="chip-button" data-query="transfer web research to notes">🔄 Cross-Domain Sync</button>
+      <button class="chip-button" data-action="list">📁 List All Tasks</button>
+    </div>
+
+    <div class="panel-divider"></div>
+
+    <!-- Execution Live Drawer (Shown dynamically during execution) -->
+    <section class="execution-drawer" id="execution-drawer" style="display: none;">
+      <div class="exec-header">
+        <div class="exec-title-row">
+          <div class="exec-spinner"></div>
+          <span class="exec-title" id="exec-title">Executing Task...</span>
+        </div>
+        <button class="cancel-btn" id="cancel-btn">🛑 Emergency Stop</button>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-bar" id="exec-progress-bar"></div>
+      </div>
+
+      <div class="telemetry-row">
+        <span id="step-description-text">Initializing autonomous step sequence...</span>
+        <div class="vc-status-pill" id="vc-telemetry-pill">
+          <span>🎯 VC: (0, 0) IDLE</span>
+        </div>
+      </div>
+
+      <div class="commentary-box" id="commentary-box" aria-live="polite">
+        <!-- Live commentary bubbles stream here -->
+      </div>
+    </section>
+
+    <!-- Results / Suggestions List -->
+    <div class="results-container" id="results-container" role="listbox">
+      <!-- Dynamically filled with workflow items -->
+    </div>
+
+    <!-- Panel Footer -->
+    <div class="panel-footer">
+      <div class="footer-keys">
+        <span><span class="kbd-shortcut">↑</span> <span class="kbd-shortcut">↓</span> Navigate</span>
+        <span><span class="kbd-shortcut">⏎</span> Run Task</span>
+        <span><span class="kbd-shortcut">Esc</span> Clear / Close</span>
+      </div>
+      <div>Clio Autonomous Desktop Companion v1.0</div>
+    </div>
+  </main>
+
+  <!-- Save Demonstration Modal -->
+  <div id="save-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); z-index: 2000; align-items: center; justify-content: center;">
+    <div style="background: var(--bg-glass); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 24px; width: 480px; max-width: 90vw; box-shadow: var(--shadow-spotlight); display: flex; flex-direction: column; gap: 14px;">
+      <h3 style="font-size: 15px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; display: flex; align-items: center; gap: 8px; color: var(--text-main);">
+        DEMONSTRATION CAPTURED
+      </h3>
+      <p style="font-size: 12px; color: var(--text-muted); line-height: 1.4;">
+        Clio captured your demonstration and dissected it into repeatable steps. Name it and specify a trigger:
+      </p>
+      <div>
+        <label style="font-size: 10px; color: var(--text-sub); text-transform: uppercase; font-family: ui-monospace, monospace; font-weight: 600;">Task Name</label>
+        <input id="demo-name-input" type="text" value="write weekly todo list" style="width: 100%; margin-top: 4px; padding: 8px 12px; background: rgba(245,246,248,0.05); border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-main); font-size: 13px; outline: none;" />
+      </div>
+      <div>
+        <label style="font-size: 10px; color: var(--text-sub); text-transform: uppercase; font-family: ui-monospace, monospace; font-weight: 600;">Trigger Phrase (what you type or say)</label>
+        <input id="demo-trigger-input" type="text" value="write todolist" style="width: 100%; margin-top: 4px; padding: 8px 12px; background: rgba(245,246,248,0.05); border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-main); font-size: 13px; outline: none;" />
+      </div>
+      <div id="demo-dissected-preview" style="font-size: 11px; font-family: ui-monospace, monospace; color: var(--text-muted); max-height: 120px; overflow-y: auto; background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-subtle); display: none;"></div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px;">
+        <button id="modal-cancel-btn" style="padding: 7px 14px; background: rgba(245,246,248,0.06); border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-muted); font-size: 12px; cursor: pointer;">Cancel</button>
+        <button id="modal-save-btn" style="padding: 7px 16px; background: #f5f6f8; border: none; border-radius: 6px; color: #08090a; font-weight: 600; font-size: 12px; cursor: pointer;">Dissect & Save Task</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const searchInput = document.getElementById("search-input");
+      const resultsContainer = document.getElementById("results-container");
+      const executionDrawer = document.getElementById("execution-drawer");
+      const execTitle = document.getElementById("exec-title");
+      const execProgressBar = document.getElementById("exec-progress-bar");
+      const stepDescText = document.getElementById("step-description-text");
+      const vcTelemetryPill = document.getElementById("vc-telemetry-pill");
+      const commentaryBox = document.getElementById("commentary-box");
+      const toneSelector = document.getElementById("tone-selector");
+      const toneIcon = document.getElementById("tone-icon");
+      const toneLabel = document.getElementById("tone-label");
+      const statusDot = document.getElementById("global-status-dot");
+      const statusText = document.getElementById("global-status-text");
+      const cancelBtn = document.getElementById("cancel-btn");
+      const recordBtn = document.getElementById("record-btn");
+      const recordDot = document.getElementById("record-dot");
+      const recordLabel = document.getElementById("record-label");
+      const bgModeToggle = document.getElementById("bg-mode-toggle");
+      const bgModeLabel = document.getElementById("bg-mode-label");
+      const saveModal = document.getElementById("save-modal");
+      const demoNameInput = document.getElementById("demo-name-input");
+      const demoTriggerInput = document.getElementById("demo-trigger-input");
+      const demoDissectedPreview = document.getElementById("demo-dissected-preview");
+      const modalCancelBtn = document.getElementById("modal-cancel-btn");
+      const modalSaveBtn = document.getElementById("modal-save-btn");
+
+      const tones = ["vibrant", "concise", "zen", "developer"];
+      const toneIcons = { vibrant: "🌟", concise: "⚡", zen: "🧘", developer: "💻" };
+      let currentToneIdx = 0;
+      let workflows = [];
+      let selectedIndex = -1;
+      let isExecuting = false;
+      let isRecording = false;
+      let recordTimerInterval = null;
+      let recordStartEpoch = 0;
+      let backgroundMode = true; // Background execution by default
+
+      // 1. Initial Data Fetch
+      async function init() {
+        try {
+          const [statusRes, wfRes] = await Promise.all([
+            fetch("/api/status").then(r => r.json()),
+            fetch("/api/workflows").then(r => r.json())
+          ]);
+          updateStatus(statusRes);
+          workflows = wfRes;
+          renderWorkflows(workflows);
+        } catch (e) {
+          console.error("Clio initialization error:", e);
+        }
+        setupSSE();
+      }
+
+      function updateStatus(status) {
+        if (!status) return;
+        isExecuting = status.status === "executing";
+        statusDot.className = "status-dot " + (isExecuting ? "executing" : "");
+        statusText.textContent = isExecuting ? "Executing" : "Idle";
+
+        if (status.tone) {
+          currentToneIdx = Math.max(0, tones.indexOf(status.tone));
+          toneLabel.textContent = status.tone.charAt(0).toUpperCase() + status.tone.slice(1);
+          toneIcon.textContent = toneIcons[status.tone] || "🌟";
+        }
+
+        if (status.virtual_cursor) {
+          const vc = status.virtual_cursor;
+          vcTelemetryPill.textContent = `🎯 VC: (${vc.x}, ${vc.y}) ${vc.state.toUpperCase()}`;
+        }
+
+        if (isExecuting) {
+          executionDrawer.style.display = "flex";
+          if (status.current_workflow) {
+            execTitle.textContent = `Executing: ${status.current_workflow.name}`;
+          }
+          if (status.total_steps > 0) {
+            const pct = Math.round((status.current_step / status.total_steps) * 100);
+            execProgressBar.style.width = pct + "%";
+            stepDescText.textContent = `Step ${status.current_step} of ${status.total_steps}`;
+          }
+        } else {
+          executionDrawer.style.display = "none";
+        }
+
+        if (status.recent_commentary && status.recent_commentary.length > 0) {
+          commentaryBox.innerHTML = "";
+          status.recent_commentary.forEach(addCommentaryMessage);
+        }
+      }
+
+      // 2. Real-time EventSource (SSE)
+      function setupSSE() {
+        const es = new EventSource("/api/stream");
+        es.onmessage = function (ev) {
+          try {
+            const data = JSON.parse(ev.data);
+            if (data.type === "execution") {
+              if (data.event_type === "task_started") {
+                isExecuting = true;
+                executionDrawer.style.display = "flex";
+                execTitle.textContent = `Executing: ${data.task_id}`;
+                execProgressBar.style.width = "5%";
+                stepDescText.textContent = data.message || "Starting task...";
+                statusDot.className = "status-dot executing";
+                statusText.textContent = "Executing";
+              } else if (data.event_type === "action_starting") {
+                const pct = Math.min(100, Math.round((data.step_index / data.total_steps) * 100));
+                execProgressBar.style.width = pct + "%";
+                stepDescText.textContent = `Step ${data.step_index}/${data.total_steps}: ${data.message}`;
+              } else if (data.event_type === "task_completed" || data.event_type === "emergency_stop") {
+                execProgressBar.style.width = "100%";
+                stepDescText.textContent = data.message;
+                setTimeout(() => {
+                  isExecuting = false;
+                  executionDrawer.style.display = "none";
+                  statusDot.className = "status-dot";
+                  statusText.textContent = "Idle";
+                }, 2000);
+              }
+            } else if (data.type === "commentary") {
+              addCommentaryMessage(data.text);
+            } else if (data.type === "cursor") {
+              vcTelemetryPill.textContent = `🎯 VC: (${data.x}, ${data.y}) ${data.state.toUpperCase()}`;
+            } else if (data.type === "connected") {
+              updateStatus(data.status);
+            }
+          } catch (err) {
+            console.error("SSE parse error:", err);
+          }
+        };
+        es.onerror = function () {
+          // Reconnection is handled automatically by browser EventSource
+        };
+      }
+
+      function addCommentaryMessage(text) {
+        const div = document.createElement("div");
+        div.className = "commentary-msg";
+        div.innerHTML = `<span class="clio-icon">💬</span> <span>${escapeHtml(text)}</span>`;
+        commentaryBox.appendChild(div);
+        commentaryBox.scrollTop = commentaryBox.scrollHeight;
+      }
+
+      // 3. Search & Results Rendering
+      let debounceTimer = null;
+      searchInput.addEventListener("input", function () {
+        const query = searchInput.value.trim();
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (!query) {
+            renderWorkflows(workflows);
+          } else {
+            performSearch(query);
+          }
+        }, 120);
+      });
+
+      async function performSearch(query) {
+        try {
+          const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+          const results = await res.json();
+          renderSearchResults(results, query);
+        } catch (e) {
+          console.error("Search failed:", e);
+        }
+      }
+
+      function renderSearchResults(results, query) {
+        resultsContainer.innerHTML = "";
+        selectedIndex = -1;
+
+        if (results.length === 0) {
+          resultsContainer.innerHTML = `
+            <div style="padding: 24px; text-align: center; color: var(--text-sub); font-size: 13px;">
+              No matching workflows for "<strong>${escapeHtml(query)}</strong>".<br />
+              Press <span class="kbd-shortcut">⏎</span> to ask Clio in conversational mode!
+            </div>
+          `;
+          return;
+        }
+
+        results.forEach((r, idx) => {
+          const item = document.createElement("div");
+          item.className = "workflow-item" + (idx === 0 ? " selected" : "");
+          item.setAttribute("role", "option");
+          item.dataset.workflowId = r.workflow_id;
+          item.innerHTML = `
+            <div class="workflow-item-left">
+              <div class="workflow-title">
+                <span>⚡</span>
+                <span>${escapeHtml(r.name)}</span>
+              </div>
+              <div class="workflow-desc">${escapeHtml(r.description)}</div>
+            </div>
+            <div class="workflow-badges">
+              <span class="badge-tag match">${Math.round(r.confidence * 100)}% match</span>
+              <span class="badge-tag">${r.step_count} steps</span>
+              <span class="kbd-shortcut">⏎ Run</span>
+            </div>
+          `;
+          item.addEventListener("click", () => executeWorkflow(r.workflow_id));
+          resultsContainer.appendChild(item);
+        });
+        selectedIndex = 0;
+      }
+
+      function renderWorkflows(list) {
+        resultsContainer.innerHTML = "";
+        selectedIndex = -1;
+
+        if (!list || list.length === 0) {
+          resultsContainer.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-sub);">No workflows saved yet.</div>`;
+          return;
+        }
+
+        list.forEach((wf, idx) => {
+          const item = document.createElement("div");
+          item.className = "workflow-item" + (idx === 0 ? " selected" : "");
+          item.setAttribute("role", "option");
+          item.dataset.workflowId = wf.id;
+          item.innerHTML = `
+            <div class="workflow-item-left">
+              <div class="workflow-title">
+                <span>📋</span>
+                <span>${escapeHtml(wf.name)}</span>
+              </div>
+              <div class="workflow-desc">${escapeHtml(wf.description)}</div>
+            </div>
+            <div class="workflow-badges">
+              ${wf.target_app && wf.target_app.app_name ? `<span class="badge-tag app">${escapeHtml(wf.target_app.app_name)}</span>` : ""}
+              <span class="badge-tag">${wf.step_count} steps</span>
+              <span class="kbd-shortcut">⏎ Run</span>
+            </div>
+          `;
+          item.addEventListener("click", () => executeWorkflow(wf.id));
+          resultsContainer.appendChild(item);
+        });
+        selectedIndex = 0;
+      }
+
+      // 4. Execution API Trigger
+      async function executeWorkflow(workflowId) {
+        try {
+          const res = await fetch("/api/execute", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workflow_id: workflowId, background: backgroundMode }),
+          });
+          const data = await res.json();
+          if (!data.success) {
+            alert(data.error || "Execution failed to start");
+          }
+        } catch (e) {
+          console.error("Execute request error:", e);
+        }
+      }
+
+      async function executeByQuery(query) {
+        try {
+          const res = await fetch("/api/execute", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: query, background: backgroundMode }),
+          });
+          const data = await res.json();
+          if (!data.success) {
+            alert(data.error || "No matching workflow could be executed.");
+          }
+        } catch (e) {
+          console.error("Execute by query error:", e);
+        }
+      }
+
+      // Background Mode Toggle
+      bgModeToggle.addEventListener("click", function () {
+        backgroundMode = !backgroundMode;
+        if (backgroundMode) {
+          bgModeToggle.classList.add("active");
+          bgModeLabel.textContent = "Background: ON";
+        } else {
+          bgModeToggle.classList.remove("active");
+          bgModeLabel.textContent = "Background: OFF";
+        }
+      });
+
+      // Record Demonstration Button
+      recordBtn.addEventListener("click", async function () {
+        if (!isRecording) {
+          try {
+            const res = await fetch("/api/record/start", { method: "POST" });
+            const data = await res.json();
+            if (data.success) {
+              isRecording = true;
+              recordBtn.classList.add("recording");
+              recordDot.textContent = "⏹️";
+              recordStartEpoch = Date.now();
+              recordTimerInterval = setInterval(() => {
+                const elapsedSec = Math.floor((Date.now() - recordStartEpoch) / 1000);
+                recordLabel.textContent = `Recording... (${elapsedSec}s)`;
+              }, 1000);
+              recordLabel.textContent = "Recording... (0s)";
+            }
+          } catch (e) {
+            console.error("Start recording error:", e);
+          }
+        } else {
+          // Stop recording -> open save modal
+          clearInterval(recordTimerInterval);
+          recordTimerInterval = null;
+          isRecording = false;
+          recordBtn.classList.remove("recording");
+          recordDot.textContent = "🔴";
+          recordLabel.textContent = "Record Task";
+          saveModal.style.display = "flex";
+          demoNameInput.focus();
+          demoNameInput.select();
+        }
+      });
+
+      modalCancelBtn.addEventListener("click", () => {
+        saveModal.style.display = "none";
+      });
+
+      modalSaveBtn.addEventListener("click", async () => {
+        const name = demoNameInput.value.trim() || "Demonstrated Task";
+        const trigger = demoTriggerInput.value.trim() || name.toLowerCase();
+        modalSaveBtn.disabled = true;
+        modalSaveBtn.textContent = "Dissecting & Saving...";
+        try {
+          const res = await fetch("/api/record/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: name, trigger: trigger }),
+          });
+          const data = await res.json();
+          if (data.success) {
+            saveModal.style.display = "none";
+            const wfRes = await fetch("/api/workflows").then(r => r.json());
+            workflows = wfRes;
+            renderWorkflows(workflows);
+            searchInput.value = trigger;
+            performSearch(trigger);
+            alert(`🎉 Task '${data.name}' learned! Dissected into ${data.total_steps} steps. You can run it anytime by typing '${trigger}'.`);
+          } else {
+            alert(data.error || "Failed to save workflow");
+          }
+        } catch (e) {
+          console.error("Save demonstration error:", e);
+        } finally {
+          modalSaveBtn.disabled = false;
+          modalSaveBtn.textContent = "Save & Learn Task";
+        }
+      });
+
+      // 5. Emergency Cancel
+      cancelBtn.addEventListener("click", async function () {
+        try {
+          await fetch("/api/cancel", { method: "POST" });
+        } catch (e) {
+          console.error("Cancel failed:", e);
+        }
+      });
+
+      // 6. Tone Cycling
+      toneSelector.addEventListener("click", async function () {
+        currentToneIdx = (currentToneIdx + 1) % tones.length;
+        const newTone = tones[currentToneIdx];
+        toneLabel.textContent = newTone.charAt(0).toUpperCase() + newTone.slice(1);
+        toneIcon.textContent = toneIcons[newTone];
+        try {
+          await fetch("/api/tone", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tone: newTone }),
+          });
+        } catch (e) {
+          console.error("Tone change error:", e);
+        }
+      });
+
+      // 7. Keyboard Navigation (Spotlight style)
+      window.addEventListener("keydown", function (ev) {
+        const items = resultsContainer.querySelectorAll(".workflow-item");
+        if (ev.key === "ArrowDown") {
+          ev.preventDefault();
+          if (items.length > 0) {
+            selectedIndex = (selectedIndex + 1) % items.length;
+            updateSelection(items);
+          }
+        } else if (ev.key === "ArrowUp") {
+          ev.preventDefault();
+          if (items.length > 0) {
+            selectedIndex = (selectedIndex - 1 + items.length) % items.length;
+            updateSelection(items);
+          }
+        } else if (ev.key === "Enter") {
+          ev.preventDefault();
+          if (selectedIndex >= 0 && selectedIndex < items.length) {
+            const wfId = items[selectedIndex].dataset.workflowId;
+            executeWorkflow(wfId);
+          } else if (searchInput.value.trim()) {
+            executeByQuery(searchInput.value.trim());
+          }
+        } else if (ev.key === "Escape") {
+          searchInput.value = "";
+          renderWorkflows(workflows);
+        }
+      });
+
+      function updateSelection(items) {
+        items.forEach((it, i) => {
+          if (i === selectedIndex) {
+            it.classList.add("selected");
+            it.scrollIntoView({ block: "nearest" });
+          } else {
+            it.classList.remove("selected");
+          }
+        });
+      }
+
+      // 8. Quick Chips Click
+      document.querySelectorAll(".chip-button").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const q = btn.dataset.query;
+          if (q) {
+            searchInput.value = q;
+            executeByQuery(q);
+          } else if (btn.dataset.action === "list") {
+            searchInput.value = "";
+            renderWorkflows(workflows);
+          }
+        });
+      });
+
+      function escapeHtml(str) {
+        return (str || "").replace(/[&<>"']/g, function (m) {
+          return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[m];
+        });
+      }
+
+      init();
+    })();
+  </script>
+</body>
+</html>
