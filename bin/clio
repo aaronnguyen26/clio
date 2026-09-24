@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Clio CLI — Fast command-line controller and shortcut utility for Clio Assistant
+
+set -e
+
+PORT=8765
+BASE_URL="http://127.0.0.1:${PORT}"
+APP_PATH="/Users/minhnguyen/Desktop/Clio.app"
+
+is_backend_running() {
+    curl -s --max-time 0.3 "${BASE_URL}/api/status" > /dev/null 2>&1
+}
+
+is_app_running() {
+    pgrep -f "Clio.app/Contents/MacOS/Clio" > /dev/null 2>&1
+}
+
+ensure_services() {
+    if ! is_backend_running; then
+        echo "Starting Clio background backend server..."
+        nohup python3 -m src.main --server --port "${PORT}" > /tmp/clio_server.log 2>&1 &
+        for _ in {1..20}; do
+            if is_backend_running; then break; fi
+            sleep 0.1
+        done
+    fi
+
+    if ! is_app_running; then
+        echo "Launching Clio application..."
+        if [ -d "$APP_PATH" ]; then
+            open -g "$APP_PATH" || true
+        fi
+        sleep 0.3
+    fi
+}
+
+cmd="${1:-toggle}"
+
+case "$cmd" in
+    show|open)
+        ensure_services
+        curl -s -X POST "${BASE_URL}/api/ui/show" > /dev/null 2>&1 || true
+        open "$APP_PATH" || true
+        echo "Clio Bar shown."
+        ;;
+    hide|close)
+        if is_backend_running; then
+            curl -s -X POST "${BASE_URL}/api/ui/hide" > /dev/null 2>&1 || true
+            echo "Clio Bar closed."
+        else
+            echo "Clio is not currently running."
+        fi
+        ;;
+    toggle)
+        ensure_services
+        curl -s -X POST "${BASE_URL}/api/ui/toggle" > /dev/null 2>&1 || true
+        open "$APP_PATH" || true
+        ;;
+    run|exec)
+        shift
+        query="$*"
+        if [ -z "$query" ]; then
+            echo "Error: No command specified."
+            echo "Usage: clio run <action phrase> (e.g. clio run 'open yt')"
+            exit 1
+        fi
+        ensure_services
+        res=$(curl -s -X POST "${BASE_URL}/api/execute" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\": \"${query}\"}")
+        if echo "$res" | grep -q '"success":true'; then
+            echo "Dispatched to Clio: $query"
+        else
+            echo "Response: $res"
+        fi
+        ;;
+    record)
+        ensure_services
+        res=$(curl -s -X POST "${BASE_URL}/api/record/start" -H "Content-Type: application/json" -d "{}")
+        echo "Demonstration recording started. Perform actions on your screen, then run: clio stop '<Task Name>'"
+        ;;
+    stop)
+        shift
+        task_name="${*:-Demonstrated Action}"
+        res=$(curl -s -X POST "${BASE_URL}/api/record/stop" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\": \"${task_name}\", \"trigger\": \"${task_name}\"}")
+        echo "Demonstration saved: $task_name"
+        ;;
+    status)
+        if is_backend_running; then
+            echo "Backend: RUNNING (:8765)"
+            curl -s "${BASE_URL}/api/status" | python3 -m json.tool 2>/dev/null || curl -s "${BASE_URL}/api/status"
+            echo ""
+        else
+            echo "Backend: OFFLINE"
+        fi
+        if is_app_running; then
+            echo "Native App: RUNNING (PID $(pgrep -f 'Clio.app/Contents/MacOS/Clio' | head -n 1))"
+        else
+            echo "Native App: OFFLINE"
+        fi
+        ;;
+    help|--help|-h)
+        echo "Clio — Hands-Free macOS Desktop Companion & Automator"
+        echo ""
+        echo "Usage:"
+        echo "  clio                  Toggle Clio Bar (Show if hidden, Close if open)"
+        echo "  clio show             Show the floating command bar"
+        echo "  clio hide             Close/hide the floating command bar"
+        echo "  clio toggle           Toggle visibility"
+        echo "  clio run <prompt>     Execute a prompt or workflow hands-free (e.g. clio run 'open yt')"
+        echo "  clio record           Begin demonstration recording"
+        echo "  clio stop [name]      Stop recording and persist demonstrated workflow"
+        echo "  clio status           Check system, engine, and UI status"
+        echo ""
+        echo "Shortcuts:"
+        echo "  ⌥ Space (Option+Space)      Toggle Bar globally from anywhere"
+        echo "  ⌘ ⇧ Space (Cmd+Shift+Space) Alternate global toggle"
+        echo "  Menu Bar (⌘ Clio)           Click icon in menu bar to toggle"
+        echo "  Type 'close' or 'hide'      Type in bar and press Enter to close"
+        echo "  Esc                         Dismiss bar immediately"
+        ;;
+    *)
+        # If user passed a natural language command (e.g. `clio open yt`), execute it directly!
+        ensure_services
+        query="$*"
+        res=$(curl -s -X POST "${BASE_URL}/api/execute" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\": \"${query}\"}")
+        if echo "$res" | grep -q '"success":true'; then
+            echo "Dispatched to Clio: $query"
+        else
+            echo "Response: $res"
+        fi
+        ;;
+esac

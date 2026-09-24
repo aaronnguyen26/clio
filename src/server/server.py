@@ -692,6 +692,17 @@ class ClioServer:
                     self._send_json(status_code, res)
                     return
 
+                # 7. UI Visibility Control: Show / Hide / Toggle Bar
+                if path in ("/api/ui/show", "/api/ui/hide", "/api/ui/toggle"):
+                    action = path.split("/")[-1]
+                    server_instance._broadcast_sse({
+                        "type": "ui",
+                        "action": action,
+                        "timestamp": time.time(),
+                    })
+                    self._send_json(HTTPStatus.OK, {"success": True, "action": action})
+                    return
+
                 # Unknown POST
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 

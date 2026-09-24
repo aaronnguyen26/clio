@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import AVFoundation
+import Carbon
 import Combine
 import Foundation
 import Speech
@@ -552,8 +553,17 @@ final class ClioViewModel: ObservableObject {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
 
+        let lower = trimmed.lowercased()
+
+        // 1. Explicit user commands to close / dismiss the bar
+        if ["close", "hide", "quit", "exit", "dismiss", "cancel", "done", "esc"].contains(lower) {
+            self.query = ""
+            AppDelegate.shared?.hidePanel()
+            return
+        }
+
         // Support command-line workflow deletion: "delete <name>" or "remove <name>"
-        if trimmed.lowercased().hasPrefix("delete ") || trimmed.lowercased().hasPrefix("remove ") {
+        if lower.hasPrefix("delete ") || lower.hasPrefix("remove ") {
             let targetName = trimmed.dropFirst(7).trimmingCharacters(in: .whitespaces)
             if let match = workflows.first(where: {
                 $0.displayName.localizedCaseInsensitiveContains(targetName) ||
@@ -561,6 +571,7 @@ final class ClioViewModel: ObservableObject {
             }) {
                 deleteWorkflow(id: match.id)
                 self.query = ""
+                AppDelegate.shared?.hidePanel()
                 return
             }
         }
@@ -580,6 +591,9 @@ final class ClioViewModel: ObservableObject {
             executeByQuery(trimmed)
         }
         self.query = ""
+
+        // Close the bar based on user command: task dispatched, clear screen for hands-free automation
+        AppDelegate.shared?.hidePanel()
     }
 
     func deleteWorkflow(id: String) {
@@ -980,6 +994,17 @@ final class ClioViewModel: ObservableObject {
             let state = (obj["state"] as? String ?? "IDLE").uppercased()
             self.vcCoords = "VC (\(Int(x)), \(Int(y))) • \(state)"
             VirtualCursorOverlayManager.shared.updatePosition(x: CGFloat(x), y: CGFloat(y), state: state)
+        } else if type == "ui" {
+            let action = obj["action"] as? String ?? ""
+            Task { @MainActor in
+                if action == "show" {
+                    AppDelegate.shared?.showPanel()
+                } else if action == "hide" {
+                    AppDelegate.shared?.hidePanel()
+                } else if action == "toggle" {
+                    AppDelegate.shared?.togglePanel()
+                }
+            }
         }
     }
 }
@@ -1171,6 +1196,9 @@ struct ClioBarView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("DeleteSelectedWorkflow"))) { _ in
             vm.deleteSelected()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("FocusClioField"))) { _ in
+            isFieldFocused = true
+        }
     }
 }
 
@@ -1227,6 +1255,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var panel: SpotlightPanel?
     private var statusItem: NSStatusItem?
     private var globalKeyMonitor: Any?
+    private var carbonHotKey1: EventHotKeyRef?
+    private var carbonHotKey2: EventHotKeyRef?
+    private var carbonEventHandler: EventHandlerRef?
 
     override init() {
         super.init()
@@ -1234,8 +1265,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showPanel() {
-        panel?.makeKeyAndOrderFront(nil)
+        guard let panel = panel else { return }
+        panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        NotificationCenter.default.post(name: NSNotification.Name("FocusClioField"), object: nil)
     }
 
     func hidePanel() {
@@ -1284,7 +1317,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let btn = statusItem?.button {
-            btn.title = "⌘"
+            btn.title = " ⌘ Clio "
+            btn.toolTip = "Clio Assistant — Click to toggle bar (⌥ Space)"
             btn.target = self
             btn.action = #selector(statusItemClicked)
         }
@@ -1295,10 +1329,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupGlobalShortcut() {
-        // Global Option + Space to toggle Clio Bar from anywhere
+        // 1. Carbon HotKey for Option + Space (and Cmd + Shift + Space)
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+
+        let handler: EventHandlerUPP = { _, _, _ -> OSStatus in
+            Task { @MainActor in
+                AppDelegate.shared?.togglePanel()
+            }
+            return noErr
+        }
+
+        InstallEventHandler(GetApplicationEventTarget(), handler, 1, &eventType, nil, &carbonEventHandler)
+
+        // HotKey 1: Option + Space (kVK_Space is 49, optionKey is 2048)
+        let hotKeyID1 = EventHotKeyID(signature: OSType(0x434C494F), id: 1)
+        _ = RegisterEventHotKey(
+            UInt32(kVK_Space),
+            UInt32(optionKey),
+            hotKeyID1,
+            GetApplicationEventTarget(),
+            0,
+            &carbonHotKey1
+        )
+
+        // HotKey 2: Cmd + Shift + Space (cmdKey 256 + shiftKey 512 = 768)
+        let hotKeyID2 = EventHotKeyID(signature: OSType(0x434C494F), id: 2)
+        _ = RegisterEventHotKey(
+            UInt32(kVK_Space),
+            UInt32(cmdKey | shiftKey),
+            hotKeyID2,
+            GetApplicationEventTarget(),
+            0,
+            &carbonHotKey2
+        )
+
+        // 2. Global NSEvent monitor backup (when Accessibility is granted)
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // Option + Space (keyCode 49 with alternate/option flag)
-            if event.keyCode == 49 && event.modifierFlags.contains(.option) {
+            // Option + Space or Cmd + Shift + Space
+            if event.keyCode == 49 && (event.modifierFlags.contains(.option) || (event.modifierFlags.contains(.command) && event.modifierFlags.contains(.shift))) {
                 Task { @MainActor in
                     self?.togglePanel()
                 }
@@ -1312,6 +1383,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let hk = carbonHotKey1 { UnregisterEventHotKey(hk) }
+        if let hk = carbonHotKey2 { UnregisterEventHotKey(hk) }
+        if let h = carbonEventHandler { RemoveEventHandler(h) }
         if let monitor = globalKeyMonitor {
             NSEvent.removeMonitor(monitor)
         }

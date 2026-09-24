@@ -86,19 +86,37 @@ Clio is an autonomous macOS desktop companion and imitation-learning task automa
 
 ---
 
-## 🛠️ Usage
+---
 
-### Recording a New Action
-1. Open Clio Bar (`⌥ Space`).
+## 🛠️ Usage & Controls
+
+### ⌨️ How to Show & Toggle the Bar
+You can summon or toggle Clio through any of the following methods:
+- **Global Keyboard Shortcut**: Press `⌥ Space` (Option + Space) or `⌘ ⇧ Space` (Command + Shift + Space) anywhere on macOS.
+- **Top Menu Bar Icon**: Click the `⌘ Clio` icon in the macOS status menu bar at the top right of your screen.
+- **Desktop / Dock Shortcut**: Click `Clio.app` in your Dock or double-click `Toggle Clio.command` on your Desktop.
+- **Terminal CLI Command**: Run `clio` or `clio show` from any terminal or script.
+
+### 🚪 How to Close the Bar (User Commands)
+The bar responds to standard user dismissal commands:
+- **Automatic Close on Execution**: When you type a task (e.g. `open yt` or `open calendar`) and press `Enter`, the bar automatically slides away and closes so your screen is clear while Clio's virtual cursor executes the steps hands-free.
+- **Direct Close Commands**: Type `close`, `hide`, `quit`, `exit`, `dismiss`, or `esc` into the bar and press `Enter`.
+- **Keyboard Dismissal**: Press `Esc` or `⌘ W`.
+- **Close Button**: Click the `✕` button on the right side of the bar.
+- **CLI Close**: Run `clio hide` or `clio close`.
+- **Toggle Off**: Press `⌥ Space` or click the menu bar `⌘ Clio` icon again.
+
+### 🎬 Recording a New Action
+1. Open Clio Bar (`⌥ Space` or click `⌘ Clio`).
 2. Click **RECORD**.
 3. Perform the task on your Mac (e.g. click a Dock item, open an app, navigate to a URL).
 4. Click **● STOP & SAVE** on the bar.
 5. Enter a friendly name and trigger phrase (e.g., `open yt`), then click **Save & Add**.
 
-### Running an Action
-1. Summon the bar (`⌥ Space`).
+### ⚡ Running an Action
+1. Summon the bar (`⌥ Space` or `clio`).
 2. Type your trigger (e.g., `open yt` or `open calendar`) and press `Enter`.
-3. Clio's virtual cursor will navigate to the target, focus the app, and perform the demonstrated sequence hands-free!
+3. The bar immediately closes and Clio's virtual cursor navigates to the target, focuses the app, and performs the demonstrated sequence hands-free!
 
 ---
 
