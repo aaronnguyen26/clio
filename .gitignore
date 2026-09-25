@@ -32,3 +32,8 @@ htmlcov/
 *.db
 *.db-wal
 *.db-shm
+
+# Demonstration Recordings (local artifacts)
+recordings/*
+!recordings/.gitkeep
+!recordings/README.md
