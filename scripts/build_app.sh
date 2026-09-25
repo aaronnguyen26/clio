@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "==> Building Clio Native Bar & Probe Binaries..."
+# 1. Resolve code signing identity: auto-detect Apple Development identity with ad-hoc (-) fallback
+SIGN_IDENTITY=$(security find-identity -p codesigning -v 2>/dev/null | grep "Apple Development" | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+if [ -z "${SIGN_IDENTITY}" ]; then
+    echo "==> Warning: No Apple Development certificate found in keychain, falling back to ad-hoc (-)"
+    SIGN_IDENTITY="-"
+else
+    echo "==> Found Apple Development signing identity: ${SIGN_IDENTITY}"
+fi
+
+echo "==> Building Clio Native Binaries (Bar, Probe, Synthesizer)..."
 mkdir -p bin
 swiftc -O src/ui/ClioBar.swift -o bin/clio-bar
 swiftc -O tools/clio-probe.swift -o bin/clio-probe
+if [ -f "tools/clio-synthesizer.swift" ]; then
+    echo "==> Compiling tools/clio-synthesizer.swift -> bin/clio-synthesizer..."
+    swiftc -O tools/clio-synthesizer.swift -o bin/clio-synthesizer
+fi
 
 echo "==> Packaging Clio.app on Desktop..."
 APP_BUNDLE="/Users/minhnguyen/Desktop/Clio.app"
+# Unlock any read-only files left by previous codesign seal before deletion
+[ -d "${APP_BUNDLE}" ] && chmod -R u+rwX "${APP_BUNDLE}" 2>/dev/null || true
 rm -rf "${APP_BUNDLE}" Clio.app
 mkdir -p "${APP_BUNDLE}/Contents/MacOS"
 mkdir -p "${APP_BUNDLE}/Contents/Resources/src"
@@ -15,22 +30,45 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources/src"
 cp bin/clio-bar "${APP_BUNDLE}/Contents/MacOS/Clio"
 cp bin/clio-bar "${APP_BUNDLE}/Contents/MacOS/clio-bar"
 cp bin/clio-probe "${APP_BUNDLE}/Contents/MacOS/clio-probe"
+if [ -f "bin/clio-synthesizer" ]; then
+    cp bin/clio-synthesizer "${APP_BUNDLE}/Contents/MacOS/clio-synthesizer"
+fi
+
 cp src/ui/Info.plist "${APP_BUNDLE}/Contents/Info.plist"
 cp AppIcon.icns "${APP_BUNDLE}/Contents/Resources/"
 cp assets/logo.png "${APP_BUNDLE}/Contents/Resources/"
 
+# Sync Python source while strictly excluding any bytecode caches
 rsync -av --delete --exclude="__pycache__" --exclude="*.pyc" src/ "${APP_BUNDLE}/Contents/Resources/src/"
 
-echo "==> Ad-hoc code signing Clio.app on Desktop..."
-xattr -cr "${APP_BUNDLE}"
-codesign --force --deep --sign - "${APP_BUNDLE}"
+# Clean all bytecode caches and resource forks to guarantee 100% clean sealed resources
+echo "==> Purging all bytecode caches and detritus..."
+rm -f "${APP_BUNDLE}/Icon"$'\r' 2>/dev/null || true
+find "${APP_BUNDLE}" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find "${APP_BUNDLE}" -name "*.pyc" -delete 2>/dev/null || true
+find src/ -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find src/ -name "*.pyc" -delete 2>/dev/null || true
 
-echo "==> Setting Desktop icon visual cover..."
-swift -e 'import AppKit
-guard let img = NSImage(contentsOfFile: "AppIcon.icns") ?? NSImage(contentsOfFile: "assets/logo.png") else { exit(1) }
-_ = NSWorkspace.shared.setIcon(img, forFile: "/Users/minhnguyen/Desktop/Clio.app", options: [])
-'
-touch "${APP_BUNDLE}"
+# Strip quarantine and extended attributes
+echo "==> Cleaning extended attributes..."
+xattr -cr "${APP_BUNDLE}"
+
+# Deep code sign with resolved identity
+echo "==> Deep code signing Clio.app with identity '${SIGN_IDENTITY}'..."
+codesign --force --deep --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
+
+# Force LaunchServices re-registration
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "${LSREGISTER}" ]; then
+    echo "==> Forcing LaunchServices re-registration..."
+    "${LSREGISTER}" -f "${APP_BUNDLE}"
+fi
+
+# Verify codesign immediately
+echo "==> Verifying code signature..."
+codesign --verify --verbose "${APP_BUNDLE}"
+echo "==> Designated Requirement:"
+codesign -d -r- "${APP_BUNDLE}"
 
 # Ensure project directory is kept clean (no Clio.app inside repo)
 rm -rf Clio.app
@@ -39,4 +77,4 @@ echo "==> Packaging dist/Clio-macOS.zip..."
 mkdir -p dist
 (cd /Users/minhnguyen/Desktop && zip -r -FS "/Users/minhnguyen/Desktop/Coding/imitate/dist/Clio-macOS.zip" "Clio.app")
 
-echo "==> Build complete! Only /Users/minhnguyen/Desktop/Clio.app is kept."
+echo "==> Build complete! Only /Users/minhnguyen/Desktop/Clio.app is kept and verified."

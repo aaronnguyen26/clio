@@ -26,5 +26,17 @@
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+
+    <!-- Privacy Usage Descriptions for macOS TCC Authorization -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Clio requires screen recording permission to observe user workflows during demonstrations, synthesize video previews, and automate desktop tasks.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Clio requires microphone access for voice dictation and conversational companion audio input.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Clio requires Speech Recognition permission to transcribe spoken commands and conversational dialogue.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Clio requires AppleEvents permission to control and automate native macOS applications hands-free.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Clio requires Accessibility access to interact with native desktop application UI elements without displacing the cursor.</string>
 </dict>
 </plist>

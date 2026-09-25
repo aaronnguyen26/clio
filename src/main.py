@@ -16,6 +16,10 @@ import re
 import sys
 from typing import Any, Dict, List, Optional
 
+# Multi-layer zero-bytecode suppression: prevent .pyc generation from corrupting signed macOS bundle
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 from src.actuators.types import ActuatorMode
 from src.actuators.factory import get_actuator
 from src.benchmark.runner import BenchmarkRunner

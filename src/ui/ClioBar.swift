@@ -110,10 +110,10 @@ final class ServerLauncher {
         let proc = Process()
         if pyExe == "/usr/bin/env" {
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            proc.arguments = ["python3", "-m", "src.main", "--server", "--port", "8765"]
+            proc.arguments = ["python3", "-B", "-m", "src.main", "--server", "--port", "8765"]
         } else {
             proc.executableURL = URL(fileURLWithPath: pyExe)
-            proc.arguments = ["-m", "src.main", "--server", "--port", "8765"]
+            proc.arguments = ["-B", "-m", "src.main", "--server", "--port", "8765"]
         }
 
         proc.currentDirectoryURL = URL(fileURLWithPath: projectDir)
@@ -122,6 +122,7 @@ final class ServerLauncher {
         env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["PYTHONPATH"] = projectDir
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         proc.environment = env
 
         let logPath = "/tmp/clio_server.log"

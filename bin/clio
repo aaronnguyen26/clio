@@ -3,6 +3,9 @@
 
 set -e
 
+# Multi-layer zero-bytecode suppression: preserve signed app bundle integrity
+export PYTHONDONTWRITEBYTECODE=1
+
 PORT=8765
 BASE_URL="http://127.0.0.1:${PORT}"
 APP_PATH="/Users/minhnguyen/Desktop/Clio.app"
@@ -18,7 +21,7 @@ is_app_running() {
 ensure_services() {
     if ! is_backend_running; then
         echo "Starting Clio background backend server..."
-        nohup python3 -m src.main --server --port "${PORT}" > /tmp/clio_server.log 2>&1 &
+        nohup python3 -B -m src.main --server --port "${PORT}" > /tmp/clio_server.log 2>&1 &
         for _ in {1..20}; do
             if is_backend_running; then break; fi
             sleep 0.1
@@ -90,7 +93,7 @@ case "$cmd" in
     status)
         if is_backend_running; then
             echo "Backend: RUNNING (:8765)"
-            curl -s "${BASE_URL}/api/status" | python3 -m json.tool 2>/dev/null || curl -s "${BASE_URL}/api/status"
+            curl -s "${BASE_URL}/api/status" | python3 -B -m json.tool 2>/dev/null || curl -s "${BASE_URL}/api/status"
             echo ""
         else
             echo "Backend: OFFLINE"
