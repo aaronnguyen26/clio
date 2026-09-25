@@ -19,7 +19,14 @@ extract/
 Clio.app/
 .agents/
 
-# Testing & Coverage
+# Testing & Development Internals (excluded from public app repo)
+tests/
+run_tests.py
+pytest.ini
+TEST_INFRA.md
+AUDIT_REPORT.md
+architecture.md
+ai_dissection_architecture.md
 .pytest_cache/
 .coverage
 htmlcov/

@@ -126,20 +126,6 @@ The bar responds to standard user dismissal commands:
 
 ---
 
-## 🧪 Testing
-
-Comprehensive test suites verify multi-step demonstration recording, intent synthesis, retrieval, and virtual cursor non-bleed execution:
-
-```bash
-# Run unit & integration test suites
-python3 run_tests.py
-
-# Run full test suite with coverage
-python3 -m pytest tests/ -v
-```
-
----
-
 ## 📄 License
 
 MIT License. Designed and built with ❤️ on macOS.
