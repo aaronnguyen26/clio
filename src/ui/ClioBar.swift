@@ -287,17 +287,19 @@ struct WorkflowItem: Identifiable, Decodable {
     var matchScore: Int { Int((confidence ?? 1.0) * 100) }
 }
 
-// MARK: - Swift-Native Screen Recorder (Apple ScreenCaptureKit + AVAssetWriter)
+// MARK: - Swift-Native Screen Recorder (Apple ScreenCaptureKit + SCRecordingOutput)
 //
 // Modern ScreenCaptureKit pipeline:
 //   1. Uses Apple's modern ScreenCaptureKit (SCStream + SCContentFilter) to record the primary display.
-//   2. Captures the ENTIRE desktop, including all application windows, context switches, menus, and overlays.
-//   3. Runs completely inside the authorized Clio.app bundle process, eliminating repeated TCC privacy notifications.
-//   4. Streams frames directly into AVAssetWriter with hardware H.264 encoding for crisp Retina video output.
+//   2. Direct-to-container hardware recording via SCRecordingOutput on macOS 15+ Sequoia (same architecture as QuickTime / screencaptureui).
+//   3. Captures the ENTIRE desktop, including all application windows, context switches, window movement, menus, and overlays.
+//   4. Runs completely inside the authorized Clio.app bundle process, eliminating repeated TCC privacy notifications.
+//   5. Fallback to AVAssetWriter with hardware H.264 encoding for older macOS releases (< 15.0).
 final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, SCStreamDelegate {
     static let shared = SwiftScreenRecorder()
 
     private var stream: SCStream?
+    private var recordingOutput: AnyObject?
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var isRecording = false
@@ -359,33 +361,48 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
                 config.capturesAudio = false
                 config.pixelFormat = kCVPixelFormatType_32BGRA
 
-                let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-                let videoSettings: [String: Any] = [
-                    AVVideoCodecKey: AVVideoCodecType.h264,
-                    AVVideoWidthKey: recWidth,
-                    AVVideoHeightKey: recHeight,
-                    AVVideoCompressionPropertiesKey: [
-                        AVVideoAverageBitRateKey: 12_000_000,
-                        AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                        AVVideoExpectedSourceFrameRateKey: 30
-                    ]
-                ]
-                let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-                input.expectsMediaDataInRealTime = true
-
-                guard writer.canAdd(input) else {
-                    print("SwiftScreenRecorder: AVAssetWriter cannot add video input")
-                    return
-                }
-                writer.add(input)
-
-                self.assetWriter = writer
-                self.videoInput = input
-
-                writer.startWriting()
-
                 let newStream = SCStream(filter: filter, configuration: config, delegate: self)
-                try newStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: self.recordingQueue)
+
+                if #available(macOS 15.0, *) {
+                    // Modern macOS 15 Sequoia native hardware recorder:
+                    // Direct-to-container recording via SCRecordingOutput (same architecture as QuickTime / screencaptureui).
+                    // Captures all windows, full Retina resolution, zero dropped buffers, and no AVAssetWriter errors.
+                    let recConfig = SCRecordingOutputConfiguration()
+                    recConfig.outputURL = outputURL
+                    recConfig.outputFileType = .mov
+                    let recOutput = SCRecordingOutput(configuration: recConfig, delegate: self)
+                    try newStream.addRecordingOutput(recOutput)
+                    self.recordingOutput = recOutput
+                    print("SwiftScreenRecorder: Using macOS 15 native SCRecordingOutput pipeline")
+                } else {
+                    // Fallback for macOS 14/13 using AVAssetWriter
+                    let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+                    let videoSettings: [String: Any] = [
+                        AVVideoCodecKey: AVVideoCodecType.h264,
+                        AVVideoWidthKey: recWidth,
+                        AVVideoHeightKey: recHeight,
+                        AVVideoCompressionPropertiesKey: [
+                            AVVideoAverageBitRateKey: 12_000_000,
+                            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                            AVVideoExpectedSourceFrameRateKey: 30
+                        ]
+                    ]
+                    let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+                    input.expectsMediaDataInRealTime = true
+
+                    guard writer.canAdd(input) else {
+                        print("SwiftScreenRecorder: AVAssetWriter cannot add video input")
+                        return
+                    }
+                    writer.add(input)
+
+                    self.assetWriter = writer
+                    self.videoInput = input
+
+                    writer.startWriting()
+                    try newStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: self.recordingQueue)
+                }
+
                 try await newStream.startCapture()
                 self.stream = newStream
                 print("SwiftScreenRecorder: ScreenCaptureKit recording stream running on display \(display.displayID)")
@@ -415,45 +432,51 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
                 self.stream = nil
             }
 
-            self.recordingQueue.async { [weak self] in
-                guard let self = self else { return }
-                self.videoInput?.markAsFinished()
+            // Safety timeout: Ensure completion is called within 3.0s if delegate doesn't fire
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self = self, self.stopCompletion != nil else { return }
+                self.handleRecordingFinished(error: nil)
+            }
 
-                let validateOutput: (URL?) -> URL? = { [weak self] url in
-                    guard let u = url, let self = self else { return nil }
-                    if let attrs = try? FileManager.default.attributesOfItem(atPath: u.path),
-                       let size = attrs[.size] as? Int64,
-                       size > 1024,
-                       self.frameCount > 0 {
-                        return u
-                    }
-                    return nil
-                }
-
-                if let writer = self.assetWriter, writer.status == .writing {
-                    if !self.sessionStarted {
-                        writer.startSession(atSourceTime: CMTime.zero)
-                    }
-                    writer.finishWriting { [weak self] in
-                        guard let self = self else { return }
-                        let isSuccess = (writer.status == .completed)
-                        let hasValidFile = FileManager.default.fileExists(atPath: self.currentOutputURL?.path ?? "") && ((try? FileManager.default.attributesOfItem(atPath: self.currentOutputURL?.path ?? "")[.size] as? Int64) ?? 0) > 1024
-                        let finalURL = (isSuccess || hasValidFile) ? validateOutput(self.currentOutputURL) : nil
-                        let finalCompletion = self.stopCompletion
-                        self.cleanup()
-                        DispatchQueue.main.async {
-                            finalCompletion?(finalURL, writer.error)
+            // On macOS < 15 fallback using AVAssetWriter:
+            if self.assetWriter != nil {
+                self.recordingQueue.async { [weak self] in
+                    guard let self = self else { return }
+                    self.videoInput?.markAsFinished()
+                    if let writer = self.assetWriter, writer.status == .writing {
+                        if !self.sessionStarted {
+                            writer.startSession(atSourceTime: CMTime.zero)
                         }
-                    }
-                } else {
-                    let finalURL = validateOutput(self.currentOutputURL)
-                    let finalCompletion = self.stopCompletion
-                    self.cleanup()
-                    DispatchQueue.main.async {
-                        finalCompletion?(finalURL, nil)
+                        writer.finishWriting { [weak self] in
+                            guard let self = self else { return }
+                            self.handleRecordingFinished(error: writer.error)
+                        }
+                    } else {
+                        self.handleRecordingFinished(error: nil)
                     }
                 }
             }
+        }
+    }
+
+    func handleRecordingFinished(error: Error?) {
+        guard let completion = self.stopCompletion else { return }
+        self.stopCompletion = nil
+        let targetURL = self.currentOutputURL
+
+        let validURL: URL? = {
+            guard let u = targetURL else { return nil }
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: u.path),
+               let size = attrs[.size] as? Int64,
+               size > 1024 {
+                return u
+            }
+            return nil
+        }()
+
+        self.cleanup()
+        DispatchQueue.main.async {
+            completion(validURL, error)
         }
     }
 
@@ -506,6 +529,7 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
     private func cleanup() {
         stopCompletion = nil
         stream = nil
+        recordingOutput = nil
         assetWriter = nil
         videoInput = nil
         currentOutputURL = nil
@@ -524,6 +548,27 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
             writer.cancelWriting()
         }
         cleanup()
+    }
+}
+
+@available(macOS 15.0, *)
+extension SwiftScreenRecorder: SCRecordingOutputDelegate {
+    nonisolated func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
+        print("SwiftScreenRecorder: SCRecordingOutput started recording.")
+    }
+
+    nonisolated func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
+        print("SwiftScreenRecorder: SCRecordingOutput failed with error: \(error)")
+        Task { @MainActor in
+            SwiftScreenRecorder.shared.handleRecordingFinished(error: error)
+        }
+    }
+
+    nonisolated func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
+        print("SwiftScreenRecorder: SCRecordingOutput finished recording.")
+        Task { @MainActor in
+            SwiftScreenRecorder.shared.handleRecordingFinished(error: nil)
+        }
     }
 }
 

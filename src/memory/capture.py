@@ -528,7 +528,7 @@ class LiveDemonstrationCapture:
             return None
 
         with self._lock:
-            has_swift = bool(getattr(self, "_swift_video_path", None))
+            has_swift = bool(getattr(self, "_swift_video_path", None)) or (self._video_path is not None and self._video_path.exists())
         if has_swift and label not in ("synthesize_fallback",):
             # When Swift is recording via ScreenCaptureKit, do not spawn screencapture (which captures only wallpaper).
             # Milestone keyframes are extracted directly from the finalized Retina video container in stop_recording.
@@ -622,36 +622,22 @@ class LiveDemonstrationCapture:
     def _start_video_recorder(self) -> None:
         """Starts continuous native video recording.
 
-        If the Swift layer has already provided a video path via set_swift_video_path(),
-        this method is a no-op — Swift's AVCaptureSession handles recording inside the
-        authorized Clio.app process, avoiding repeated TCC notifications in macOS 15 Sequoia.
+        In macOS 15 Sequoia, full screen video recording containing all active application windows
+        is exclusively handled by SwiftScreenRecorder inside the authorized Clio.app process via
+        Apple ScreenCaptureKit (SCRecordingOutput).
+
+        Spawning `screencapture -v` from a Python subprocess on macOS 15 is prohibited because
+        WindowServer strips all window content for unauthorized subprocesses, returning only the
+        desktop wallpaper (e.g. Golden Gate Bridge). Python designates the video path and lets
+        Swift record directly.
         """
         if self._mock or sys.platform != "darwin":
             return
-        # If Swift is handling video recording, trust its path and skip spawning screencapture.
         with self._lock:
-            has_swift_path = bool(getattr(self, "_swift_video_path", None))
-        if has_swift_path:
-            logger.info("Swift is handling screen recording — skipping screencapture spawn.")
-            return
-        try:
-            self._session_dir.mkdir(parents=True, exist_ok=True)
-            self._video_path = self._session_dir / "recording.mov"
-            if self._video_path.exists():
-                try:
-                    self._video_path.unlink()
-                except Exception:
-                    pass
-            self._video_proc = subprocess.Popen(
-                ["screencapture", "-v", str(self._video_path)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            logger.info("Launched screencapture video recorder at %s (PID: %d)", self._video_path, self._video_proc.pid)
-        except Exception as e:
-            logger.warning("Could not launch screencapture video recorder: %s", e)
-            self._video_proc = None
+            if self._video_path is None:
+                self._session_dir.mkdir(parents=True, exist_ok=True)
+                self._video_path = self._session_dir / "recording.mov"
+        logger.info("Designated screen recording destination at %s (ScreenCaptureKit provider)", self._video_path)
 
     def _stop_video_recorder(self) -> None:
         """Gracefully halts video recording by closing stdin and sending SIGINT to flush QuickTime container."""
@@ -802,6 +788,16 @@ class LiveDemonstrationCapture:
         """Synthesizes recording.mov from session frames via clio-synthesizer, or writes minimal container."""
         target = output_path or self._video_path or (self._session_dir / "recording.mov")
         target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and target.stat().st_size > 1024:
+            try:
+                with open(target, "rb") as f:
+                    head = f.read(65536)
+                if any(atom in head for atom in (b"moov", b"mdat", b"wide", b"ftyp")):
+                    with self._lock:
+                        self._video_path = target
+                    return True
+            except Exception:
+                pass
 
         frames = []
         if self._frames_dir.exists():
