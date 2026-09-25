@@ -22,6 +22,10 @@ if [ -f "tools/clio-synthesizer.swift" ]; then
     echo "==> Compiling tools/clio-synthesizer.swift -> bin/clio-synthesizer..."
     swiftc -O tools/clio-synthesizer.swift -o bin/clio-synthesizer
 fi
+if [ -f "tools/clio-recorder.swift" ]; then
+    echo "==> Compiling tools/clio-recorder.swift -> bin/clio-recorder..."
+    swiftc -O tools/clio-recorder.swift -o bin/clio-recorder
+fi
 
 echo "==> Packaging Clio.app on Desktop..."
 APP_BUNDLE="/Users/minhnguyen/Desktop/Clio.app"
@@ -36,6 +40,9 @@ cp bin/clio-bar "${APP_BUNDLE}/Contents/MacOS/clio-bar"
 cp bin/clio-probe "${APP_BUNDLE}/Contents/MacOS/clio-probe"
 if [ -f "bin/clio-synthesizer" ]; then
     cp bin/clio-synthesizer "${APP_BUNDLE}/Contents/MacOS/clio-synthesizer"
+fi
+if [ -f "bin/clio-recorder" ]; then
+    cp bin/clio-recorder "${APP_BUNDLE}/Contents/MacOS/clio-recorder"
 fi
 
 cp src/ui/Info.plist "${APP_BUNDLE}/Contents/Info.plist"

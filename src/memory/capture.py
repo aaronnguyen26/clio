@@ -529,8 +529,9 @@ class LiveDemonstrationCapture:
 
         with self._lock:
             has_swift = bool(getattr(self, "_swift_video_path", None)) or (self._video_path is not None and self._video_path.exists())
-        if has_swift and label not in ("synthesize_fallback",):
-            # When Swift is recording via ScreenCaptureKit, do not spawn screencapture (which captures only wallpaper).
+            has_recorder = self._video_proc is not None
+        if (has_swift or has_recorder) and label not in ("synthesize_fallback",):
+            # When Swift or clio-recorder is recording via ScreenCaptureKit, do not spawn screencapture (which captures only wallpaper).
             # Milestone keyframes are extracted directly from the finalized Retina video container in stop_recording.
             return None
 
@@ -623,13 +624,11 @@ class LiveDemonstrationCapture:
         """Starts continuous native video recording.
 
         In macOS 15 Sequoia, full screen video recording containing all active application windows
-        is exclusively handled by SwiftScreenRecorder inside the authorized Clio.app process via
-        Apple ScreenCaptureKit (SCRecordingOutput).
+        is exclusively handled via Apple ScreenCaptureKit (SCRecordingOutput).
 
-        Spawning `screencapture -v` from a Python subprocess on macOS 15 is prohibited because
-        WindowServer strips all window content for unauthorized subprocesses, returning only the
-        desktop wallpaper (e.g. Golden Gate Bridge). Python designates the video path and lets
-        Swift record directly.
+        If Swift (ClioBar) pre-registered swift_video_path, ClioBar is already recording.
+        Otherwise (e.g. recording started via Web UI, CLI, or API), we launch clio-recorder
+        which runs ScreenCaptureKit directly to record the full display and all windows.
         """
         if self._mock or sys.platform != "darwin":
             return
@@ -637,40 +636,115 @@ class LiveDemonstrationCapture:
             if self._video_path is None:
                 self._session_dir.mkdir(parents=True, exist_ok=True)
                 self._video_path = self._session_dir / "recording.mov"
-        logger.info("Designated screen recording destination at %s (ScreenCaptureKit provider)", self._video_path)
+            has_swift = bool(getattr(self, "_swift_video_path", None))
+            video_target = self._video_path
+
+        if has_swift:
+            logger.info("SwiftScreenRecorder is recording full display to %s", video_target)
+            return
+
+        rec_bin = self.get_recorder_binary()
+        if rec_bin:
+            try:
+                logger.info("Launching clio-recorder ScreenCaptureKit pipeline to %s", video_target)
+                proc = subprocess.Popen(
+                    [str(rec_bin), str(video_target)],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                # Wait up to 3.0s for RECORDING_STARTED so stream is active before events begin
+                t_start = time.time()
+                while time.time() - t_start < 3.0:
+                    if proc.poll() is not None:
+                        logger.warning("clio-recorder terminated early with code %d", proc.returncode)
+                        break
+                    line = proc.stdout.readline()
+                    if "RECORDING_STARTED" in line:
+                        logger.info("clio-recorder ScreenCaptureKit stream is actively recording.")
+                        break
+                with self._lock:
+                    self._video_proc = proc
+            except Exception as e:
+                logger.warning("Failed launching clio-recorder: %s", e)
+        else:
+            logger.warning("No clio-recorder binary found for background screen capture.")
 
     def _stop_video_recorder(self) -> None:
-        """Gracefully halts video recording by closing stdin and sending SIGINT to flush QuickTime container."""
+        """Gracefully halts video recording by sending stop command / SIGINT to flush QuickTime container."""
         if self._video_proc is not None:
             proc = self._video_proc
             try:
-                # Explicitly close stdin to eliminate ResourceWarning: unclosed file and notify screencapture
                 if proc.stdin is not None and not proc.stdin.closed:
                     try:
+                        proc.stdin.write("stop\n")
+                        proc.stdin.flush()
                         proc.stdin.close()
                     except Exception:
                         pass
 
-                # Send SIGINT to allow screencapture to flush sample buffers and finalize moov atom
                 proc.send_signal(signal.SIGINT)
-                proc.wait(timeout=3.0)
-                logger.info("screencapture video recorder terminated gracefully.")
+                proc.wait(timeout=3.5)
+                logger.info("Native screen recorder terminated gracefully.")
             except subprocess.TimeoutExpired:
-                logger.warning("screencapture did not terminate on SIGINT within 3.0s, sending SIGTERM...")
+                logger.warning("Recorder did not terminate on SIGINT within 3.5s, sending SIGTERM...")
                 proc.terminate()
                 try:
                     proc.wait(timeout=1.0)
                 except Exception:
                     proc.kill()
             except Exception as e:
-                logger.debug("Error stopping screencapture video recorder: %s", e)
+                logger.debug("Error stopping screen recorder: %s", e)
             finally:
                 if proc.stdin is not None and not proc.stdin.closed:
                     try:
                         proc.stdin.close()
                     except Exception:
                         pass
+                if proc.stdout is not None and not proc.stdout.closed:
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
+                if proc.stderr is not None and not proc.stderr.closed:
+                    try:
+                        proc.stderr.close()
+                    except Exception:
+                        pass
                 self._video_proc = None
+
+    @classmethod
+    def get_recorder_binary(cls) -> Optional[Path]:
+        """Locates compiled Swift clio-recorder utility, compiling from source if needed."""
+        try:
+            project_root = Path(__file__).resolve().parent.parent.parent
+        except NameError:
+            project_root = Path.cwd()
+        bin_rec = project_root / "bin" / "clio-recorder"
+        if bin_rec.exists() and os.access(bin_rec, os.X_OK):
+            return bin_rec
+
+        # Also check inside app bundle if running packaged
+        app_rec = Path("/Users/minhnguyen/Desktop/Clio.app/Contents/MacOS/clio-recorder")
+        if app_rec.exists() and os.access(app_rec, os.X_OK):
+            return app_rec
+
+        swift_src = project_root / "tools" / "clio-recorder.swift"
+        if swift_src.exists() and sys.platform == "darwin":
+            try:
+                bin_rec.parent.mkdir(parents=True, exist_ok=True)
+                proc = subprocess.run(
+                    ["swiftc", "-O", str(swift_src), "-o", str(bin_rec)],
+                    capture_output=True,
+                    timeout=20.0,
+                )
+                if proc.returncode == 0 and bin_rec.exists():
+                    os.chmod(bin_rec, 0o755)
+                    return bin_rec
+            except Exception as e:
+                logger.debug("Failed auto-compiling clio-recorder: %s", e)
+        return None
 
     @classmethod
     def get_synthesizer_binary(cls) -> Optional[Path]:
@@ -880,8 +954,9 @@ class LiveDemonstrationCapture:
         """Runs periodic frame capture in the background (2 frames/sec) during active recording."""
         with self._lock:
             has_swift = bool(getattr(self, "_swift_video_path", None))
-        if has_swift:
-            logger.info("Swift is handling screen recording — skipping background periodic screencapture.")
+            has_recorder = self._video_proc is not None
+        if has_swift or has_recorder:
+            logger.info("Native ScreenCaptureKit is handling screen recording — skipping background periodic screencapture.")
             return
 
         self._frame_capturer_stop_event.clear()

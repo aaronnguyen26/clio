@@ -306,17 +306,29 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
     private var sessionStarted = false
     private var frameCount = 0
     private var lastPTS: CMTime = .invalid
+    private var startCompletion: ((URL?, Error?) -> Void)?
     private var stopCompletion: ((URL?, Error?) -> Void)?
     private var currentOutputURL: URL?
     private let recordingQueue = DispatchQueue(label: "com.clio.ScreenRecorderQueue", qos: .userInitiated)
 
-    /// Starts recording the full primary display via Apple ScreenCaptureKit.
-    /// Captures all application windows, context switches, menus, and cursor movement across windows.
-    func startRecording() -> URL? {
-        if !CGPreflightScreenCaptureAccess() {
-            CGRequestScreenCaptureAccess()
+    /// Polls for screen capture permission with a timeout. Returns true once access is granted.
+    private func waitForScreenCapturePermission(timeout: TimeInterval = 60.0) async -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        // Request access — opens System Preferences but does not block.
+        CGRequestScreenCaptureAccess()
+        // Poll every 500ms until the user grants access or we time out.
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
+            if CGPreflightScreenCaptureAccess() { return true }
         }
+        return false
+    }
 
+    /// Starts recording the full primary display via Apple ScreenCaptureKit.
+    /// Captures all application windows, context switches, menus, opening apps, and cursor movement across windows.
+    @discardableResult
+    func startRecording(completion: ((URL?, Error?) -> Void)? = nil) -> URL? {
         stopExistingSession()
 
         // Output destination: <project_dir>/recordings/<session_id>/recording.mov
@@ -332,18 +344,33 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
         self.sessionStarted = false
         self.frameCount = 0
         self.lastPTS = .invalid
+        self.startCompletion = completion
 
         Task {
+            // Wait for screen capture permission before proceeding.
+            // CGRequestScreenCaptureAccess() is fire-and-forget: it opens System Preferences
+            // but returns immediately. We must poll until the user actually grants access,
+            // otherwise SCShareableContent will throw error -3801 (TCC denied).
+            let hasPermission = await self.waitForScreenCapturePermission(timeout: 60.0)
+            guard hasPermission else {
+                print("SwiftScreenRecorder: Screen capture permission was not granted. Please enable Clio in System Settings > Privacy & Security > Screen Recording.")
+                self.notifyStartFailed(error: NSError(domain: "SwiftScreenRecorder", code: -3801, userInfo: [NSLocalizedDescriptionKey: "Screen Recording permission denied. Open System Settings > Privacy & Security > Screen Recording and enable Clio."]))
+                return
+            }
+
             do {
-                let shareable = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                let shareable = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
                 guard let display = shareable.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? shareable.displays.first else {
                     print("SwiftScreenRecorder: No display available for recording")
+                    self.notifyStartFailed(error: NSError(domain: "SwiftScreenRecorder", code: -1, userInfo: [NSLocalizedDescriptionKey: "No display available"]))
                     return
                 }
 
-                // SCContentFilter with excludingApplications: [], exceptingWindows: [] captures the full display
-                // including all on-screen application windows, menubar, dock, and window movement across desktops.
-                let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+                // Canonical whole-display capture: captures all on-screen application windows, menubar, dock, and newly opening apps.
+                let filter = SCContentFilter(display: display, excludingWindows: [])
+                if #available(macOS 14.2, *) {
+                    filter.includeMenuBar = true
+                }
 
                 let targetScreen = NSScreen.screens.first(where: {
                     ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == display.displayID
@@ -361,6 +388,15 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
                 config.capturesAudio = false
                 config.pixelFormat = kCVPixelFormatType_32BGRA
 
+                if #available(macOS 14.0, *) {
+                    config.ignoreGlobalClipDisplay = true
+                    config.captureResolution = .best
+                    config.preservesAspectRatio = true
+                }
+                if #available(macOS 15.0, *) {
+                    config.showMouseClicks = true
+                }
+
                 let newStream = SCStream(filter: filter, configuration: config, delegate: self)
 
                 if #available(macOS 15.0, *) {
@@ -370,6 +406,7 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
                     let recConfig = SCRecordingOutputConfiguration()
                     recConfig.outputURL = outputURL
                     recConfig.outputFileType = .mov
+                    recConfig.videoCodecType = .h264
                     let recOutput = SCRecordingOutput(configuration: recConfig, delegate: self)
                     try newStream.addRecordingOutput(recOutput)
                     self.recordingOutput = recOutput
@@ -392,6 +429,7 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
 
                     guard writer.canAdd(input) else {
                         print("SwiftScreenRecorder: AVAssetWriter cannot add video input")
+                        self.notifyStartFailed(error: NSError(domain: "SwiftScreenRecorder", code: -2, userInfo: [NSLocalizedDescriptionKey: "Cannot add AVAssetWriterInput"]))
                         return
                     }
                     writer.add(input)
@@ -406,15 +444,34 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
                 try await newStream.startCapture()
                 self.stream = newStream
                 print("SwiftScreenRecorder: ScreenCaptureKit recording stream running on display \(display.displayID)")
+
+                if #unavailable(macOS 15.0) {
+                    self.notifyStartSucceeded()
+                }
             } catch {
                 print("SwiftScreenRecorder: Failed to start ScreenCaptureKit: \(error)")
-                if !CGPreflightScreenCaptureAccess() {
-                    CGRequestScreenCaptureAccess()
-                }
+                self.notifyStartFailed(error: error)
             }
         }
 
         return outputURL
+    }
+
+    private func notifyStartSucceeded() {
+        guard let completion = self.startCompletion else { return }
+        self.startCompletion = nil
+        let targetURL = self.currentOutputURL
+        DispatchQueue.main.async {
+            completion(targetURL, nil)
+        }
+    }
+
+    private func notifyStartFailed(error: Error) {
+        guard let completion = self.startCompletion else { return }
+        self.startCompletion = nil
+        DispatchQueue.main.async {
+            completion(nil, error)
+        }
     }
 
     /// Stops the current recording session and delivers the finalized .mov URL via completion.
@@ -527,6 +584,7 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
     }
 
     private func cleanup() {
+        startCompletion = nil
         stopCompletion = nil
         stream = nil
         recordingOutput = nil
@@ -555,11 +613,15 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
 extension SwiftScreenRecorder: SCRecordingOutputDelegate {
     nonisolated func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
         print("SwiftScreenRecorder: SCRecordingOutput started recording.")
+        Task { @MainActor in
+            SwiftScreenRecorder.shared.notifyStartSucceeded()
+        }
     }
 
     nonisolated func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
         print("SwiftScreenRecorder: SCRecordingOutput failed with error: \(error)")
         Task { @MainActor in
+            SwiftScreenRecorder.shared.notifyStartFailed(error: error)
             SwiftScreenRecorder.shared.handleRecordingFinished(error: error)
         }
     }
@@ -1011,21 +1073,35 @@ final class ClioViewModel: ObservableObject {
         // Start native Swift screen recording (runs inside authorized Clio.app process).
         // This avoids the repeated "would like to record" TCC notification that occurs when
         // screencapture is spawned from Python (separate TCC identity in macOS 15 Sequoia).
-        let videoURL = SwiftScreenRecorder.shared.startRecording()
+        _ = SwiftScreenRecorder.shared.startRecording { [weak self] videoURL, error in
+            guard let self = self else { return }
 
-        // Notify Python backend to start event capture. Pass swift_video_path so Python
-        // does NOT spawn its own screencapture process.
-        guard let url = URL(string: "/api/record/start", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = [:]
-        if let vPath = videoURL?.path {
-            body["swift_video_path"] = vPath
-        }
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        Task {
-            _ = try? await URLSession.shared.data(for: req)
+            // Handle recording start failure (e.g. TCC permission denied)
+            if let error = error {
+                print("startRecording: failed - \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    self.isRecording = false
+                    // Open Screen Recording privacy settings so the user can grant access
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                return
+            }
+
+            guard let videoURL = videoURL else { return }
+
+            // Notify Python backend to start event capture once the stream is actively recording.
+            // Pass swift_video_path so Python does NOT spawn its own recorder process.
+            guard let url = URL(string: "/api/record/start", relativeTo: self.baseURL) else { return }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let body: [String: Any] = ["swift_video_path": videoURL.path]
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            Task {
+                _ = try? await URLSession.shared.data(for: req)
+            }
         }
     }
 
