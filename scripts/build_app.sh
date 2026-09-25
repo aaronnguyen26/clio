@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "==> Building Clio Native Bar Binary..."
+echo "==> Building Clio Native Bar & Probe Binaries..."
 mkdir -p bin
 swiftc -O src/ui/ClioBar.swift -o bin/clio-bar
+swiftc -O tools/clio-probe.swift -o bin/clio-probe
 
 echo "==> Packaging Clio.app..."
 APP_BUNDLE="Clio.app"
@@ -12,6 +13,7 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources/src"
 
 cp bin/clio-bar "${APP_BUNDLE}/Contents/MacOS/Clio"
 cp bin/clio-bar "${APP_BUNDLE}/Contents/MacOS/clio-bar"
+cp bin/clio-probe "${APP_BUNDLE}/Contents/MacOS/clio-probe"
 cp AppIcon.icns "${APP_BUNDLE}/Contents/Resources/"
 
 rsync -av --delete --exclude="__pycache__" --exclude="*.pyc" src/ "${APP_BUNDLE}/Contents/Resources/src/"

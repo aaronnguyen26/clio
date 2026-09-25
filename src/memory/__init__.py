@@ -35,6 +35,11 @@ from src.memory.recorder import (
     WindowBounds,
     WorkflowRecorderPipeline,
 )
+from src.memory.recording_evaluator import (
+    QualityGrade,
+    RecordingQualityEvaluator,
+    RecordingQualityReport,
+)
 from src.memory.retrieval import NLRetrievalEngine
 
 __all__ = [
@@ -67,4 +72,8 @@ __all__ = [
     "RecorderConfig",
     "WindowBounds",
     "WorkflowRecorderPipeline",
+    # Screen Recording & Quality Evaluation
+    "QualityGrade",
+    "RecordingQualityReport",
+    "RecordingQualityEvaluator",
 ]

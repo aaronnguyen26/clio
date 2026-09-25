@@ -308,12 +308,22 @@ class ClioServer:
                 self._last_recorded_workflow_id = spec.id
             self.dialogue.last_recorded_workflow_id = spec.id
 
+            env = spec.environment if (hasattr(spec, "environment") and isinstance(spec.environment, dict)) else {}
+            quality_info = env.get("recording_quality", {})
+            quality_score = env.get("recording_score", 100.0)
+            quality_grade = env.get("recording_grade", "GOOD")
+            rec_dir = env.get("recording_dir", "")
+            video_path = env.get("video_path", "")
+
             self._broadcast_sse({
                 "type": "recording",
                 "status": "stopped",
                 "workflow_id": spec.id,
                 "name": spec.name,
                 "step_count": len(spec.steps),
+                "recording_score": quality_score,
+                "recording_grade": quality_grade,
+                "recording_dir": rec_dir,
                 "timestamp": time.time(),
             })
             return {
@@ -323,6 +333,11 @@ class ClioServer:
                 "canonical_trigger": spec.triggers.get("canonical", ""),
                 "steps": [asdict(s) for s in spec.steps],
                 "total_steps": len(spec.steps),
+                "recording_score": quality_score,
+                "recording_grade": quality_grade,
+                "recording_dir": rec_dir,
+                "video_path": video_path,
+                "quality_report": quality_info,
             }
         except Exception as e:
             logger.error("Error stopping and saving demonstration: %s", e)
@@ -814,6 +829,34 @@ class ClioServer:
                 # 6. Demonstration Recording Status
                 if path == "/api/record/status":
                     self._send_json(HTTPStatus.OK, server_instance.get_recording_status())
+                    return
+
+                # 6b. Screen Recording Quality
+                if path == "/api/record/quality":
+                    qs = parse_qs(parsed.query)
+                    q = qs.get("session_id", [""])[0].strip() or qs.get("workflow_id", [""])[0].strip()
+                    rep = None
+                    if hasattr(server_instance.demonstration_capture, "quality_report") and server_instance.demonstration_capture.quality_report:
+                        rep = server_instance.demonstration_capture.quality_report.to_dict()
+                    elif q:
+                        from src.memory.recording_evaluator import RecordingQualityEvaluator
+                        cand = Path.home() / ".clio" / "recordings" / q
+                        if cand.exists():
+                            rep = RecordingQualityEvaluator.evaluate_session(cand).to_dict()
+                        else:
+                            wf = server_instance.memory.get_workflow(q)
+                            if wf and hasattr(wf, "environment") and isinstance(wf.environment, dict):
+                                rep = wf.environment.get("recording_quality")
+                    if rep:
+                        self._send_json(HTTPStatus.OK, rep)
+                    else:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Quality report not found", "session_id": q})
+                    return
+
+                # 6c. Screen Recording Frames
+                if path == "/api/record/frames":
+                    frames = list(server_instance.demonstration_capture.captured_frames)
+                    self._send_json(HTTPStatus.OK, {"frames": frames, "count": len(frames)})
                     return
 
                 # Unknown GET

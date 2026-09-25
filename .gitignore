@@ -11,6 +11,7 @@ ENV/
 
 # Build artifacts & temp
 bin/clio-bar
+bin/clio-probe
 dist/
 main
 *.log

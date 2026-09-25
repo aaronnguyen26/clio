@@ -32,21 +32,35 @@ from ctypes import (
     c_void_p,
 )
 from dataclasses import dataclass
+import json
 import logging
 import os
+from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import uuid
 
 from src.memory.engine import TaskMemoryEngine
 from src.memory.models import ActionType, WorkflowSpec, WorkflowStep
 from src.memory.recorder import RawEvent, RawEventType, WindowBounds, WorkflowRecorderPipeline
+from src.memory.recording_evaluator import QualityGrade, RecordingQualityEvaluator, RecordingQualityReport
 
 logger = logging.getLogger(__name__)
+
+# Valid JPEG binary for deterministic testing and mock environments
+MOCK_JPEG_BYTES = (
+    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00"
+    b"\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f"
+    b"\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0"
+    b"\x00\x11\x08\x03\xc0\x05\x00\x03\x01\"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x1f\x00"
+    b"\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05"
+    b"\x06\x07\x08\t\n\x0b\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xbf\x00\xff\xd9"
+)
 
 
 def get_frontmost_app_info() -> Tuple[Optional[str], Optional[int]]:
@@ -281,6 +295,7 @@ class LiveDemonstrationCapture:
         self,
         memory: Optional[TaskMemoryEngine] = None,
         mock: Optional[bool] = None,
+        recordings_dir: Optional[Union[str, Path]] = None,
     ) -> None:
         self.memory = memory or TaskMemoryEngine()
         self.pipeline = WorkflowRecorderPipeline()
@@ -290,10 +305,30 @@ class LiveDemonstrationCapture:
         else:
             self._mock = (sys.platform != "darwin") or (os.environ.get("CI") == "true")
 
+        self._recordings_base_dir = Path(recordings_dir) if recordings_dir else (Path.home() / ".clio" / "recordings")
+        self._recordings_base_dir.mkdir(parents=True, exist_ok=True)
+
         self._is_recording = False
         self._raw_events: List[RawEvent] = []
         self._captured_frames: List[Dict[str, Any]] = []
         self._session_id: str = str(uuid.uuid4())[:8]
+        self._session_dir: Path = self._recordings_base_dir / self._session_id
+        self._frames_dir: Path = self._session_dir / "frames"
+        self._video_path: Optional[Path] = None
+        self._video_proc: Optional[subprocess.Popen] = None
+
+        self._frame_capturer_thread: Optional[threading.Thread] = None
+        self._frame_capturer_stop_event = threading.Event()
+
+        self._tracked_windows: List[Dict[str, Any]] = []
+        self._window_movements: List[Dict[str, Any]] = []
+        self._last_window_bounds: Optional[WindowBounds] = None
+        self._quality_report: Optional[RecordingQualityReport] = None
+
+        self._display_width: int = 1470
+        self._display_height: int = 956
+        self._detect_display_geometry()
+
         self._last_frame_time: float = 0.0
         self._start_time: float = 0.0
         self._lock = threading.RLock()
@@ -307,28 +342,105 @@ class LiveDemonstrationCapture:
         self._c_callback: Optional[Any] = None
         self._native: Optional[_NativeEventTap] = None
 
+        if not self._mock and sys.platform == "darwin":
+            try:
+                self._native = _NativeEventTap()
+            except Exception as e:
+                logger.warning("Native event tap unavailable: %s. Falling back to mock capture.", e)
+                self._mock = True
+
+    def _detect_display_geometry(self) -> None:
+        """Determines active display resolution via CoreGraphics or system defaults."""
+        if sys.platform != "darwin":
+            return
+        try:
+            import ctypes
+            cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+            cg.CGMainDisplayID.restype = ctypes.c_uint32
+            cg.CGDisplayPixelsWide.argtypes = [ctypes.c_uint32]
+            cg.CGDisplayPixelsWide.restype = ctypes.c_size_t
+            cg.CGDisplayPixelsHigh.argtypes = [ctypes.c_uint32]
+            cg.CGDisplayPixelsHigh.restype = ctypes.c_size_t
+            disp = cg.CGMainDisplayID()
+            w = cg.CGDisplayPixelsWide(disp)
+            h = cg.CGDisplayPixelsHigh(disp)
+            if w > 0 and h > 0:
+                self._display_width = int(w)
+                self._display_height = int(h)
+        except Exception as e:
+            logger.debug("Failed detecting display geometry: %s", e)
+
+    @property
+    def session_id(self) -> str:
+        with self._lock:
+            return self._session_id
+
+    @property
+    def session_dir(self) -> Path:
+        with self._lock:
+            return self._session_dir
+
+    @property
+    def video_path(self) -> Optional[Path]:
+        with self._lock:
+            return self._video_path
+
+    @property
+    def quality_report(self) -> Optional[RecordingQualityReport]:
+        with self._lock:
+            return self._quality_report
+
+    @property
+    def captured_frames(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._captured_frames)
+
     def _capture_screen_frame(self, label: str = "") -> Optional[str]:
         """Captures a lightweight JPEG screenshot of the entire desktop for visual grounding."""
-        if self._mock or sys.platform != "darwin":
+        if not self._is_recording and label not in ("start", "end"):
             return None
-        try:
-            from pathlib import Path
-            rec_dir = Path.home() / ".clio" / "recordings" / self._session_id
-            rec_dir.mkdir(parents=True, exist_ok=True)
+
+        frames_dir = self._frames_dir
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+        now_ts = time.time()
+        with self._lock:
             frame_idx = len(self._captured_frames) + 1
-            filename = f"frame_{frame_idx:04d}_{int(time.time() * 1000)}.jpg"
-            frame_path = str(rec_dir / filename)
+        filename = f"frame_{frame_idx:04d}_{int(now_ts * 1000)}.jpg"
+        frame_path = str(frames_dir / filename)
+
+        if self._mock:
+            try:
+                with open(frame_path, "wb") as f:
+                    f.write(MOCK_JPEG_BYTES)
+                frame_data = {
+                    "frame_index": frame_idx,
+                    "path": frame_path,
+                    "timestamp": now_ts,
+                    "label": label,
+                }
+                with self._lock:
+                    self._captured_frames.append(frame_data)
+                return frame_path
+            except Exception as e:
+                logger.debug("Mock screen frame capture error: %s", e)
+            return None
+
+        if sys.platform != "darwin":
+            return None
+
+        try:
             res = subprocess.run(
                 ["screencapture", "-x", "-t", "jpg", frame_path],
                 capture_output=True,
-                timeout=1.0,
+                timeout=2.0,
                 check=False,
             )
             if res.returncode == 0 and os.path.exists(frame_path):
                 frame_data = {
                     "frame_index": frame_idx,
                     "path": frame_path,
-                    "timestamp": time.time(),
+                    "timestamp": now_ts,
                     "label": label,
                 }
                 with self._lock:
@@ -352,12 +464,65 @@ class LiveDemonstrationCapture:
         )
         t.start()
 
-        if not self._mock and sys.platform == "darwin":
+    def _start_video_recorder(self) -> None:
+        """Starts continuous native video recording via macOS screencapture."""
+        if self._mock or sys.platform != "darwin":
+            return
+        try:
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+            self._video_path = self._session_dir / "recording.mov"
+            if self._video_path.exists():
+                try:
+                    self._video_path.unlink()
+                except Exception:
+                    pass
+            self._video_proc = subprocess.Popen(
+                ["screencapture", "-v", "-k", str(self._video_path)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            logger.info("Launched screencapture video recorder at %s (PID: %d)", self._video_path, self._video_proc.pid)
+        except Exception as e:
+            logger.warning("Could not launch screencapture video recorder: %s", e)
+            self._video_proc = None
+
+    def _stop_video_recorder(self) -> None:
+        """Gracefully halts video recording by sending SIGINT to flush QuickTime container."""
+        if self._video_proc is not None:
             try:
-                self._native = _NativeEventTap()
+                self._video_proc.send_signal(signal.SIGINT)
+                self._video_proc.wait(timeout=5.0)
+                logger.info("screencapture video recorder terminated gracefully.")
+            except subprocess.TimeoutExpired:
+                logger.warning("screencapture did not terminate on SIGINT, sending SIGTERM...")
+                self._video_proc.terminate()
+                try:
+                    self._video_proc.wait(timeout=2.0)
+                except Exception:
+                    self._video_proc.kill()
             except Exception as e:
-                logger.warning("Native event tap unavailable: %s. Falling back to mock capture.", e)
-                self._mock = True
+                logger.debug("Error stopping screencapture video recorder: %s", e)
+            finally:
+                self._video_proc = None
+
+    def _start_frame_capturer(self) -> None:
+        """Runs periodic frame capture in the background (1 frame/sec) during active recording."""
+        self._frame_capturer_stop_event.clear()
+
+        def _capturer() -> None:
+            while not self._frame_capturer_stop_event.is_set():
+                if not self._is_recording:
+                    break
+                self._capture_screen_frame(label="periodic")
+                self._frame_capturer_stop_event.wait(1.0)
+
+        self._frame_capturer_thread = threading.Thread(
+            target=_capturer,
+            name="ClioScreenFrameCapturer",
+            daemon=True,
+        )
+        self._frame_capturer_thread.start()
 
     @property
     def is_recording(self) -> bool:
@@ -379,34 +544,72 @@ class LiveDemonstrationCapture:
     def feed_event(self, event: RawEvent) -> None:
         """Manually or synthetically appends a raw event (used in tests / mock mode)."""
         with self._lock:
-            if self._is_recording:
-                self._raw_events.append(event)
+            if not self._is_recording:
+                return
+            self._raw_events.append(event)
+            # Track window bounds and window movements across drags
+            if event.window_bounds:
+                wb_dict = {
+                    "x": event.window_bounds.x,
+                    "y": event.window_bounds.y,
+                    "width": event.window_bounds.width,
+                    "height": event.window_bounds.height,
+                    "bundle_id": event.bundle_id,
+                    "timestamp": event.timestamp,
+                }
+                self._tracked_windows.append(wb_dict)
+                if self._last_window_bounds is not None and event.bundle_id:
+                    dx = abs(event.window_bounds.x - self._last_window_bounds.x)
+                    dy = abs(event.window_bounds.y - self._last_window_bounds.y)
+                    if dx > 5.0 or dy > 5.0:
+                        self._window_movements.append({
+                            "bundle_id": event.bundle_id,
+                            "from_bounds": {
+                                "x": self._last_window_bounds.x,
+                                "y": self._last_window_bounds.y,
+                                "width": self._last_window_bounds.width,
+                                "height": self._last_window_bounds.height,
+                            },
+                            "to_bounds": {
+                                "x": event.window_bounds.x,
+                                "y": event.window_bounds.y,
+                                "width": event.window_bounds.width,
+                                "height": event.window_bounds.height,
+                            },
+                            "delta_x": event.window_bounds.x - self._last_window_bounds.x,
+                            "delta_y": event.window_bounds.y - self._last_window_bounds.y,
+                            "timestamp": event.timestamp,
+                        })
+                self._last_window_bounds = event.window_bounds
 
     def start_recording(self) -> bool:
-        """Starts capturing user actions.
-
-        On real macOS (non-mock), this launches the CGEventTap listener and the
-        60 Hz universal mouse poller as a belt-and-suspenders fallback.  When the
-        CGEventTap returns NULL (Accessibility permission not granted), the poller
-        ensures at least button-state transitions are captured.
-
-        In mock / CI mode neither background tap is started; events are delivered
-        exclusively through :meth:`feed_event` (used by tests and
-        ``/api/record/feed``).
-        """
+        """Starts capturing user actions and records full screen video and frames."""
         with self._lock:
             if self._is_recording:
                 return True
             self._raw_events.clear()
             self._captured_frames.clear()
+            self._tracked_windows.clear()
+            self._window_movements.clear()
+            self._last_window_bounds = None
+            self._quality_report = None
             self._session_id = str(uuid.uuid4())[:8]
+            self._session_dir = self._recordings_base_dir / self._session_id
+            self._frames_dir = self._session_dir / "frames"
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+            self._frames_dir.mkdir(parents=True, exist_ok=True)
             self._start_time = time.time()
             self._is_recording = True
             b_id, _ = get_frontmost_app_info()
             self._active_bundle_id = b_id
             self._last_bundle_check = self._start_time
 
-        threading.Thread(target=self._capture_screen_frame, args=("start",), daemon=True).start()
+        # Launch video recorder & periodic frame capturer
+        self._start_video_recorder()
+        self._start_frame_capturer()
+
+        # Capture start frame
+        self._capture_screen_frame(label="start")
         self._start_app_tracker()
 
         # Wire native event capture on real macOS (Bug #7 fix).
@@ -414,7 +617,7 @@ class LiveDemonstrationCapture:
         if not self._mock and sys.platform == "darwin" and self._native is not None:
             self._start_native_tap()          # CGEventTap (preferred; starts universal poller if tap is NULL)
 
-        logger.info("Started demonstration recording (active app: %s).", self._active_bundle_id)
+        logger.info("Started demonstration recording session %s (active app: %s).", self._session_id, self._active_bundle_id)
         return True
 
     def _start_app_tracker(self) -> None:
@@ -681,7 +884,7 @@ class LiveDemonstrationCapture:
         self._tap_thread.start()
 
     def stop_recording(self) -> List[RawEvent]:
-        """Stops capturing and returns all raw recorded events."""
+        """Stops capturing, finalizes video and frame recording, writes metadata, and returns events."""
         with self._lock:
             if not self._is_recording:
                 return list(self._raw_events)
@@ -701,8 +904,58 @@ class LiveDemonstrationCapture:
                 pass
             self._run_loop = None
 
-        logger.info("Stopped demonstration recording. Total raw events: %d", len(events))
+        # Stop frame capturer and video recorder
+        self._frame_capturer_stop_event.set()
+        if self._frame_capturer_thread and self._frame_capturer_thread.is_alive():
+            self._frame_capturer_thread.join(timeout=2.0)
+        self._stop_video_recorder()
+
+        # Capture end milestone frame
+        self._capture_screen_frame(label="end")
+
+        # Persist session metadata
+        self._finalize_metadata()
+
+        logger.info(
+            "Stopped demonstration recording. Total raw events: %d, frames: %d, video: %s",
+            len(events),
+            len(self._captured_frames),
+            self._video_path,
+        )
         return events
+
+    def _finalize_metadata(self) -> Dict[str, Any]:
+        """Writes metadata.json to session directory."""
+        now = time.time()
+        duration = round(max(0.0, now - self._start_time), 2)
+        has_video = self._video_path is not None and self._video_path.exists()
+        v_size = self._video_path.stat().st_size if has_video else 0
+
+        metadata = {
+            "session_id": self._session_id,
+            "start_time": self._start_time,
+            "end_time": now,
+            "duration_seconds": duration,
+            "video_file": "recording.mov" if has_video else None,
+            "video_path": str(self._video_path) if has_video else None,
+            "video_size_bytes": v_size,
+            "frames_count": len(self._captured_frames),
+            "frames": list(self._captured_frames),
+            "screen_width": self._display_width,
+            "screen_height": self._display_height,
+            "event_count": len(self._raw_events),
+            "tracked_windows": list(self._tracked_windows),
+            "window_movements": list(self._window_movements),
+            "show_clicks": True,
+        }
+        try:
+            if self._session_dir:
+                self._session_dir.mkdir(parents=True, exist_ok=True)
+                with open(self._session_dir / "metadata.json", "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2)
+        except Exception as e:
+            logger.warning("Failed writing metadata.json: %s", e)
+        return metadata
 
     def dissect_and_save(
         self,
@@ -724,7 +977,6 @@ class LiveDemonstrationCapture:
                     target_bundle_id = ev.bundle_id
                     break
 
-
         # Process through 4-stage pipeline
         spec = self.pipeline.process_raw_events(
             raw_events=raw_events,
@@ -734,9 +986,22 @@ class LiveDemonstrationCapture:
             target_bundle_id=target_bundle_id,
         )
 
-        self._capture_screen_frame(label="end")
         if hasattr(spec, "environment") and isinstance(spec.environment, dict):
             spec.environment["captured_frames"] = list(self._captured_frames)
+            spec.environment["recording_dir"] = str(self._session_dir)
+            if self._video_path and self._video_path.exists():
+                spec.environment["video_path"] = str(self._video_path)
+
+        # Run recording quality evaluation
+        try:
+            report = RecordingQualityEvaluator.evaluate_session(self._session_dir)
+            self._quality_report = report
+            if hasattr(spec, "environment") and isinstance(spec.environment, dict):
+                spec.environment["recording_quality"] = report.to_dict()
+                spec.environment["recording_score"] = report.overall_score
+                spec.environment["recording_grade"] = report.grade.value if hasattr(report.grade, "value") else str(report.grade)
+        except Exception as q_err:
+            logger.warning("Screen recording quality evaluation error: %s", q_err)
 
         # Include anaphoric execution aliases and name variations
         name_clean = name.strip().lower()
