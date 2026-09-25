@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import AVFoundation
+import AVKit
 import Carbon
 import Combine
 import Foundation
@@ -259,6 +260,9 @@ struct WorkflowItem: Identifiable, Decodable {
     let confidence: Double?
     let step_count: Int?
     let canonical_trigger: String?
+    let video_path: String?
+    let recording_score: Double?
+    let recording_grade: String?
 
     enum CodingKeys: String, CodingKey {
         case workflow_id
@@ -268,6 +272,9 @@ struct WorkflowItem: Identifiable, Decodable {
         case confidence
         case step_count
         case canonical_trigger
+        case video_path
+        case recording_score
+        case recording_grade
     }
 
     var rawId: String? { id_field }
@@ -275,6 +282,47 @@ struct WorkflowItem: Identifiable, Decodable {
     var displayDesc: String { description ?? "" }
     var displaySteps: Int { step_count ?? 0 }
     var matchScore: Int { Int((confidence ?? 1.0) * 100) }
+}
+
+struct ScreenRecordingPlayerView: NSViewRepresentable {
+    let videoURL: URL
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let playerView = AVPlayerView()
+        let player = AVPlayer(url: videoURL)
+        playerView.player = player
+        playerView.controlsStyle = .inline
+        playerView.showsFrameSteppingButtons = true
+        playerView.showsFullScreenToggleButton = true
+        playerView.videoGravity = .resizeAspect
+
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: nil,
+            queue: .main
+        ) { [weak player] notif in
+            if let curItem = player?.currentItem,
+               let obj = notif.object as? AVPlayerItem,
+               curItem == obj {
+                player?.seek(to: .zero)
+                player?.play()
+            }
+        }
+
+        player.play()
+        return playerView
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        if let currentItem = nsView.player?.currentItem,
+           let currentURL = (currentItem.asset as? AVURLAsset)?.url,
+           currentURL == videoURL {
+            return
+        }
+        let player = AVPlayer(url: videoURL)
+        nsView.player = player
+        player.play()
+    }
 }
 
 struct ClioStatus: Decodable {
@@ -456,6 +504,11 @@ final class ClioViewModel: ObservableObject {
     @Published var isListening: Bool = false
     @Published var isBackgroundMode: Bool = true
     @Published var showSaveModal: Bool = false
+    @Published var previewVideoURL: URL? = nil
+    @Published var previewWorkflowId: String? = nil
+    @Published var recordingScore: Double? = nil
+    @Published var recordingGrade: String? = nil
+    @Published var isStoppingRecording: Bool = false
     @Published var recordedName: String = ""
     @Published var recordedTrigger: String = ""
     @Published var currentTaskName: String = ""
@@ -644,18 +697,20 @@ final class ClioViewModel: ObservableObject {
         if !isRecording {
             startRecording()
         } else {
-            // Stop capturing immediately so modal interactions aren't recorded
-            self.stopEventMonitoring()
-            self.showSaveModal = true
+            stopRecordingAndShowPreview()
         }
     }
 
     private var recordingEventMonitor: Any?
 
     func startRecording() {
-        // Reset inputs
+        // Reset inputs and preview state
         self.recordedName = ""
         self.recordedTrigger = ""
+        self.previewVideoURL = nil
+        self.previewWorkflowId = nil
+        self.recordingScore = nil
+        self.recordingGrade = nil
         self.showSaveModal = false
         self.isRecording = true
         self.startEventMonitoring()
@@ -670,21 +725,92 @@ final class ClioViewModel: ObservableObject {
         }
     }
 
-    func cancelRecording() {
+    func stopRecordingAndShowPreview() {
         self.stopEventMonitoring()
+        self.isStoppingRecording = true
+        self.showSaveModal = true
         self.isRecording = false
-        self.showSaveModal = false
-        self.recordedName = ""
-        self.recordedTrigger = ""
 
         guard let url = URL(string: "/api/record/stop", relativeTo: baseURL) else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = "{\"name\":\"Discarded\",\"trigger\":\"discarded\"}".data(using: .utf8)
+        req.httpBody = "{\"name\":\"My Demonstrated Action\",\"trigger\":\"my demonstrated action\"}".data(using: .utf8)
+
         Task {
-            _ = try? await URLSession.shared.data(for: req)
-            await self.fetchWorkflows()
+            do {
+                let (data, resp) = try await URLSession.shared.data(for: req)
+                if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        await MainActor.run {
+                            self.isStoppingRecording = false
+                            self.previewWorkflowId = json["workflow_id"] as? String
+                            if let vPath = json["video_path"] as? String, !vPath.isEmpty {
+                                self.previewVideoURL = URL(fileURLWithPath: vPath)
+                            }
+                            self.recordingScore = json["recording_score"] as? Double
+                            self.recordingGrade = json["recording_grade"] as? String
+                            let origName = json["name"] as? String ?? ""
+                            if self.recordedName.isEmpty {
+                                self.recordedName = (origName == "My Demonstrated Action") ? "" : origName
+                            }
+                            let origTrig = json["canonical_trigger"] as? String ?? ""
+                            if self.recordedTrigger.isEmpty {
+                                self.recordedTrigger = (origTrig == "my demonstrated action") ? "" : origTrig
+                            }
+                        }
+                        return
+                    }
+                }
+                await MainActor.run {
+                    self.isStoppingRecording = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isStoppingRecording = false
+                }
+            }
+        }
+    }
+
+    func cancelRecording() {
+        discardRecording()
+    }
+
+    func discardRecording() {
+        self.stopEventMonitoring()
+        self.isRecording = false
+        self.showSaveModal = false
+        self.previewVideoURL = nil
+        self.recordingScore = nil
+        self.recordingGrade = nil
+        let wfId = self.previewWorkflowId
+        self.previewWorkflowId = nil
+        self.recordedName = ""
+        self.recordedTrigger = ""
+
+        if let wfId = wfId {
+            guard let url = URL(string: "/api/workflows/delete", relativeTo: baseURL) else { return }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["workflow_id": wfId])
+            Task {
+                _ = try? await URLSession.shared.data(for: req)
+                await self.fetchWorkflows()
+            }
+        }
+    }
+
+    func previewExistingWorkflowRecording(_ wf: WorkflowItem) {
+        if let path = wf.video_path, !path.isEmpty, FileManager.default.fileExists(atPath: path) {
+            self.previewVideoURL = URL(fileURLWithPath: path)
+            self.previewWorkflowId = wf.id
+            self.recordedName = wf.name
+            self.recordedTrigger = wf.canonical_trigger ?? ""
+            self.recordingScore = wf.recording_score
+            self.recordingGrade = wf.recording_grade
+            self.showSaveModal = true
         }
     }
 
@@ -825,9 +951,19 @@ final class ClioViewModel: ObservableObject {
         }
     }
 
-    func stopAndSaveRecording() {
+    func saveRecordedWorkflow() {
         self.stopEventMonitoring()
-        guard let url = URL(string: "/api/record/stop", relativeTo: baseURL) else { return }
+        self.isRecording = false
+
+        guard let wfId = previewWorkflowId else {
+            self.showSaveModal = false
+            self.previewVideoURL = nil
+            self.recordedName = ""
+            self.recordedTrigger = ""
+            return
+        }
+
+        guard let url = URL(string: "/api/workflows/update", relativeTo: baseURL) else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -836,17 +972,31 @@ final class ClioViewModel: ObservableObject {
         let finalName = trimmedName.isEmpty ? "My Demonstrated Action" : trimmedName
         let finalTrigger = trimmedTrigger.isEmpty ? finalName.lowercased() : trimmedTrigger
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "workflow_id": wfId,
             "name": finalName,
             "trigger": finalTrigger,
         ])
         Task {
             _ = try? await URLSession.shared.data(for: req)
-            self.isRecording = false
-            self.showSaveModal = false
-            self.recordedName = ""
-            self.recordedTrigger = ""
-            self.query = ""
+            await MainActor.run {
+                self.showSaveModal = false
+                self.previewVideoURL = nil
+                self.previewWorkflowId = nil
+                self.recordingScore = nil
+                self.recordingGrade = nil
+                self.recordedName = ""
+                self.recordedTrigger = ""
+                self.query = ""
+            }
             await self.fetchWorkflows()
+        }
+    }
+
+    func stopAndSaveRecording() {
+        if previewWorkflowId != nil {
+            saveRecordedWorkflow()
+        } else {
+            stopRecordingAndShowPreview()
         }
     }
 
@@ -1015,6 +1165,18 @@ struct ClioBarView: View {
     @StateObject private var vm = ClioViewModel()
     @FocusState private var isFieldFocused: Bool
 
+    private var currentTargetHeight: CGFloat {
+        if vm.showSaveModal {
+            return 430
+        }
+        let trimmed = vm.query.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty && !vm.workflows.isEmpty {
+            let rowCount = min(vm.workflows.count, 4)
+            return 58 + CGFloat(rowCount * 38) + 16
+        }
+        return 58
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Main Top Pill Bar
@@ -1127,20 +1289,119 @@ struct ClioBarView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
 
-            // Save Demonstration Sheet (Monochromatic Card)
+            // Screen Recording Preview & Save Demonstration Card (Obsidian Glass HUD)
             if vm.showSaveModal {
                 Divider().background(ObsidianTheme.borderSubtle)
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("DEMONSTRATION CAPTURED")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(ObsidianTheme.platinum)
+                    // Header Bar with Title, Quality Score, and Quick Action Buttons
+                    HStack(spacing: 8) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(ObsidianTheme.platinum)
+                                .frame(width: 6, height: 6)
+                            Text("SCREEN RECORDING CAPTURED")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.platinum)
+                        }
+
+                        // Quality Evaluation Score Badge
+                        if let score = vm.recordingScore, let grade = vm.recordingGrade {
+                            HStack(spacing: 4) {
+                                Text("QUALITY:")
+                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                    .foregroundColor(ObsidianTheme.slate)
+                                Text("\(Int(score))/100 • \(grade)")
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundColor(ObsidianTheme.platinum)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(ObsidianTheme.surfaceElevated)
+                            .overlay(Capsule().stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                            .clipShape(Capsule())
+                        }
+
                         Spacer()
-                        Text("AUTO-DISSECT & PERSIST")
-                            .font(.system(size: 9, weight: .medium, design: .monospaced))
-                            .foregroundColor(ObsidianTheme.slate)
+
+                        // External Player & Finder Quick Actions
+                        if let videoURL = vm.previewVideoURL {
+                            Button(action: {
+                                NSWorkspace.shared.open(videoURL)
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.up.right.video")
+                                        .font(.system(size: 9))
+                                    Text("QUICKTIME")
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                }
+                                .foregroundColor(ObsidianTheme.slate)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(ObsidianTheme.surface)
+                                .cornerRadius(5)
+                                .overlay(RoundedRectangle(cornerRadius: 5).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open full recording in QuickTime Player")
+
+                            Button(action: {
+                                NSWorkspace.shared.activateFileViewerSelecting([videoURL])
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "folder")
+                                        .font(.system(size: 9))
+                                    Text("FINDER")
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                }
+                                .foregroundColor(ObsidianTheme.slate)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(ObsidianTheme.surface)
+                                .cornerRadius(5)
+                                .overlay(RoundedRectangle(cornerRadius: 5).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Reveal recording video file in Finder")
+                        }
                     }
 
+                    // Native Video Player Surface
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(ObsidianTheme.surface)
+                            .frame(height: 250)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
+                            )
+
+                        if vm.isStoppingRecording {
+                            VStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("FINALIZING SCREEN RECORDING & EVALUATING QUALITY...")
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(ObsidianTheme.slate)
+                            }
+                        } else if let videoURL = vm.previewVideoURL {
+                            ScreenRecordingPlayerView(videoURL: videoURL)
+                                .frame(height: 250)
+                                .cornerRadius(8)
+                                .clipped()
+                        } else {
+                            VStack(spacing: 6) {
+                                Image(systemName: "video.slash")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(ObsidianTheme.slateDark)
+                                Text("No recording preview available")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(ObsidianTheme.slate)
+                            }
+                        }
+                    }
+                    .frame(height: 250)
+
+                    // Action Labeling and Persistence Controls
                     HStack(spacing: 8) {
                         TextField("Action Name (e.g. Open Notes & Write)", text: $vm.recordedName)
                             .textFieldStyle(.plain)
@@ -1151,7 +1412,7 @@ struct ClioBarView: View {
                             .foregroundColor(ObsidianTheme.platinum)
                             .font(.system(size: 12))
                             .onSubmit {
-                                vm.stopAndSaveRecording()
+                                vm.saveRecordedWorkflow()
                             }
 
                         TextField("Trigger phrase (e.g. 'open notes')", text: $vm.recordedTrigger)
@@ -1163,11 +1424,11 @@ struct ClioBarView: View {
                             .foregroundColor(ObsidianTheme.platinum)
                             .font(.system(size: 12))
                             .onSubmit {
-                                vm.stopAndSaveRecording()
+                                vm.saveRecordedWorkflow()
                             }
 
                         Button("Discard") {
-                            vm.cancelRecording()
+                            vm.discardRecording()
                         }
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(ObsidianTheme.slate)
@@ -1176,9 +1437,10 @@ struct ClioBarView: View {
                         .background(ObsidianTheme.surface)
                         .cornerRadius(6)
                         .buttonStyle(.plain)
+                        .help("Discard this screen recording")
 
                         Button("Save & Add") {
-                            vm.stopAndSaveRecording()
+                            vm.saveRecordedWorkflow()
                         }
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(ObsidianTheme.surface)
@@ -1187,10 +1449,74 @@ struct ClioBarView: View {
                         .background(ObsidianTheme.platinum)
                         .cornerRadius(6)
                         .buttonStyle(.plain)
+                        .help("Save demonstration and add to Clio's memory")
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.vertical, 12)
+                .background(ObsidianTheme.cardGlass)
+            } else if !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty {
+                // Search Results / Suggested Workflows with Video Preview Buttons
+                Divider().background(ObsidianTheme.borderSubtle)
+                VStack(spacing: 2) {
+                    ForEach(Array(vm.workflows.prefix(4).enumerated()), id: \.element.id) { idx, wf in
+                        HStack(spacing: 8) {
+                            Image(systemName: "command")
+                                .font(.system(size: 11))
+                                .foregroundColor(idx == vm.selectedIndex ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(wf.displayName)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(idx == vm.selectedIndex ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
+                                if let trig = wf.canonical_trigger, !trig.isEmpty {
+                                    Text(trig)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(ObsidianTheme.slate)
+                                }
+                            }
+
+                            Spacer()
+
+                            // If video recording exists, show "▶ VIDEO" button
+                            if let vPath = wf.video_path, !vPath.isEmpty {
+                                Button(action: {
+                                    vm.previewExistingWorkflowRecording(wf)
+                                }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "play.circle.fill")
+                                            .font(.system(size: 10))
+                                        Text("VIDEO")
+                                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    }
+                                    .foregroundColor(ObsidianTheme.platinum)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
+                                    .background(ObsidianTheme.surfaceElevated)
+                                    .cornerRadius(4)
+                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                                .help("View screen recording of this action")
+                            }
+
+                            Text("\(wf.displaySteps) steps")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.slate)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(idx == vm.selectedIndex ? ObsidianTheme.surfaceElevated : Color.clear)
+                        .cornerRadius(6)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            vm.selectedIndex = idx
+                            vm.executeById(wf.id)
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
                 .background(ObsidianTheme.cardGlass)
             }
 
@@ -1207,10 +1533,20 @@ struct ClioBarView: View {
             isFieldFocused = true
         }
         .onExitCommand {
-            AppDelegate.shared?.hidePanel()
+            if vm.showSaveModal {
+                vm.discardRecording()
+            } else {
+                AppDelegate.shared?.hidePanel()
+            }
         }
-        .onChange(of: vm.showSaveModal) { show in
-            AppDelegate.shared?.updatePanelHeight(show ? 145 : 58)
+        .onChange(of: vm.showSaveModal) { _ in
+            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+        }
+        .onChange(of: vm.workflows.count) { _ in
+            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+        }
+        .onChange(of: vm.query) { _ in
+            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("DeleteSelectedWorkflow"))) { _ in
             vm.deleteSelected()

@@ -442,6 +442,7 @@ class ClioServer:
                     canonical = wf.triggers.get("canonical", "")
                 elif isinstance(wf.triggers, list) and wf.triggers:
                     canonical = wf.triggers[0]
+                env = wf.environment if (hasattr(wf, "environment") and isinstance(wf.environment, dict)) else {}
                 results.append(
                     {
                         "workflow_id": wf.id,
@@ -451,6 +452,9 @@ class ClioServer:
                         "match_type": getattr(m, "match_type", "retrieval"),
                         "canonical_trigger": canonical,
                         "step_count": len(wf.steps),
+                        "video_path": env.get("video_path") or "",
+                        "recording_score": env.get("recording_score"),
+                        "recording_grade": env.get("recording_grade"),
                     }
                 )
 
@@ -468,6 +472,9 @@ class ClioServer:
                 "match_type": "dynamic_intent",
                 "canonical_trigger": dyn_spec.triggers.get("canonical", query),
                 "step_count": len(dyn_spec.steps),
+                "video_path": "",
+                "recording_score": None,
+                "recording_grade": None,
             })
             results.sort(
                 key=lambda x: (
@@ -490,6 +497,7 @@ class ClioServer:
                     canonical = full_wf.triggers.get("canonical", "")
                 elif isinstance(full_wf.triggers, list) and full_wf.triggers:
                     canonical = full_wf.triggers[0]
+                env = full_wf.environment if (hasattr(full_wf, "environment") and isinstance(full_wf.environment, dict)) else {}
                 out.append(
                     {
                         "id": full_wf.id,
@@ -498,6 +506,9 @@ class ClioServer:
                         "step_count": len(full_wf.steps),
                         "canonical_trigger": canonical,
                         "target_app": full_wf.target_app,
+                        "video_path": env.get("video_path") or "",
+                        "recording_score": env.get("recording_score"),
+                        "recording_grade": env.get("recording_grade"),
                     }
                 )
         return out
