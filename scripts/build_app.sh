@@ -10,6 +10,10 @@ else
     echo "==> Found Apple Development signing identity: ${SIGN_IDENTITY}"
 fi
 
+# Terminate any previous Clio or src.main processes
+killall Clio 2>/dev/null || true
+pkill -f "src.main" 2>/dev/null || true
+
 echo "==> Building Clio Native Binaries (Bar, Probe, Synthesizer)..."
 mkdir -p bin
 swiftc -O src/ui/ClioBar.swift -o bin/clio-bar

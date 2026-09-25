@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import sys
 import threading
 import time
@@ -272,8 +273,12 @@ class ClioServer:
         self.commentary.set_tone(tone)
         self._broadcast_sse({"type": "tone_changed", "tone": tone})
 
-    def start_recording(self) -> Dict[str, Any]:
+    def start_recording(self, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Starts capturing a live user demonstration with mutual exclusion against execution."""
+        if data and isinstance(data, dict):
+            swift_path = data.get("swift_video_path")
+            if swift_path:
+                self.demonstration_capture.set_swift_video_path(swift_path)
         with self._lock:
             if self._is_executing:
                 return {
@@ -293,14 +298,35 @@ class ClioServer:
 
     def stop_recording(
         self,
-        name: str = "Demonstrated Task",
+        name: Union[str, Dict[str, Any]] = "Demonstrated Task",
         trigger: str = "",
         description: str = "",
+        data: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """Stops capturing, auto-dissects events into WorkflowSpec, and saves to memory."""
+        if isinstance(name, dict):
+            data = name
+            name = data.get("name", "Demonstrated Task")
+            trigger = data.get("trigger", "")
+            description = data.get("description", "")
+        if data and isinstance(data, dict):
+            swift_path = data.get("swift_video_path")
+            if swift_path:
+                self.demonstration_capture.set_swift_video_path(swift_path)
+            if "name" in data and name == "Demonstrated Task":
+                name = data["name"]
+            if "trigger" in data and not trigger:
+                trigger = data["trigger"]
+            if "description" in data and not description:
+                description = data["description"]
+        if kwargs:
+            swift_path = kwargs.get("swift_video_path")
+            if swift_path:
+                self.demonstration_capture.set_swift_video_path(swift_path)
         try:
             spec = self.demonstration_capture.dissect_and_save(
-                name=name,
+                name=str(name),
                 canonical_trigger=trigger,
                 description=description,
             )
@@ -351,6 +377,52 @@ class ClioServer:
                 "success": False,
                 "error": str(e),
             }
+
+    def discard_recording(self, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Discards an unsaved screen recording and immediately cleans up session files from disk."""
+        data = data or {}
+        deleted_paths: List[str] = []
+
+        # 1. Check video_path
+        v_path_str = data.get("video_path")
+        if v_path_str:
+            vp = Path(v_path_str)
+            session_folder = vp.parent if vp.is_file() or vp.suffix else vp
+            if session_folder.exists() and "recordings" in session_folder.parts:
+                shutil.rmtree(session_folder, ignore_errors=True)
+                deleted_paths.append(str(session_folder))
+
+        # 2. Check session_id
+        session_id = data.get("session_id")
+        if session_id:
+            cand = self.demonstration_capture._recordings_base_dir / session_id
+            if cand.exists():
+                shutil.rmtree(cand, ignore_errors=True)
+                deleted_paths.append(str(cand))
+
+        # 3. Clean up active demonstration capture session_dir if not saved
+        if hasattr(self.demonstration_capture, "_session_dir"):
+            active_sdir = self.demonstration_capture._session_dir
+            if active_sdir and active_sdir.exists():
+                shutil.rmtree(active_sdir, ignore_errors=True)
+                deleted_paths.append(str(active_sdir))
+
+        # 4. If a temporary workflow_id was created, remove it from memory
+        wf_id = data.get("workflow_id")
+        if wf_id:
+            self.delete_workflow(wf_id)
+
+        # 5. Reset capture state
+        self.demonstration_capture._is_recording = False
+        self.demonstration_capture._swift_video_path = None
+
+        self._broadcast_sse({
+            "type": "recording",
+            "status": "discarded",
+            "timestamp": time.time(),
+        })
+
+        return {"success": True, "deleted_paths": deleted_paths}
 
     def chat(self, message: str) -> Dict[str, Any]:
         """Processes a natural language chat message through the companion dialogue engine (Bug #1 fix).
@@ -851,7 +923,9 @@ class ClioServer:
                         rep = server_instance.demonstration_capture.quality_report.to_dict()
                     elif q:
                         from src.memory.recording_evaluator import RecordingQualityEvaluator
-                        cand = Path.home() / ".clio" / "recordings" / q
+                        cand = server_instance.demonstration_capture._recordings_base_dir / q
+                        if not cand.exists():
+                            cand = Path.home() / ".clio" / "recordings" / q
                         if cand.exists():
                             rep = RecordingQualityEvaluator.evaluate_session(cand).to_dict()
                         else:
@@ -954,6 +1028,12 @@ class ClioServer:
                     )
                     status_code = HTTPStatus.OK if res.get("success") else HTTPStatus.INTERNAL_SERVER_ERROR
                     self._send_json(status_code, res)
+                    return
+
+                # 3b. Demonstration Recording Discard & Prune
+                if path in ("/api/record/discard", "/api/recording/discard"):
+                    res = server_instance.discard_recording(body)
+                    self._send_json(HTTPStatus.OK, res)
                     return
 
                 # 4. Cancel

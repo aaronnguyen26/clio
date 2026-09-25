@@ -144,7 +144,7 @@ class RecordingQualityEvaluator:
         return None, None, None
 
     @classmethod
-    def probe_video_file(cls, video_path: Path) -> Dict[str, Any]:
+    def probe_video_file(cls, video_path: Path, extract_frames_dir: Optional[Path] = None) -> Dict[str, Any]:
         """Probes video metadata via native compiled binary, Swift, or container box inspection."""
         info: Dict[str, Any] = {
             "exists": video_path.exists(),
@@ -156,6 +156,7 @@ class RecordingQualityEvaluator:
             "height": 0,
             "fps": 0.0,
             "valid_container": False,
+            "extracted_frames": [],
         }
         if not video_path.exists() or info["file_size_bytes"] == 0:
             return info
@@ -174,11 +175,14 @@ class RecordingQualityEvaluator:
         probe_bin = cls.get_probe_binary()
         if probe_bin and sys.platform == "darwin":
             try:
+                cmd = [str(probe_bin), str(video_path)]
+                if extract_frames_dir:
+                    cmd.append(str(extract_frames_dir))
                 proc = subprocess.run(
-                    [str(probe_bin), str(video_path)],
+                    cmd,
                     capture_output=True,
                     text=True,
-                    timeout=2.0,
+                    timeout=5.0,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
                     data = json.loads(proc.stdout.strip())
@@ -189,6 +193,7 @@ class RecordingQualityEvaluator:
                         info["fps"] = float(data.get("fps", 0.0))
                         info["has_video"] = bool(data.get("has_video", False))
                         info["valid_container"] = True
+                        info["extracted_frames"] = data.get("extracted_frames", [])
                         return info
             except Exception as ex:
                 logger.debug("clio-probe error: %s", ex)
@@ -197,7 +202,9 @@ class RecordingQualityEvaluator:
         if sys.platform == "darwin":
             swift_script = """
 import AVFoundation
+import AppKit
 import Foundation
+
 let path = CommandLine.arguments[1]
 let asset = AVURLAsset(url: URL(fileURLWithPath: path))
 var res: [String: Any] = [:]
@@ -208,12 +215,45 @@ if let track = asset.tracks(withMediaType: .video).first {
     res["fps"] = track.nominalFrameRate
     res["has_video"] = true
 } else { res["has_video"] = false }
+
+if CommandLine.arguments.count > 2 {
+    let framesDirPath = CommandLine.arguments[2]
+    let framesDirURL = URL(fileURLWithPath: framesDirPath)
+    try? FileManager.default.createDirectory(at: framesDirURL, withIntermediateDirectories: true)
+    let generator = AVAssetImageGenerator(asset: asset)
+    generator.appliesPreferredTrackTransform = true
+    let durationSec = CMTimeGetSeconds(asset.duration)
+    var targetTimes: [Double] = []
+    if durationSec > 0.5 {
+        targetTimes = [0.0, durationSec * 0.5, max(0.1, durationSec - 0.1)]
+    } else {
+        targetTimes = [0.0]
+    }
+    var extractedFrames: [String] = []
+    for (idx, sec) in targetTimes.enumerated() {
+        let cmTime = CMTime(seconds: sec, preferredTimescale: 600)
+        if let cgImg = try? generator.copyCGImage(at: cmTime, actualTime: nil) {
+            let bitmapRep = NSBitmapImageRep(cgImage: cgImg)
+            if let jpegData = bitmapRep.representation(using: .jpeg, properties: [:]) {
+                let frameFilename = String(format: "frame_%04d_%lld.jpg", idx + 1, Int64(Date().timeIntervalSince1970 * 1000) + Int64(idx * 500))
+                let frameURL = framesDirURL.appendingPathComponent(frameFilename)
+                try? jpegData.write(to: frameURL)
+                extractedFrames.append(frameURL.path)
+            }
+        }
+    }
+    res["extracted_frames"] = extractedFrames
+}
+
 if let d = try? JSONSerialization.data(withJSONObject: res, options: []),
    let s = String(data: d, encoding: .utf8) { print(s) }
 """
             try:
+                cmd = ["swift", "-", str(video_path)]
+                if extract_frames_dir:
+                    cmd.append(str(extract_frames_dir))
                 proc = subprocess.run(
-                    ["swift", "-", str(video_path)],
+                    cmd,
                     input=swift_script,
                     text=True,
                     capture_output=True,
@@ -227,6 +267,7 @@ if let d = try? JSONSerialization.data(withJSONObject: res, options: []),
                     info["fps"] = float(data.get("fps", 0.0))
                     info["has_video"] = bool(data.get("has_video", False))
                     info["valid_container"] = True
+                    info["extracted_frames"] = data.get("extracted_frames", [])
                     return info
             except Exception as ex:
                 logger.debug("Swift video probe fallback error: %s", ex)

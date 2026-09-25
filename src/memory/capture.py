@@ -308,7 +308,15 @@ class LiveDemonstrationCapture:
         else:
             self._mock = (sys.platform != "darwin") or (os.environ.get("CI") == "true")
 
-        self._recordings_base_dir = Path(recordings_dir) if recordings_dir else (Path.home() / ".clio" / "recordings")
+        if recordings_dir:
+            self._recordings_base_dir = Path(recordings_dir)
+        elif "CLIO_PROJECT_DIR" in os.environ and Path(os.environ["CLIO_PROJECT_DIR"]).exists():
+            self._recordings_base_dir = Path(os.environ["CLIO_PROJECT_DIR"]) / "recordings"
+        elif Path("/Users/minhnguyen/Desktop/Coding/imitate").exists():
+            self._recordings_base_dir = Path("/Users/minhnguyen/Desktop/Coding/imitate/recordings")
+        else:
+            project_root = Path(__file__).resolve().parent.parent.parent
+            self._recordings_base_dir = project_root / "recordings"
         self._recordings_base_dir.mkdir(parents=True, exist_ok=True)
 
         self._is_recording = False
@@ -331,6 +339,7 @@ class LiveDemonstrationCapture:
         self._tracked_windows: List[Dict[str, Any]] = []
         self._window_movements: List[Dict[str, Any]] = []
         self._last_window_bounds: Optional[WindowBounds] = None
+        self._last_window_bundle: Optional[str] = None
         self._quality_report: Optional[RecordingQualityReport] = None
 
         self._display_width: int = 1470
@@ -406,7 +415,7 @@ class LiveDemonstrationCapture:
     def set_swift_video_path(self, path: str) -> None:
         """Called by the server when the Swift layer provides a pre-recorded video path.
 
-        In macOS 15 Sequoia, video recording is handled by AVCaptureSession inside the
+        In macOS 15 Sequoia, video recording is handled by ScreenCaptureKit inside the
         authorized Swift process (ClioBar.swift SwiftScreenRecorder). The video path is
         passed here so Python treats it as the session's video without spawning screencapture.
         """
@@ -415,7 +424,13 @@ class LiveDemonstrationCapture:
         with self._lock:
             self._swift_video_path = path
             self._video_path = Path(path)
+            self._session_dir = self._video_path.parent
+            self._session_id = self._session_dir.name
+            self._frames_dir = self._session_dir / "frames"
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+            self._frames_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Swift video path registered: %s", path)
+
 
     def _init_cg_capture(self) -> bool:
         """Initializes direct CoreGraphics and ImageIO ctypes bindings for fast desktop frame capture."""
@@ -541,12 +556,7 @@ class LiveDemonstrationCapture:
         if sys.platform != "darwin":
             return None
 
-        # Primary path: screencapture -x -t jpg (pre-authorized system binary).
-        # NOTE: CGDisplayCreateImage via ctypes is intentionally NOT used here even though it is faster.
-        # Python has its own TCC identity separate from Clio.app; calling CGDisplayCreateImage from
-        # Python triggers macOS to emit a new "Clio would like to record your screen" privacy
-        # notification on EVERY frame capture. screencapture is a system binary with implicit
-        # screen capture authorization and never produces these notifications.
+        # Primary path: screencapture -x -t jpg (fallback only when not using Swift ScreenCaptureKit).
         # screencapture -x = no sound, -t jpg = JPEG output
         try:
             res = subprocess.run(
@@ -587,6 +597,9 @@ class LiveDemonstrationCapture:
 
     def _capture_screen_frame_throttled(self, x: float = 0.0, y: float = 0.0) -> None:
         """Captures a screen frame on interaction, throttled to max 2 frames/sec."""
+        if self._mock or sys.platform != "darwin":
+            return
+
         now = time.time()
         with self._lock:
             if now - self._last_frame_time < 0.5:
@@ -851,7 +864,7 @@ class LiveDemonstrationCapture:
         return target
 
     def _start_frame_capturer(self) -> None:
-        """Runs periodic frame capture in the background (1 frame/sec) during active recording."""
+        """Runs periodic frame capture in the background (2 frames/sec) during active recording."""
         self._frame_capturer_stop_event.clear()
 
         def _capturer() -> None:
@@ -859,7 +872,7 @@ class LiveDemonstrationCapture:
                 if not self._is_recording:
                     break
                 self._capture_screen_frame(label="periodic")
-                self._frame_capturer_stop_event.wait(1.0)
+                self._frame_capturer_stop_event.wait(0.5)
 
         self._frame_capturer_thread = threading.Thread(
             target=_capturer,
@@ -903,9 +916,10 @@ class LiveDemonstrationCapture:
                 }
                 self._tracked_windows.append(wb_dict)
                 if self._last_window_bounds is not None and event.bundle_id:
+                    is_same_app = (self._last_window_bundle == event.bundle_id)
                     dx = abs(event.window_bounds.x - self._last_window_bounds.x)
                     dy = abs(event.window_bounds.y - self._last_window_bounds.y)
-                    if dx > 5.0 or dy > 5.0:
+                    if is_same_app and (dx > 5.0 or dy > 5.0):
                         self._window_movements.append({
                             "bundle_id": event.bundle_id,
                             "from_bounds": {
@@ -925,6 +939,7 @@ class LiveDemonstrationCapture:
                             "timestamp": event.timestamp,
                         })
                 self._last_window_bounds = event.window_bounds
+                self._last_window_bundle = event.bundle_id
 
     def start_recording(self) -> bool:
         """Starts capturing user actions and records full screen video and frames."""
@@ -936,11 +951,18 @@ class LiveDemonstrationCapture:
             self._tracked_windows.clear()
             self._window_movements.clear()
             self._last_window_bounds = None
-            self._quality_report = None
-            # Reset Swift-provided video path for this new session
-            self._swift_video_path = None
-            self._session_id = str(uuid.uuid4())[:8]
-            self._session_dir = self._recordings_base_dir / self._session_id
+            self._last_window_bundle = None
+            # Adopt Swift-provided video path if pre-registered for this session
+            swift_path = getattr(self, "_swift_video_path", None)
+            if swift_path:
+                self._video_path = Path(swift_path)
+                self._session_dir = self._video_path.parent
+                self._session_id = self._session_dir.name
+            else:
+                self._session_id = str(uuid.uuid4())[:8]
+                self._session_dir = self._recordings_base_dir / self._session_id
+                self._video_path = self._session_dir / "recording.mov"
+
             self._frames_dir = self._session_dir / "frames"
             self._session_dir.mkdir(parents=True, exist_ok=True)
             self._frames_dir.mkdir(parents=True, exist_ok=True)
@@ -1261,6 +1283,21 @@ class LiveDemonstrationCapture:
 
         # Guarantee valid recording container
         self._ensure_valid_recording()
+
+        # Extract milestone keyframes directly from finalized video file
+        if self._video_path and self._video_path.exists() and self._video_path.stat().st_size > 1024:
+            try:
+                probe = RecordingQualityEvaluator.probe_video_file(self._video_path, extract_frames_dir=self._frames_dir)
+                if probe.get("extracted_frames"):
+                    for idx, f_path in enumerate(probe["extracted_frames"]):
+                        self._captured_frames.append({
+                            "frame_index": len(self._captured_frames) + 1,
+                            "path": str(f_path),
+                            "timestamp": self._start_time + (idx * 0.5),
+                            "label": f"keyframe_{idx + 1}",
+                        })
+            except Exception as ex:
+                logger.debug("Failed extracting keyframes from video: %s", ex)
 
         # Persist session metadata
         self._finalize_metadata()

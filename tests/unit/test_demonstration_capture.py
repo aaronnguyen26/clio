@@ -211,6 +211,44 @@ class TestDemonstrationCaptureAndBackgroundMode(unittest.TestCase):
         self.assertIsNone(capture._tap_thread)
         capture.stop_recording()
 
+    def test_default_recordings_directory_is_in_project_root(self) -> None:
+        """DemonstrationCapture defaults to the project's recordings/ directory."""
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent
+        expected_dir = project_root / "recordings"
+        capture = LiveDemonstrationCapture(memory=self.memory, mock=True)
+        self.assertEqual(capture._recordings_base_dir, expected_dir)
+
+    def test_discard_recording_purges_unsaved_session_directory(self) -> None:
+        """Discarding an unsaved recording deletes the session directory and files from disk."""
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from src.actuators.mock import MockActuator
+        from src.server.server import ClioServer
+
+        temp_dir = tempfile.mkdtemp(prefix="clio_discard_test_")
+        server = ClioServer(actuator=MockActuator(), memory=TaskMemoryEngine(db_path=":memory:"))
+        server.demonstration_capture._recordings_base_dir = Path(temp_dir)
+
+        # Start recording
+        server.start_recording()
+        session_dir = server.demonstration_capture._session_dir
+        session_dir.mkdir(parents=True, exist_ok=True)
+        dummy_video = session_dir / "recording.mov"
+        dummy_video.write_bytes(b"dummy video data")
+        self.assertTrue(dummy_video.exists())
+        self.assertTrue(session_dir.exists())
+
+        # Discard recording
+        res = server.discard_recording({"video_path": str(dummy_video)})
+        self.assertTrue(res["success"])
+        self.assertFalse(session_dir.exists())
+        self.assertFalse(dummy_video.exists())
+        self.assertFalse(server.demonstration_capture.is_recording)
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
