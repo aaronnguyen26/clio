@@ -70,27 +70,78 @@ def get_frontmost_app_info() -> Tuple[Optional[str], Optional[int]]:
         return None, None
 
 
-def get_frontmost_window_bounds(target_bundle_id: Optional[str] = None) -> Optional["WindowBounds"]:  # noqa: F821 — forward ref resolved at runtime
-    """Returns the position and size of the frontmost application window.
+_cached_actuator_for_capture: Optional[Any] = None
 
-    Uses CoreGraphics CGWindowListCopyWindowInfo via MacOSActuator (thread-safe,
-    requires no special AX threading context, and never segfaults across background
-    worker threads).
 
-    Used by the native CGEventTap callback to attach window_bounds to raw mouse events
-    so the recorder pipeline can compute normalised (norm_x, norm_y) coordinates for
-    resolution-independent replay (Bug #4 fix).
+def _get_capture_actuator() -> Optional[Any]:
+    global _cached_actuator_for_capture
+    if _cached_actuator_for_capture is None and sys.platform == "darwin":
+        try:
+            from src.actuators.macos import MacOSActuator
+            _cached_actuator_for_capture = MacOSActuator(enable_watchdog=False)
+        except Exception:
+            pass
+    return _cached_actuator_for_capture
+
+
+def get_window_at_point(x: float, y: float) -> Optional[Tuple[str, str, "WindowBounds"]]:
+    """Finds the topmost on-screen application window containing (x, y) via CoreGraphics.
+
+    Directly inspects the macOS window server z-order, providing instant, zero-latency
+    hit-testing that remains 100% accurate even immediately after window moves.
+
+    Returns:
+        (owner_app_name, window_title, WindowBounds) or None.
     """
     if sys.platform != "darwin":
         return None
     try:
-        from src.actuators.macos import MacOSActuator
+        from src.actuators.macos import CGRect
         from src.memory.recorder import WindowBounds
 
-        act = MacOSActuator()
+        act = _get_capture_actuator()
+        if act is None:
+            return None
+        cg = act.native.cg
+        cf = act.native.cf
+        win_list = cg.CGWindowListCopyWindowInfo(1, 0)  # kCGWindowListOptionOnScreenOnly
+        if not win_list:
+            return None
+        count = cf.CFArrayGetCount(win_list)
+        found = None
+        for i in range(count):
+            win_dict = cf.CFArrayGetValueAtIndex(win_list, i)
+            layer = act._cf_to_int(cf.CFDictionaryGetValue(win_dict, act._kCGWindowLayer))
+            if layer != 0:
+                continue
+            rect_dict = cf.CFDictionaryGetValue(win_dict, act._kCGWindowBounds)
+            rect = CGRect()
+            if rect_dict and cg.CGRectMakeWithDictionaryRepresentation(rect_dict, byref(rect)):
+                rx, ry, rw, rh = rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
+                if rw > 0 and rh > 0 and (rx <= x <= rx + rw) and (ry <= y <= ry + rh):
+                    owner = act._cf_to_str(cf.CFDictionaryGetValue(win_dict, act._kCGWindowOwnerName))
+                    title = act._cf_to_str(cf.CFDictionaryGetValue(win_dict, act._kCGWindowName))
+                    found = (owner, title, WindowBounds(x=rx, y=ry, width=rw, height=rh))
+                    break
+        cf.CFRelease(win_list)
+        return found
+    except Exception as e:
+        logger.debug("Error in get_window_at_point: %s", e)
+        return None
+
+
+def get_frontmost_window_bounds(target_bundle_id: Optional[str] = None) -> Optional["WindowBounds"]:  # noqa: F821 — forward ref resolved at runtime
+    """Returns the position and size of the frontmost application window."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        from src.memory.recorder import WindowBounds
+
+        act = _get_capture_actuator()
+        if act is None:
+            return None
         wins = act.get_windows(target_bundle_id) if target_bundle_id else act.get_windows()
         if wins:
-            # First window in list is frontmost in z-order
             w = wins[0]
             if w.width > 0 and w.height > 0:
                 return WindowBounds(x=w.x, y=w.y, width=w.width, height=w.height)
@@ -241,6 +292,9 @@ class LiveDemonstrationCapture:
 
         self._is_recording = False
         self._raw_events: List[RawEvent] = []
+        self._captured_frames: List[Dict[str, Any]] = []
+        self._session_id: str = str(uuid.uuid4())[:8]
+        self._last_frame_time: float = 0.0
         self._start_time: float = 0.0
         self._lock = threading.RLock()
 
@@ -252,6 +306,51 @@ class LiveDemonstrationCapture:
         self._mach_port: Optional[Any] = None
         self._c_callback: Optional[Any] = None
         self._native: Optional[_NativeEventTap] = None
+
+    def _capture_screen_frame(self, label: str = "") -> Optional[str]:
+        """Captures a lightweight JPEG screenshot of the entire desktop for visual grounding."""
+        if self._mock or sys.platform != "darwin":
+            return None
+        try:
+            from pathlib import Path
+            rec_dir = Path.home() / ".clio" / "recordings" / self._session_id
+            rec_dir.mkdir(parents=True, exist_ok=True)
+            frame_idx = len(self._captured_frames) + 1
+            filename = f"frame_{frame_idx:04d}_{int(time.time() * 1000)}.jpg"
+            frame_path = str(rec_dir / filename)
+            res = subprocess.run(
+                ["screencapture", "-x", "-t", "jpg", frame_path],
+                capture_output=True,
+                timeout=1.0,
+                check=False,
+            )
+            if res.returncode == 0 and os.path.exists(frame_path):
+                frame_data = {
+                    "frame_index": frame_idx,
+                    "path": frame_path,
+                    "timestamp": time.time(),
+                    "label": label,
+                }
+                with self._lock:
+                    self._captured_frames.append(frame_data)
+                return frame_path
+        except Exception as e:
+            logger.debug("Screen frame capture error: %s", e)
+        return None
+
+    def _capture_screen_frame_throttled(self, x: float = 0.0, y: float = 0.0) -> None:
+        """Captures a screen frame on interaction, throttled to max 2 frames/sec."""
+        now = time.time()
+        with self._lock:
+            if now - self._last_frame_time < 0.5:
+                return
+            self._last_frame_time = now
+        t = threading.Thread(
+            target=self._capture_screen_frame,
+            args=(f"click_{int(x)}_{int(y)}",),
+            daemon=True,
+        )
+        t.start()
 
         if not self._mock and sys.platform == "darwin":
             try:
@@ -299,12 +398,15 @@ class LiveDemonstrationCapture:
             if self._is_recording:
                 return True
             self._raw_events.clear()
+            self._captured_frames.clear()
+            self._session_id = str(uuid.uuid4())[:8]
             self._start_time = time.time()
             self._is_recording = True
             b_id, _ = get_frontmost_app_info()
             self._active_bundle_id = b_id
             self._last_bundle_check = self._start_time
 
+        threading.Thread(target=self._capture_screen_frame, args=("start",), daemon=True).start()
         self._start_app_tracker()
 
         # Wire native event capture on real macOS (Bug #7 fix).
@@ -447,6 +549,7 @@ class LiveDemonstrationCapture:
                     # computed during coalescing (Bug #4 fix).  Keyboard events do
                     # not need coordinates, so bounds is only fetched for mouse types.
                     win_bounds = None
+                    event_bundle = cur_bundle
                     if ev_type in (
                         native.kCGEventLeftMouseDown,  1,
                         native.kCGEventLeftMouseUp,    2,
@@ -455,9 +558,20 @@ class LiveDemonstrationCapture:
                         native.kCGEventLeftMouseDragged, 6,
                     ):
                         try:
-                            win_bounds = get_frontmost_window_bounds(cur_bundle)
+                            hit = get_window_at_point(float(pt.x), float(pt.y))
+                            if hit:
+                                hit_owner, hit_title, hit_bounds = hit
+                                win_bounds = hit_bounds
+                                if hit_owner:
+                                    event_bundle = hit_owner
+                            else:
+                                win_bounds = get_frontmost_window_bounds(cur_bundle)
                         except Exception:
                             pass
+
+                    # Visual frame capture on click (throttled)
+                    if ev_type in (native.kCGEventLeftMouseDown, 1, native.kCGEventRightMouseDown, 3):
+                        self._capture_screen_frame_throttled(float(pt.x), float(pt.y))
 
                     # Map event types
                     if ev_type in (native.kCGEventLeftMouseDown, 1):
@@ -468,7 +582,7 @@ class LiveDemonstrationCapture:
                             y=float(pt.y),
                             button="left",
                             modifiers=modifiers,
-                            bundle_id=cur_bundle,
+                            bundle_id=event_bundle,
                             window_bounds=win_bounds,
                         ))
                     elif ev_type in (native.kCGEventLeftMouseUp, 2):
@@ -479,7 +593,7 @@ class LiveDemonstrationCapture:
                             y=float(pt.y),
                             button="left",
                             modifiers=modifiers,
-                            bundle_id=cur_bundle,
+                            bundle_id=event_bundle,
                             window_bounds=win_bounds,
                         ))
                     elif ev_type in (native.kCGEventRightMouseDown, 3):
@@ -490,7 +604,7 @@ class LiveDemonstrationCapture:
                             y=float(pt.y),
                             button="right",
                             modifiers=modifiers,
-                            bundle_id=cur_bundle,
+                            bundle_id=event_bundle,
                             window_bounds=win_bounds,
                         ))
                     elif ev_type in (native.kCGEventRightMouseUp, 4):
@@ -501,7 +615,7 @@ class LiveDemonstrationCapture:
                             y=float(pt.y),
                             button="right",
                             modifiers=modifiers,
-                            bundle_id=cur_bundle,
+                            bundle_id=event_bundle,
                             window_bounds=win_bounds,
                         ))
                     elif ev_type in (native.kCGEventLeftMouseDragged, 6):
@@ -512,7 +626,7 @@ class LiveDemonstrationCapture:
                             y=float(pt.y),
                             button="left",
                             modifiers=modifiers,
-                            bundle_id=cur_bundle,
+                            bundle_id=event_bundle,
                             window_bounds=win_bounds,
                         ))
                     elif ev_type in (native.kCGEventKeyDown, 10):
@@ -620,11 +734,21 @@ class LiveDemonstrationCapture:
             target_bundle_id=target_bundle_id,
         )
 
-        # Include anaphoric execution aliases so that saying "perform that action", "do that action", "run that"
-        # can also directly match via NL retrieval
+        self._capture_screen_frame(label="end")
+        if hasattr(spec, "environment") and isinstance(spec.environment, dict):
+            spec.environment["captured_frames"] = list(self._captured_frames)
+
+        # Include anaphoric execution aliases and name variations
+        name_clean = name.strip().lower()
         if isinstance(spec.triggers, dict):
             aliases = list(spec.triggers.get("aliases", []))
-            for alias in ["perform that action", "do that action", "run that action", "run recorded task", "do that", "perform that"]:
+            if name_clean and name_clean not in aliases and name_clean != spec.triggers.get("canonical"):
+                aliases.append(name_clean)
+            if name_clean.startswith("open "):
+                short_name = name_clean.replace("open ", "").strip()
+                if short_name and short_name not in aliases:
+                    aliases.append(short_name)
+            for alias in ["perform that action", "do that action", "run that action", "run recorded task", "do that", "perform that", "do what i just did", "run that"]:
                 if alias not in aliases and alias != spec.triggers.get("canonical"):
                     aliases.append(alias)
             spec.triggers["aliases"] = aliases

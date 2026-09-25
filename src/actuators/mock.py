@@ -197,6 +197,14 @@ class MockActuator(BaseActuator):
         """Resets failsafe triggered flag."""
         self._failsafe_triggered = False
 
+    def arm_failsafe(self) -> None:
+        """Arms failsafe."""
+        pass
+
+    def disarm_failsafe(self) -> None:
+        """Disarms failsafe."""
+        self._failsafe_triggered = False
+
     # =========================================================================
     # Application Lifecycle Primitives
     # =========================================================================

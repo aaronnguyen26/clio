@@ -353,6 +353,21 @@ class MacOSActuator(BaseActuator):
                 trigger_reason="watchdog",
             )
 
+    def arm_failsafe(self) -> None:
+        """Arms the failsafe watchdog during automated execution."""
+        if self._watchdog and hasattr(self._watchdog, "arm"):
+            self._watchdog.arm()
+
+    def disarm_failsafe(self) -> None:
+        """Disarms the failsafe watchdog during user demonstration and idle periods."""
+        if self._watchdog and hasattr(self._watchdog, "disarm"):
+            self._watchdog.disarm()
+
+    def reset_failsafe(self) -> None:
+        """Resets the failsafe trigger state."""
+        if self._watchdog and hasattr(self._watchdog, "reset"):
+            self._watchdog.reset()
+
     def stop(self) -> None:
         """Stops the actuator, halts watchdog, releases modifiers, and cleans up CF references.
 

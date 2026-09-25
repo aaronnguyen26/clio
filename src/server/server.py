@@ -280,6 +280,8 @@ class ClioServer:
                     "success": False,
                     "error": "Cannot start demonstration recording while a workflow is executing.",
                 }
+            if hasattr(self.actuator, "disarm_failsafe"):
+                self.actuator.disarm_failsafe()
             success = self.demonstration_capture.start_recording()
         if success:
             self._broadcast_sse({
@@ -591,11 +593,17 @@ class ClioServer:
         def _run_worker() -> None:
             try:
                 assert spec is not None
+                if hasattr(self.actuator, "reset_failsafe"):
+                    self.actuator.reset_failsafe()
+                if hasattr(self.actuator, "arm_failsafe"):
+                    self.actuator.arm_failsafe()
                 res = self.executor.execute_workflow(spec, background_mode=background)
                 logger.info(f"Execution of '{spec.name}' finished with success={res.success} (background={background})")
             except Exception as e:
                 logger.exception(f"Unexpected error executing workflow: {e}")
             finally:
+                if hasattr(self.actuator, "disarm_failsafe"):
+                    self.actuator.disarm_failsafe()
                 with self._lock:
                     self._is_executing = False
                     self._current_workflow = None

@@ -238,6 +238,27 @@ class FailsafeWatchdog:
         self._original_sigint = None
         self._original_sigterm = None
         self._signals_installed = False
+        self._armed = True
+
+    @property
+    def is_armed(self) -> bool:
+        """Returns True if the watchdog is currently armed to detect emergency stops."""
+        with self._lock:
+            return self._armed
+
+    def arm(self) -> None:
+        """Arms the failsafe watchdog during automated execution."""
+        with self._lock:
+            self._triggered.clear()
+            self._trigger_info = None
+            self._armed = True
+
+    def disarm(self) -> None:
+        """Disarms the failsafe watchdog during user demonstration recording and idle periods."""
+        with self._lock:
+            self._armed = False
+            self._triggered.clear()
+            self._trigger_info = None
 
     @property
     def is_running(self) -> bool:
@@ -421,6 +442,10 @@ class FailsafeWatchdog:
         """50Hz background thread loop polling mouse position."""
         while not self._stop_requested.is_set():
             loop_start = time.perf_counter()
+
+            if not self._armed:
+                time.sleep(self.interval)
+                continue
 
             if self._triggered.is_set():
                 self._reset_event.wait(timeout=self.interval)
