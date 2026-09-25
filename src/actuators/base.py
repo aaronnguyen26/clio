@@ -29,12 +29,13 @@ class BaseActuator(ABC):
         self.stop()
 
     @abstractmethod
-    def launch_app(self, app_name_or_bundle: str, timeout: float = 5.0) -> bool:
+    def launch_app(self, app_name_or_bundle: str, timeout: float = 5.0, background: bool = False) -> bool:
         """Launches an application and waits for it to become frontmost/ready.
 
         Args:
             app_name_or_bundle: Bundle identifier (e.g. 'com.apple.Notes') or app name (e.g. 'Notes').
             timeout: Maximum seconds to wait for launch and window visibility.
+            background: If True, launches app in background without bringing it to the front.
 
         Returns:
             True if application launched and is ready.

@@ -69,6 +69,8 @@ class RawEvent:
     window_bounds: Optional[WindowBounds] = None
     is_dock_item: bool = False
     dock_item_title: str = ""
+    recognized_text: str = ""
+    visual_delta: float = 0.0
 
 
 # Alias for backward-compatibility with test suites
@@ -212,6 +214,137 @@ class EventCoalescingStage:
     def __init__(self, config: RecorderConfig) -> None:
         self.config = config
 
+    def _clean_app_name(self, bundle_or_name: Optional[str]) -> str:
+        if not bundle_or_name:
+            return ""
+        name = bundle_or_name.split(".")[-1]
+        if name.lower() in ("clio", "clio-bar", "desktop", "loginwindow", "dock"):
+            return ""
+        return name.capitalize()
+
+    def _format_click_description(
+        self,
+        button: str,
+        click_count: int,
+        app_name: Optional[str],
+        recognized_text: str = "",
+        bounds: Optional[WindowBounds] = None,
+        x: float = 0.0,
+        y: float = 0.0,
+    ) -> str:
+        clean_app = self._clean_app_name(app_name)
+        app_suffix = f" in {clean_app}" if clean_app else ""
+
+        if recognized_text and recognized_text.strip():
+            label = recognized_text.strip()
+            if len(label) > 30:
+                label = label[:27] + "..."
+            if click_count == 2:
+                return f"Double click '{label}'{app_suffix}"
+            if click_count == 3:
+                return f"Triple click '{label}'{app_suffix}"
+            if button == "right":
+                return f"Right-click '{label}'{app_suffix}"
+            return f"Click '{label}'{app_suffix}"
+
+        if click_count == 2:
+            verb = "Double click"
+        elif click_count == 3:
+            verb = "Triple click"
+        elif button == "right":
+            verb = "Right-click"
+        else:
+            verb = "Click"
+
+        # Check menu bar
+        if 0 < y < 28:
+            return f"Select Menu Bar{app_suffix}"
+
+        # Check window regions
+        if bounds and bounds.width > 0 and bounds.height > 0:
+            rel_x = x - bounds.x
+            rel_y = y - bounds.y
+            if 0 <= rel_x < 75 and 0 <= rel_y < 32:
+                return f"Window controls{app_suffix}"
+            if 0 <= rel_y < 65:
+                return f"Select toolbar item{app_suffix}"
+            if 0 <= rel_x < bounds.width * 0.28:
+                return f"Select sidebar item{app_suffix}"
+            if rel_y > bounds.height * 0.85:
+                return f"Select bottom panel{app_suffix}"
+            return f"{verb}{app_suffix}" if app_suffix else f"{verb} target"
+
+        return f"{verb}{app_suffix}" if app_suffix else f"{verb} target"
+
+    def _format_drag_description(
+        self,
+        app_name: Optional[str],
+        bounds: Optional[WindowBounds],
+        start_x: float,
+        start_y: float,
+        end_x: float,
+        end_y: float,
+    ) -> str:
+        clean_app = self._clean_app_name(app_name)
+        app_suffix = f" in {clean_app}" if clean_app else ""
+
+        if bounds and bounds.width > 0 and bounds.height > 0:
+            rel_start_y = start_y - bounds.y
+            if 0 <= rel_start_y < 45:
+                return f"Move {clean_app} window" if clean_app else "Move window"
+            rel_start_x = start_x - bounds.x
+            is_edge = (
+                rel_start_x < 15
+                or rel_start_x > bounds.width - 15
+                or rel_start_y > bounds.height - 15
+            )
+            if is_edge:
+                return f"Resize {clean_app} window" if clean_app else "Resize window"
+
+        return f"Drag selection{app_suffix}"
+
+    def _format_hotkey_description(
+        self,
+        hotkey_keys: List[str],
+        app_name: Optional[str],
+    ) -> str:
+        clean_app = self._clean_app_name(app_name)
+        app_suffix = f" in {clean_app}" if clean_app else ""
+        combo = "+".join(k.lower() for k in hotkey_keys)
+
+        shortcut_map = {
+            "cmd+s": f"Save (Cmd+S){app_suffix}",
+            "cmd+n": f"New item (Cmd+N){app_suffix}",
+            "cmd+c": "Copy (Cmd+C)",
+            "cmd+v": f"Paste (Cmd+V){app_suffix}",
+            "cmd+x": "Cut (Cmd+X)",
+            "cmd+z": "Undo (Cmd+Z)",
+            "cmd+shift+z": "Redo",
+            "cmd+y": "Redo",
+            "cmd+f": f"Search (Cmd+F){app_suffix}",
+            "cmd+a": f"Select all (Cmd+A){app_suffix}",
+            "cmd+w": "Close tab/window (Cmd+W)",
+            "cmd+q": f"Quit {clean_app} (Cmd+Q)" if clean_app else "Quit application",
+            "cmd+space": "Open Spotlight Search (Cmd+Space)",
+            "return": f"Submit (Return){app_suffix}",
+            "enter": f"Submit (Enter){app_suffix}",
+            "escape": "Cancel / Dismiss (Esc)",
+            "esc": "Cancel / Dismiss (Esc)",
+            "tab": "Next field (Tab)",
+            "shift+tab": "Previous field (Shift+Tab)",
+            "backspace": "Delete selection",
+            "delete": "Delete selection",
+            "up": "Navigate Up",
+            "down": "Navigate Down",
+            "left": "Navigate Left",
+            "right": "Navigate Right",
+        }
+        if combo in shortcut_map:
+            return shortcut_map[combo]
+
+        key_titles = [k.capitalize() for k in hotkey_keys]
+        return f"Press {'+'.join(key_titles)}{app_suffix}"
+
     def _flush_typing(
         self,
         text_buffer: List[str],
@@ -226,13 +359,21 @@ class EventCoalescingStage:
         full_text = "".join(text_buffer)
         text_buffer.clear()
 
+        clean_app = self._clean_app_name(target_bundle)
+        app_suffix = f" into {clean_app}" if clean_app else ""
+
         # Decide whether to use paste_text or type_text based on length
         action = ActionType.PASTE_TEXT if len(full_text) >= self.config.paste_threshold_chars else ActionType.TYPE_TEXT
-        desc = (
-            f"Paste text ({len(full_text)} chars)"
-            if action == ActionType.PASTE_TEXT
-            else f"Type text: '{full_text[:30]}...'" if len(full_text) > 30 else f"Type text: '{full_text}'"
-        )
+        if action == ActionType.PASTE_TEXT:
+            desc = f"Paste text ({len(full_text)} chars){app_suffix}"
+        else:
+            display_preview = full_text.strip()
+            if not display_preview:
+                desc = f"Enter text{app_suffix}"
+            elif len(display_preview) > 25:
+                desc = f"Type '{display_preview[:22]}...'{app_suffix}"
+            else:
+                desc = f"Type '{display_preview}'{app_suffix}"
 
         target_dict: Dict[str, Any] = {}
         if target_bundle:
@@ -280,11 +421,12 @@ class EventCoalescingStage:
                 if current_active_bundle is not None and ev.bundle_id != current_active_bundle:
                     self._flush_typing(typing_buffer, typing_start_t, typing_last_t, steps, step_timestamps, current_active_bundle)
                     step_idx = len(steps) + 1
+                    clean_app = self._clean_app_name(ev.bundle_id)
                     steps.append(
                         WorkflowStep(
                             step_id=f"step_{step_idx}",
                             order=step_idx,
-                            description=f"Focus application {ev.bundle_id}",
+                            description=f"Switch to {clean_app}" if clean_app else f"Focus application {ev.bundle_id}",
                             action=ActionType.FOCUS_APP,
                             target={"bundle_id": ev.bundle_id, "app_name": ev.bundle_id.split(".")[-1]},
                         )
@@ -335,11 +477,12 @@ class EventCoalescingStage:
                     if current_active_bundle:
                         target_dict["bundle_id"] = current_active_bundle
                         target_dict["app_name"] = current_active_bundle.split(".")[-1]
+                    desc = self._format_hotkey_description(hotkey_keys, current_active_bundle)
                     steps.append(
                         WorkflowStep(
                             step_id=f"step_{step_idx}",
                             order=step_idx,
-                            description=f"Press hotkey: {'+'.join(hotkey_keys)}",
+                            description=desc,
                             action=ActionType.PRESS_HOTKEY,
                             payload={"keys": hotkey_keys},
                             target=target_dict,
@@ -374,11 +517,12 @@ class EventCoalescingStage:
                     if current_active_bundle:
                         target_dict["bundle_id"] = current_active_bundle
                         target_dict["app_name"] = current_active_bundle.split(".")[-1]
+                    desc = self._format_hotkey_description(["return"], current_active_bundle)
                     steps.append(
                         WorkflowStep(
                             step_id=f"step_{step_idx}",
                             order=step_idx,
-                            description="Press Return",
+                            description=desc,
                             action=ActionType.PRESS_HOTKEY,
                             payload={"keys": ["return"]},
                             target=target_dict,
@@ -395,11 +539,12 @@ class EventCoalescingStage:
                     if current_active_bundle:
                         target_dict["bundle_id"] = current_active_bundle
                         target_dict["app_name"] = current_active_bundle.split(".")[-1]
+                    desc = self._format_hotkey_description(["tab"], current_active_bundle)
                     steps.append(
                         WorkflowStep(
                             step_id=f"step_{step_idx}",
                             order=step_idx,
-                            description="Press Tab",
+                            description=desc,
                             action=ActionType.PRESS_HOTKEY,
                             payload={"keys": ["tab"]},
                             target=target_dict,
@@ -416,11 +561,12 @@ class EventCoalescingStage:
                     if current_active_bundle:
                         target_dict["bundle_id"] = current_active_bundle
                         target_dict["app_name"] = current_active_bundle.split(".")[-1]
+                    desc = self._format_hotkey_description(["escape"], current_active_bundle)
                     steps.append(
                         WorkflowStep(
                             step_id=f"step_{step_idx}",
                             order=step_idx,
-                            description="Press Escape",
+                            description=desc,
                             action=ActionType.PRESS_HOTKEY,
                             payload={"keys": ["escape"]},
                             target=target_dict,
@@ -440,11 +586,12 @@ class EventCoalescingStage:
                         if current_active_bundle:
                             target_dict["bundle_id"] = current_active_bundle
                             target_dict["app_name"] = current_active_bundle.split(".")[-1]
+                        desc = self._format_hotkey_description(["backspace"], current_active_bundle)
                         steps.append(
                             WorkflowStep(
                                 step_id=f"step_{step_idx}",
                                 order=step_idx,
-                                description="Press Backspace",
+                                description=desc,
                                 action=ActionType.PRESS_HOTKEY,
                                 payload={"keys": ["backspace"]},
                                 target=target_dict,
@@ -462,11 +609,12 @@ class EventCoalescingStage:
                     if current_active_bundle:
                         target_dict["bundle_id"] = current_active_bundle
                         target_dict["app_name"] = current_active_bundle.split(".")[-1]
+                    desc = self._format_hotkey_description([k_name], current_active_bundle)
                     steps.append(
                         WorkflowStep(
                             step_id=f"step_{step_idx}",
                             order=step_idx,
-                            description=f"Press {k_name.capitalize()}",
+                            description=desc,
                             action=ActionType.PRESS_HOTKEY,
                             payload={"keys": [k_name]},
                             target=target_dict,
@@ -575,11 +723,19 @@ class EventCoalescingStage:
                             drag_target["start_norm_y"] = round(max(0.0, min(1.0, (click_y - ev.window_bounds.y) / ev.window_bounds.height)), 4)
 
                         duration = max(0.1, round(click_end_t - click_start_t, 2))
+                        drag_desc = self._format_drag_description(
+                            app_name=drag_target.get("bundle_id") or current_active_bundle,
+                            bounds=ev.window_bounds,
+                            start_x=click_x,
+                            start_y=click_y,
+                            end_x=end_x,
+                            end_y=end_y,
+                        )
                         steps.append(
                             WorkflowStep(
                                 step_id=f"step_{step_idx}",
                                 order=step_idx,
-                                description=f"Drag mouse from ({click_x:.0f}, {click_y:.0f}) to ({end_x:.0f}, {end_y:.0f})",
+                                description=drag_desc,
                                 action=ActionType.DRAG,
                                 target=drag_target,
                                 payload={
@@ -645,22 +801,52 @@ class EventCoalescingStage:
                         prev_count = steps[-1].payload.get("click_count", 1)
                         if prev_count == 1:
                             steps[-1].payload["click_count"] = 2
-                            steps[-1].description = f"Double click at ({click_x:.0f}, {click_y:.0f})"
+                            steps[-1].description = self._format_click_description(
+                                button=prev_btn,
+                                click_count=2,
+                                app_name=target_dict.get("bundle_id") or current_active_bundle,
+                                recognized_text=getattr(ev, "recognized_text", ""),
+                                bounds=ev.window_bounds,
+                                x=click_x,
+                                y=click_y,
+                            )
                             step_timestamps[-1] = (step_timestamps[-1][0], click_end_t)
                             is_coalesced = True
                         elif prev_count == 2:
                             steps[-1].payload["click_count"] = 3
-                            steps[-1].description = f"Triple click at ({click_x:.0f}, {click_y:.0f})"
+                            steps[-1].description = self._format_click_description(
+                                button=prev_btn,
+                                click_count=3,
+                                app_name=target_dict.get("bundle_id") or current_active_bundle,
+                                recognized_text=getattr(ev, "recognized_text", ""),
+                                bounds=ev.window_bounds,
+                                x=click_x,
+                                y=click_y,
+                            )
                             step_timestamps[-1] = (step_timestamps[-1][0], click_end_t)
                             is_coalesced = True
 
                 if not is_coalesced:
                     step_idx = len(steps) + 1
+                    cur_btn = (
+                        str(getattr(button, "value", button)).lower()
+                        if button is not None
+                        else "left"
+                    )
+                    click_desc = self._format_click_description(
+                        button=cur_btn,
+                        click_count=1,
+                        app_name=target_dict.get("bundle_id") or current_active_bundle,
+                        recognized_text=getattr(ev, "recognized_text", ""),
+                        bounds=ev.window_bounds,
+                        x=click_x,
+                        y=click_y,
+                    )
                     steps.append(
                         WorkflowStep(
                             step_id=f"step_{step_idx}",
                             order=step_idx,
-                            description=f"Click {button} button at ({click_x:.0f}, {click_y:.0f})",
+                            description=click_desc,
                             action=ActionType.CLICK,
                             target=target_dict,
                             payload={"button": button, "click_count": 1},
@@ -675,11 +861,12 @@ class EventCoalescingStage:
             if ev_type in ("app_activate", "appactivate", "window_focus", "windowfocus"):
                 bundle_id = ev.bundle_id or "com.apple.Notes"
                 step_idx = len(steps) + 1
+                clean_app = self._clean_app_name(bundle_id)
                 steps.append(
                     WorkflowStep(
                         step_id=f"step_{step_idx}",
                         order=step_idx,
-                        description=f"Focus application {bundle_id}",
+                        description=f"Switch to {clean_app}" if clean_app else f"Focus application {bundle_id}",
                         action=ActionType.FOCUS_APP,
                         target={"bundle_id": bundle_id, "app_name": bundle_id.split(".")[-1]},
                     )

@@ -9,6 +9,7 @@ Validates end-to-end user workflows:
 """
 
 import json
+from pathlib import Path
 import socket
 import time
 from urllib.request import Request, urlopen
@@ -183,6 +184,10 @@ class TestTier4Scenarios:
             s.bind(("127.0.0.1", 0))
             port = int(s.getsockname()[1])
 
+        import tempfile
+        import shutil
+        temp_dir = tempfile.mkdtemp(prefix="clio_t4_rec_")
+
         from src.memory.engine import TaskMemoryEngine as RealTaskMemoryEngine
         memory = RealTaskMemoryEngine(":memory:")
         actuator = MockActuator()
@@ -194,6 +199,8 @@ class TestTier4Scenarios:
             tone="vibrant",
             zero_delay=True,
         )
+        server.demonstration_capture._recordings_base_dir = Path(temp_dir)
+        server.demonstration_capture._session_dir = Path(temp_dir) / server.demonstration_capture._session_id
         server.start()
         time.sleep(0.05)
 
@@ -275,3 +282,4 @@ class TestTier4Scenarios:
         finally:
             server.stop()
             memory.close()
+            shutil.rmtree(temp_dir, ignore_errors=True)

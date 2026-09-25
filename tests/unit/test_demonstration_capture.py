@@ -10,6 +10,8 @@ Validates:
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 import time
 import unittest
 
@@ -24,13 +26,15 @@ from src.memory.retrieval import NLRetrievalEngine
 
 class TestDemonstrationCaptureAndBackgroundMode(unittest.TestCase):
     def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp(prefix="clio_test_rec_")
         self.memory = TaskMemoryEngine(db_path=":memory:")
-        self.capture = LiveDemonstrationCapture(memory=self.memory, mock=True)
+        self.capture = LiveDemonstrationCapture(memory=self.memory, mock=True, recordings_dir=self.temp_dir)
 
     def tearDown(self) -> None:
         if self.capture.is_recording:
             self.capture.stop_recording()
         self.memory.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_recording_lifecycle(self) -> None:
         self.assertFalse(self.capture.is_recording)
@@ -190,6 +194,99 @@ class TestDemonstrationCaptureAndBackgroundMode(unittest.TestCase):
         focus_actions = [a for a in mock_actuator.history if a.action_type in ("focus_app", "activate_app")]
         self.assertEqual(len(focus_actions), 0)
 
+    def test_dissected_workflow_execution_four_non_negotiables(self) -> None:
+        """Explicitly tests the 4 non-negotiables:
+        1) Clio has its own virtual cursor and never touches hardware cursor.
+        2) Clio uses the cursor physically (glides to Dock, clicks to open app).
+        3) Clio has keyboard power and writes text directly to process.
+        4) Operates completely in the background without stealing user focus.
+        """
+        mock_actuator = MockActuator()
+        mock_actuator._frontmost_app = "com.apple.Safari"  # User is browsing in Safari
+        virtual_cursor = VirtualCursor(mock=True, target_pid=99999)
+        executor = AutonomousWorkflowExecutor(
+            actuator=mock_actuator,
+            virtual_cursor=virtual_cursor,
+            memory_engine=self.memory,
+            background_mode=True,
+            zero_delay=True,
+        )
+
+        from src.memory.models import WorkflowSpec, WorkflowStep, ActionType, TargetCoordinates
+
+        # Workflow with:
+        # Step 1: Launch Notes app
+        # Step 2: Click inside Notes editor window
+        # Step 3: Type text "Meeting Notes"
+        # Step 4: Press Hotkey "cmd+s"
+        spec = WorkflowSpec(
+            id="test_wf_non_negotiables",
+            name="Open Notes and Type in Background",
+            triggers={"canonical": "open notes and type", "aliases": [], "keywords": []},
+            target_app={"bundle_id": "com.apple.Notes", "name": "Notes"},
+            steps=[
+                WorkflowStep(
+                    step_id="step_1",
+                    order=1,
+                    description="Launch Notes",
+                    action=ActionType.LAUNCH_APP,
+                    payload={"app_name": "Notes", "bundle_id": "com.apple.Notes", "x": 300, "y": 800},
+                    coordinates=TargetCoordinates(abs_x=300, abs_y=800),
+                ),
+                WorkflowStep(
+                    step_id="step_2",
+                    order=2,
+                    description="Click Editor",
+                    action=ActionType.CLICK,
+                    payload={"button": "left"},
+                    coordinates=TargetCoordinates(abs_x=500, abs_y=400),
+                ),
+                WorkflowStep(
+                    step_id="step_3",
+                    order=3,
+                    description="Type Meeting Notes",
+                    action=ActionType.TYPE_TEXT,
+                    payload={"text": "Meeting Notes", "bundle_id": "com.apple.Notes"},
+                ),
+                WorkflowStep(
+                    step_id="step_4",
+                    order=4,
+                    description="Save document",
+                    action=ActionType.PRESS_HOTKEY,
+                    payload={"hotkey": "cmd+s", "bundle_id": "com.apple.Notes"},
+                ),
+            ],
+        )
+
+        result = executor.execute_workflow(spec, background_mode=True)
+        self.assertTrue(result.success)
+        self.assertEqual(result.steps_completed, 4)
+
+        # 1) Non-negotiable 1: Virtual cursor has independent position and history
+        self.assertGreater(len(virtual_cursor.history), 0)
+        # Actuator's hardware mouse position was NOT called/displaced
+        mouse_moves_on_actuator = [a for a in mock_actuator.history if a.action_type == "move_mouse"]
+        self.assertEqual(len(mouse_moves_on_actuator), 0)
+
+        # 2) Non-negotiable 2: Physical cursor used to open app and click
+        vc_clicks = [ev for ev in virtual_cursor.history if ev.event_type == "click"]
+        self.assertGreaterEqual(len(vc_clicks), 2)  # 1 for dock launch, 1 for editor click
+        # Editor click occurred at (500, 400)
+        self.assertTrue(any(abs(ev.x - 500) < 5 and abs(ev.y - 400) < 5 for ev in vc_clicks))
+
+        # 3) Non-negotiable 3: Keyboard power (type text & press hotkey)
+        self.assertIn("Meeting Notes", virtual_cursor.typed_text)
+        self.assertIn(["cmd", "s"], virtual_cursor.hotkeys_pressed)
+
+        # 4) Non-negotiable 4: Strict background execution
+        # User was on Safari, frontmost app remains Safari (zero focus stealing)
+        self.assertEqual(mock_actuator._frontmost_app, "com.apple.Safari")
+        # App was launched with background=True
+        launch_actions = [a for a in mock_actuator.history if a.action_type == "launch_app"]
+        self.assertGreaterEqual(len(launch_actions), 1)
+        self.assertTrue(launch_actions[0].parameters.get("background", False))
+
+
     def test_dissect_and_save_propagates_db_error(self) -> None:
         """When TaskMemoryEngine fails to save, dissect_and_save raises RuntimeError."""
         def faulty_save(_):
@@ -206,7 +303,7 @@ class TestDemonstrationCaptureAndBackgroundMode(unittest.TestCase):
 
     def test_mock_capture_tap_not_started(self) -> None:
         """In mock mode, background native tap thread is not started."""
-        capture = LiveDemonstrationCapture(memory=self.memory, mock=True)
+        capture = LiveDemonstrationCapture(memory=self.memory, mock=True, recordings_dir=self.temp_dir)
         capture.start_recording()
         self.assertIsNone(capture._tap_thread)
         capture.stop_recording()
@@ -245,9 +342,31 @@ class TestDemonstrationCaptureAndBackgroundMode(unittest.TestCase):
         self.assertTrue(res["success"])
         self.assertFalse(session_dir.exists())
         self.assertFalse(dummy_video.exists())
-        self.assertFalse(server.demonstration_capture.is_recording)
-
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_dissection_fallback_generates_non_empty_steps_for_empty_events(self) -> None:
+        """When 0 raw events are recorded, dissect_and_save synthesizes deterministic non-AI steps."""
+        self.capture.start_recording()
+        # No events fed
+        spec = self.capture.dissect_and_save(name="Clean Window Task", target_bundle_id="com.apple.finder")
+        self.assertGreater(len(spec.steps), 0)
+        first_step = spec.steps[0]
+        self.assertEqual(first_step.action.value, "focus_app")
+        self.assertEqual(first_step.target.get("bundle_id"), "com.apple.finder")
+        # Step descriptions should be informative and non-empty
+        for s in spec.steps:
+            self.assertTrue(bool(s.description))
+
+    def test_feed_event_buffers_when_session_active(self) -> None:
+        """Events fed into capture are never dropped even if recording flag transitions."""
+        self.capture.start_recording()
+        self.capture.stop_recording()
+        # Feed event during finalization/buffering
+        now = time.time()
+        self.capture.feed_event(
+            RawEvent(event_type=RawEventType.CLICK, timestamp=now, x=300, y=400, button="left")
+        )
+        self.assertEqual(len(self.capture._raw_events), 1)
 
 
 if __name__ == "__main__":

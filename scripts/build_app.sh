@@ -27,11 +27,13 @@ if [ -f "tools/clio-recorder.swift" ]; then
     swiftc -O tools/clio-recorder.swift -o bin/clio-recorder
 fi
 
-echo "==> Packaging Clio.app on Desktop..."
-APP_BUNDLE="/Users/minhnguyen/Desktop/Clio.app"
-# Unlock any read-only files left by previous codesign seal before deletion
-[ -d "${APP_BUNDLE}" ] && chmod -R u+rwX "${APP_BUNDLE}" 2>/dev/null || true
-rm -rf "${APP_BUNDLE}" Clio.app
+echo "==> Packaging Clio.app in clean staging directory..."
+STAGE_DIR="/tmp/Clio_build_staging"
+APP_BUNDLE="${STAGE_DIR}/Clio.app"
+DESKTOP_BUNDLE="/Users/minhnguyen/Desktop/Clio.app"
+
+rm -rf "${STAGE_DIR}" Clio.app
+mkdir -p "${STAGE_DIR}"
 mkdir -p "${APP_BUNDLE}/Contents/MacOS"
 mkdir -p "${APP_BUNDLE}/Contents/Resources/src"
 
@@ -68,24 +70,31 @@ xattr -cr "${APP_BUNDLE}"
 echo "==> Deep code signing Clio.app with identity '${SIGN_IDENTITY}'..."
 codesign --force --deep --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
 
-# Force LaunchServices re-registration
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-if [ -x "${LSREGISTER}" ]; then
-    echo "==> Forcing LaunchServices re-registration..."
-    "${LSREGISTER}" -f "${APP_BUNDLE}"
-fi
-
 # Verify codesign immediately
 echo "==> Verifying code signature..."
 codesign --verify --verbose "${APP_BUNDLE}"
 echo "==> Designated Requirement:"
 codesign -d -r- "${APP_BUNDLE}"
 
-# Ensure project directory is kept clean (no Clio.app inside repo)
-rm -rf Clio.app
-
+# Packaging dist/Clio-macOS.zip directly from clean staging
 echo "==> Packaging dist/Clio-macOS.zip..."
 mkdir -p dist
-(cd /Users/minhnguyen/Desktop && zip -r -FS "/Users/minhnguyen/Desktop/Coding/imitate/dist/Clio-macOS.zip" "Clio.app")
+(cd "${STAGE_DIR}" && zip -r -FS "/Users/minhnguyen/Desktop/Coding/imitate/dist/Clio-macOS.zip" "Clio.app")
+
+# Deploy to Desktop
+echo "==> Deploying to Desktop..."
+[ -d "${DESKTOP_BUNDLE}" ] && chmod -R u+rwX "${DESKTOP_BUNDLE}" 2>/dev/null || true
+rm -rf "${DESKTOP_BUNDLE}"
+cp -a "${APP_BUNDLE}" "${DESKTOP_BUNDLE}"
+
+# Force LaunchServices re-registration
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "${LSREGISTER}" ]; then
+    echo "==> Forcing LaunchServices re-registration..."
+    "${LSREGISTER}" -f "${DESKTOP_BUNDLE}"
+fi
+
+# Clean staging
+rm -rf "${STAGE_DIR}" Clio.app
 
 echo "==> Build complete! Only /Users/minhnguyen/Desktop/Clio.app is kept and verified."

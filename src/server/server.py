@@ -324,6 +324,18 @@ class ClioServer:
             swift_path = kwargs.get("swift_video_path")
             if swift_path:
                 self.demonstration_capture.set_swift_video_path(swift_path)
+
+        # Ingest client-buffered events if provided in stop payload
+        buffered_events = None
+        if data and isinstance(data, dict):
+            buffered_events = data.get("events")
+        if not buffered_events and "events" in kwargs:
+            buffered_events = kwargs.get("events")
+        if buffered_events and isinstance(buffered_events, list):
+            logger.info("Ingesting %d client-buffered demonstration events", len(buffered_events))
+            for ev_item in buffered_events:
+                if isinstance(ev_item, dict):
+                    self.feed_recording_event(ev_item)
         try:
             spec = self.demonstration_capture.dissect_and_save(
                 name=str(name),
@@ -449,10 +461,10 @@ class ClioServer:
 
             if wf_id:
                 response_payload["triggered_workflow"] = wf_id
-                exec_res = self.execute_workflow_async(workflow_id=wf_id)
+                exec_res = self.execute_workflow_async(workflow_id=wf_id, background=True)
                 response_payload["execution"] = exec_res
             else:
-                exec_res = self.execute_workflow_async(query=message)
+                exec_res = self.execute_workflow_async(query=message, background=True)
                 response_payload["execution"] = exec_res
 
         return response_payload
@@ -460,6 +472,16 @@ class ClioServer:
     def feed_recording_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Ingests an action or screen context event during demonstration."""
         from src.memory.recorder import RawEvent, WindowBounds
+
+        # Batch ingestion support
+        if "events" in data and isinstance(data["events"], list):
+            ingested = 0
+            for item in data["events"]:
+                if isinstance(item, dict):
+                    self.feed_recording_event(item)
+                    ingested += 1
+            return {"success": True, "event_count": self.demonstration_capture.event_count, "ingested": ingested}
+
         ev_type = data.get("event_type", "click")
         x = float(data.get("x", 0.0))
         y = float(data.get("y", 0.0))
@@ -467,6 +489,7 @@ class ClioServer:
         key = data.get("key", "")
         modifiers = data.get("modifiers", [])
         bundle = data.get("bundle_id") or data.get("app")
+        ts = float(data.get("timestamp", time.time()))
         window_bounds = None
         if "window_bounds" in data and isinstance(data["window_bounds"], dict):
             wb = data["window_bounds"]
@@ -478,7 +501,7 @@ class ClioServer:
             )
         raw_ev = RawEvent(
             event_type=ev_type,
-            timestamp=time.time(),
+            timestamp=ts,
             x=x,
             y=y,
             button=btn,
@@ -609,7 +632,7 @@ class ClioServer:
         self,
         workflow_id: Optional[str] = None,
         query: Optional[str] = None,
-        background: bool = False,
+        background: bool = True,
     ) -> Dict[str, Any]:
         """Initiates hands-free workflow execution asynchronously."""
         with self._lock:
@@ -986,7 +1009,7 @@ class ClioServer:
                 if path == "/api/execute":
                     workflow_id = body.get("workflow_id")
                     query = body.get("query")
-                    background = bool(body.get("background", False))
+                    background = bool(body.get("background", True))
                     res = server_instance.execute_workflow_async(
                         workflow_id=workflow_id,
                         query=query,
@@ -1039,6 +1062,7 @@ class ClioServer:
                         name=name,
                         trigger=trigger,
                         description=desc,
+                        data=body,
                     )
                     status_code = HTTPStatus.OK if res.get("success") else HTTPStatus.INTERNAL_SERVER_ERROR
                     self._send_json(status_code, res)

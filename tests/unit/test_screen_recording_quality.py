@@ -238,6 +238,8 @@ class TestScreenRecordingAndQuality(unittest.TestCase):
             zero_delay=True,
         )
         server.demonstration_capture._mock = True
+        server.demonstration_capture._recordings_base_dir = Path(self.temp_dir)
+        server.demonstration_capture._session_dir = Path(self.temp_dir) / server.demonstration_capture._session_id
         server.start()
         time.sleep(0.05)
         base_url = f"http://127.0.0.1:{port}"

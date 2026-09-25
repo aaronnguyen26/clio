@@ -229,8 +229,12 @@ class AutonomousWorkflowExecutor:
                 self.virtual_cursor.set_target_bundle_id(target_bundle_or_app)
 
         # Make virtual cursor visible on screen right at the start of execution
-        if self.virtual_cursor is not None and getattr(self.virtual_cursor, "_vx", 0.0) <= 0.0:
-            self.virtual_cursor.move_to(550.0, 350.0, duration=0.2, smooth=True)
+        if self.virtual_cursor is not None:
+            cur_x = getattr(self.virtual_cursor, "_vx", 550.0)
+            cur_y = getattr(self.virtual_cursor, "_vy", 350.0)
+            if cur_x <= 0.0 or cur_y <= 0.0:
+                cur_x, cur_y = 550.0, 350.0
+            self.virtual_cursor.move_to(cur_x, cur_y, duration=0.15, smooth=True)
 
         # Emit TASK_STARTED event
         self.bus.publish(
@@ -836,6 +840,8 @@ class AutonomousWorkflowExecutor:
             # PHYSICAL CURSOR EXECUTION:
             # First, check if the app exists in the macOS Dock
             dock_info = self._find_dock_item(app_id)
+            coords = self._resolve_optional_screen_coordinates(step, spec, effective_params)
+
             if dock_info and self.virtual_cursor is not None and step_use_vc:
                 dock_x, dock_y, dock_title = dock_info
                 logger.info(
@@ -845,20 +851,28 @@ class AutonomousWorkflowExecutor:
                     dock_y,
                 )
                 self.virtual_cursor.move_to(dock_x, dock_y, duration=0.45, smooth=True)
-                if not background_mode:
-                    self.virtual_cursor.click(x=dock_x, y=dock_y, button="left", click_count=1)
+                self.virtual_cursor.click(x=dock_x, y=dock_y, button="left", click_count=1)
 
-                # Launch target application
-                self.actuator.launch_app(app_id, timeout=timeout_s)
+                # Launch target application (in background if background_mode is active)
+                try:
+                    self.actuator.launch_app(app_id, timeout=timeout_s, background=background_mode)
+                except TypeError:
+                    self.actuator.launch_app(app_id, timeout=timeout_s)
 
-            elif target.get("screen_x") and target.get("screen_y") and self.virtual_cursor is not None and step_use_vc:
-                # App was recorded at specific screen coordinates
-                sx = float(target["screen_x"])
-                sy = float(target["screen_y"])
+            elif coords is not None and self.virtual_cursor is not None and step_use_vc:
+                # App was recorded at specific screen coordinates (e.g. Dock or Desktop icon)
+                sx, sy = coords
+                logger.info(
+                    "PHYSICAL LAUNCH: Moving virtual cursor to recorded coordinates (%.1f, %.1f) and clicking to launch",
+                    sx,
+                    sy,
+                )
                 self.virtual_cursor.move_to(sx, sy, duration=0.45, smooth=True)
-                if not background_mode:
-                    self.virtual_cursor.click(x=sx, y=sy, button="left", click_count=1)
-                self.actuator.launch_app(app_id, timeout=timeout_s)
+                self.virtual_cursor.click(x=sx, y=sy, button="left", click_count=1)
+                try:
+                    self.actuator.launch_app(app_id, timeout=timeout_s, background=background_mode)
+                except TypeError:
+                    self.actuator.launch_app(app_id, timeout=timeout_s)
 
             else:
                 # App not in Dock: use Spotlight only if NOT in background mode
@@ -873,7 +887,13 @@ class AutonomousWorkflowExecutor:
                         self.actuator.press_hotkey("return")
                     except Exception:
                         pass
-                self.actuator.launch_app(app_id, timeout=timeout_s)
+                elif background_mode and self.virtual_cursor is not None and step_use_vc:
+                    self.virtual_cursor.move_to(550.0, 350.0, duration=0.3, smooth=True)
+
+                try:
+                    self.actuator.launch_app(app_id, timeout=timeout_s, background=background_mode)
+                except TypeError:
+                    self.actuator.launch_app(app_id, timeout=timeout_s)
 
             self.bus.publish(
                 ExecutionEvent(
@@ -972,9 +992,13 @@ class AutonomousWorkflowExecutor:
                 else:
                     self.actuator.click(x=sx, y=sy, button=MouseButton(btn), click_count=click_count)
 
-                # Launch and activate the clicked application
-                self.actuator.launch_app(dock_app)
-                self.actuator.focus_app(dock_app)
+                # Launch clicked application (honoring background_mode)
+                try:
+                    self.actuator.launch_app(dock_app, background=background_mode)
+                except TypeError:
+                    self.actuator.launch_app(dock_app)
+                if not background_mode:
+                    self.actuator.focus_app(dock_app)
                 if step_use_vc and self.virtual_cursor is not None:
                     self.virtual_cursor.set_target_bundle_id(dock_app)
                     windows = self.actuator.get_windows(dock_app)
@@ -1066,7 +1090,13 @@ class AutonomousWorkflowExecutor:
             interpolated_text = self._interpolate_str(raw_text, effective_params)
             interval = float(payload.get("interval", 0.02))
 
-            target_bundle = target.get("bundle_id") or payload.get("bundle_id")
+            target_bundle = (
+                target.get("bundle_id")
+                or target.get("app_name")
+                or payload.get("bundle_id")
+                or payload.get("app")
+                or (spec.target_app.get("bundle_id") if isinstance(getattr(spec, "target_app", None), dict) else "")
+            )
             if target_bundle:
                 if not background_mode:
                     self.actuator.focus_app(target_bundle)
@@ -1097,7 +1127,13 @@ class AutonomousWorkflowExecutor:
         elif action_name == "paste_text":
             raw_text = payload.get("text", "")
             interpolated_text = self._interpolate_str(raw_text, effective_params)
-            target_bundle = target.get("bundle_id") or payload.get("bundle_id")
+            target_bundle = (
+                target.get("bundle_id")
+                or target.get("app_name")
+                or payload.get("bundle_id")
+                or payload.get("app")
+                or (spec.target_app.get("bundle_id") if isinstance(getattr(spec, "target_app", None), dict) else "")
+            )
             if target_bundle:
                 if not background_mode:
                     self.actuator.focus_app(target_bundle)
@@ -1115,7 +1151,7 @@ class AutonomousWorkflowExecutor:
         elif action_name in ("hotkey", "press_hotkey"):
             keys = payload.get("keys")
             if keys is None:
-                raw_key = payload.get("key", "")
+                raw_key = payload.get("key") or payload.get("hotkey", "")
                 if "+" in raw_key:
                     keys = [k.strip() for k in raw_key.split("+")]
                 elif raw_key:
@@ -1123,7 +1159,13 @@ class AutonomousWorkflowExecutor:
                 else:
                     keys = []
 
-            target_bundle = target.get("bundle_id") or payload.get("bundle_id")
+            target_bundle = (
+                target.get("bundle_id")
+                or target.get("app_name")
+                or payload.get("bundle_id")
+                or payload.get("app")
+                or (spec.target_app.get("bundle_id") if isinstance(getattr(spec, "target_app", None), dict) else "")
+            )
             if target_bundle:
                 if not background_mode:
                     self.actuator.focus_app(target_bundle)

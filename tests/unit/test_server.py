@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import socket
+import tempfile
 import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -39,6 +41,7 @@ def find_free_port() -> int:
 @pytest.fixture
 def test_server():
     """Spins up a ClioServer instance on a free port with mock components."""
+    temp_dir = tempfile.mkdtemp(prefix="clio_server_test_rec_")
     port = find_free_port()
     memory = TaskMemoryEngine(db_path=":memory:")
     # Seed a workflow
@@ -54,12 +57,15 @@ def test_server():
         tone="vibrant",
         zero_delay=True,
     )
+    server.demonstration_capture._recordings_base_dir = Path(temp_dir)
+    server.demonstration_capture._session_dir = Path(temp_dir) / server.demonstration_capture._session_id
     server.start()
     time.sleep(0.05)  # Allow thread to start
 
     yield server
 
     server.stop()
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class TestClioServerEndpoints:
@@ -376,3 +382,75 @@ class TestClioServerEndpoints:
         assert wf is not None
         assert wf.name == "Updated To-Do Workflow"
         assert wf.triggers["canonical"] == "run updated todo"
+
+    def test_record_stop_ingests_client_buffered_events(self, test_server: ClioServer) -> None:
+        """POST /api/record/stop with client-buffered events properly dissects them into steps."""
+        test_server.start_recording()
+        stop_url = f"http://{test_server.host}:{test_server.port}/api/record/stop"
+        buffered_events = [
+            {
+                "event_type": "mouse_down",
+                "x": 200,
+                "y": 300,
+                "button": "left",
+                "bundle_id": "com.apple.calculator",
+                "timestamp": time.time(),
+            },
+            {
+                "event_type": "mouse_up",
+                "x": 200,
+                "y": 300,
+                "button": "left",
+                "bundle_id": "com.apple.calculator",
+                "timestamp": time.time() + 0.05,
+            },
+            {
+                "event_type": "key_down",
+                "key": "5",
+                "bundle_id": "com.apple.calculator",
+                "timestamp": time.time() + 0.1,
+            },
+        ]
+        stop_payload = {
+            "name": "Calculate Five",
+            "trigger": "calculate five",
+            "events": buffered_events,
+        }
+        req = Request(
+            stop_url,
+            data=json.dumps(stop_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["success"] is True
+            assert data["total_steps"] >= 2
+            assert len(data["steps"]) >= 2
+            # Check steps were persisted
+            wf = test_server.memory.get_workflow(data["workflow_id"])
+            assert wf is not None
+            assert len(wf.steps) >= 2
+
+    def test_feed_recording_event_supports_batch_events(self, test_server: ClioServer) -> None:
+        """POST /api/record/feed supports batch events payload."""
+        test_server.start_recording()
+        feed_url = f"http://{test_server.host}:{test_server.port}/api/record/feed"
+        batch_payload = {
+            "events": [
+                {"event_type": "click", "x": 100, "y": 100, "button": "left"},
+                {"event_type": "click", "x": 150, "y": 150, "button": "left"},
+            ]
+        }
+        req = Request(
+            feed_url,
+            data=json.dumps(batch_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["success"] is True
+            assert data["ingested"] == 2
+        test_server.stop_recording()
+

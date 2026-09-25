@@ -361,7 +361,10 @@ class VirtualCursor:
         self._speed: float = 0.0
         self.target_pid: Optional[int] = target_pid
         self.target_window_id: Optional[int] = target_window_id
+        self.target_bundle_id: Optional[str] = None
         self.background_mode: bool = False
+        self._typed_buffer: List[str] = []
+        self._hotkeys_pressed: List[List[str]] = []
 
         # Determine mock mode
         if mock is not None:
@@ -445,6 +448,18 @@ class VirtualCursor:
         """List of (x, y, timestamp) trajectory points recorded during motion."""
         with self._lock:
             return list(self._trajectory)
+
+    @property
+    def typed_text(self) -> str:
+        """Returns concatenated text typed by virtual cursor."""
+        with self._lock:
+            return "".join(self._typed_buffer)
+
+    @property
+    def hotkeys_pressed(self) -> List[List[str]]:
+        """Returns history of hotkeys synthesized by virtual cursor."""
+        with self._lock:
+            return list(self._hotkeys_pressed)
 
     # -------------------------------------------------------------------------
     # Target Configuration
@@ -931,6 +946,8 @@ class VirtualCursor:
 
     def set_target_bundle_id(self, bundle_id: str) -> bool:
         """Resolves and targets a process ID from a bundle identifier."""
+        with self._lock:
+            self.target_bundle_id = bundle_id
         native = _get_native_bindings()
         if native:
             pid = native.resolve_pid_from_bundle_id(bundle_id)
@@ -940,22 +957,39 @@ class VirtualCursor:
         return False
 
     def _ensure_target_pid(self) -> Optional[int]:
-        """Ensures a valid target PID is set. Falls back to frontmost application if unassigned."""
+        """Ensures a valid target PID is set. Falls back to frontmost application only if not in background mode."""
         if self._mock:
             return None
         if self.target_pid is not None:
             return self.target_pid
 
+        native = _get_native_bindings()
+        if not native:
+            return None
+
+        # 1. Try resolving from target_bundle_id if set
+        if getattr(self, "target_bundle_id", None):
+            pid = native.resolve_pid_from_bundle_id(self.target_bundle_id)
+            if pid:
+                self.target_pid = pid
+                return pid
+
+        # 2. Try resolving from target_window_id if set
+        if getattr(self, "target_window_id", None):
+            pid = native.resolve_pid_from_window_id(self.target_window_id)
+            if pid:
+                self.target_pid = pid
+                return pid
+
+        # In background mode, never fall back to frontmost app (would steal or type into user's app)
         if getattr(self, "background_mode", False):
             logger.warning("VirtualCursor running in background mode without target PID; refusing to fall back to frontmost app.")
             return None
 
-        native = _get_native_bindings()
-        if native:
-            pid = native.resolve_frontmost_pid()
-            if pid:
-                self.target_pid = pid
-                return pid
+        pid = native.resolve_frontmost_pid()
+        if pid:
+            self.target_pid = pid
+            return pid
         return None
 
     def type_text(self, text: str, interval: float = 0.01) -> None:
@@ -963,11 +997,12 @@ class VirtualCursor:
         if not text:
             return
 
-        # Capture state under lock, then release before dispatch
+        # Capture state under lock, record to buffer, then release before dispatch
         with self._lock:
             pid = self._ensure_target_pid()
             snap_x, snap_y = self._vx, self._vy
             snap_state = self._state
+            self._typed_buffer.append(text)
 
         type_event = VirtualCursorEvent(
             event_type="type_text",
@@ -1018,17 +1053,17 @@ class VirtualCursor:
                     if interval > 0:
                         time.sleep(interval)
 
-
     def press_hotkey(self, *keys: str) -> None:
         """Synthesizes hotkey combination directly to target process PID."""
         if not keys:
             return
 
-        # Capture state under lock, release before ctypes dispatch
+        # Capture state under lock, record to history, release before ctypes dispatch
         with self._lock:
             pid = self._ensure_target_pid()
             snap_x, snap_y = self._vx, self._vy
             snap_state = self._state
+            self._hotkeys_pressed.append(list(keys))
 
         hotkey_event = VirtualCursorEvent(
             event_type="hotkey",

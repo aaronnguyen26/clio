@@ -151,6 +151,7 @@ flowchart TD
 
 #### 4. The 4-stage dissection pipeline
 The raw event log and keyframes are processed through a structured 4-stage cleanup filter:
+- **Client-Buffered Event Delivery**: To eliminate timing race conditions during ScreenCaptureKit session spin-up, the native Swift client buffers all mouse clicks, drags, keystrokes, and window movements locally in memory (`recordedEvents`). At stop time, the complete stream is delivered atomically via `/api/record/stop`, guaranteeing zero dropped events.
 - **Stage 1 (Window & App Mapping)**: Binds every event to its target macOS application bundle ID (e.g. `com.google.Chrome`, `com.apple.Notes`) and current window bounds, filtering out events targeting Clio's own UI bar.
 - **Stage 2 (Jitter & Pause Trimming)**: Throws away mouse movements under 4 pixels, dead time longer than 500ms (trimmed down), and unintentional double-clicks.
 - **Stage 3 (Semantic Step Grouping)**: Converts low-level I/O events into high-level human actions:
@@ -160,6 +161,7 @@ The raw event log and keyframes are processed through a structured 4-stage clean
 - **Stage 4 (Relative Coordinate Normalization)**: Converts absolute screen pixel coordinates into percentage offsets relative to the active window:
   $$\text{rel\_x} = \frac{x_{\text{click}} - x_{\text{window}}}{\text{width}_{\text{window}}}, \quad \text{rel\_y} = \frac{y_{\text{click}} - y_{\text{window}}}{\text{height}_{\text{window}}}$$
   This ensures that when Clio repeats the steps later, the click hits the exact button even if the user moved or resized the window.
+- **Deterministic Non-AI Fallback**: If an event stream is quiet or restricted by accessibility permissions, the pipeline synthesizes deterministic non-AI steps derived from window tracking telemetry (`_tracked_windows`, `_window_movements`), frontmost target application, and keyframe snapshots so that workflows are never empty stubs.
 
 #### 5. Output: the structured `WorkflowSpec`
 The output of dissection is a clean, structured `WorkflowSpec` consisting of small, discrete `WorkflowStep` objects:
@@ -196,6 +198,9 @@ The output of dissection is a clean, structured `WorkflowSpec` consisting of sma
   ]
 }
 ```
+
+#### 6. Step Inspection in the Clio Bar (Zero Cursor Actions)
+When a user searches or queries an action in the Clio Bar, the bar presents an interactive inspection card showing the ordered dissected steps (`1. Focus Safari`, `2. Click URL bar`, etc.). Crucially, querying or viewing the action does **not** conduct actions with the Clio virtual cursor or take unwanted automated actions; it presents the dissected steps for review, giving the user full visibility and control over their recorded workflows.
 
 ---
 

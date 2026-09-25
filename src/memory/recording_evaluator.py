@@ -147,7 +147,12 @@ class RecordingQualityEvaluator:
         return None, None, None
 
     @classmethod
-    def probe_video_file(cls, video_path: Path, extract_frames_dir: Optional[Path] = None) -> Dict[str, Any]:
+    def probe_video_file(
+        cls,
+        video_path: Path,
+        extract_frames_dir: Optional[Path] = None,
+        actions_file: Optional[Path] = None,
+    ) -> Dict[str, Any]:
         """Probes video metadata via native compiled binary, Swift, or container box inspection."""
         info: Dict[str, Any] = {
             "exists": video_path.exists(),
@@ -160,6 +165,7 @@ class RecordingQualityEvaluator:
             "fps": 0.0,
             "valid_container": False,
             "extracted_frames": [],
+            "actions_analysis": [],
         }
         if not video_path.exists() or info["file_size_bytes"] == 0:
             return info
@@ -181,11 +187,15 @@ class RecordingQualityEvaluator:
                 cmd = [str(probe_bin), str(video_path)]
                 if extract_frames_dir:
                     cmd.append(str(extract_frames_dir))
+                if actions_file:
+                    if not extract_frames_dir:
+                        cmd.append(str(video_path.parent / "frames"))
+                    cmd.append(str(actions_file))
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=5.0,
+                    timeout=8.0,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
                     data = json.loads(proc.stdout.strip())
@@ -197,6 +207,7 @@ class RecordingQualityEvaluator:
                         info["has_video"] = bool(data.get("has_video", False))
                         info["valid_container"] = True
                         info["extracted_frames"] = data.get("extracted_frames", [])
+                        info["actions_analysis"] = data.get("actions_analysis", [])
                         return info
             except Exception as ex:
                 logger.debug("clio-probe error: %s", ex)

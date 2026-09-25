@@ -270,7 +270,20 @@ struct WorkflowStepItem: Identifiable, Decodable {
 
     var displayOrder: Int { order ?? 1 }
     var displayDescription: String {
-        if let d = description, !d.isEmpty { return d }
+        if let d = description, !d.isEmpty {
+            var sanitized = d
+            sanitized = sanitized.replacingOccurrences(of: #"\s*at\s*\(\d+[\.,]?\d*,\s*\d+[\.,]?\d*\)"#, with: "", options: .regularExpression)
+            sanitized = sanitized.replacingOccurrences(of: #"\s*from\s*\(\d+[\.,]?\d*,\s*\d+[\.,]?\d*\)\s*to\s*\(\d+[\.,]?\d*,\s*\d+[\.,]?\d*\)"#, with: "", options: .regularExpression)
+            sanitized = sanitized.replacingOccurrences(of: #"\s*to\s*\(\d+[\.,]?\d*,\s*\d+[\.,]?\d*\)"#, with: "", options: .regularExpression)
+            sanitized = sanitized.replacingOccurrences(of: #"\s*left button"#, with: "", options: .regularExpression)
+            sanitized = sanitized.replacingOccurrences(of: #"\s*right button"#, with: " right-click", options: .regularExpression)
+            sanitized = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
+            if sanitized.lowercased() == "click" {
+                return "Click target"
+            }
+            if !sanitized.isEmpty { return sanitized }
+            return d
+        }
         let act = action ?? "action"
         return act.replacingOccurrences(of: "_", with: " ").capitalized
     }
@@ -1062,9 +1075,8 @@ final class ClioViewModel: ObservableObject {
         guard let wf = inspectWorkflow else { return }
         let idToRun = wf.id
         self.inspectWorkflow = nil
-        self.query = ""
-        executeById(idToRun)
         AppDelegate.shared?.hidePanel()
+        self.executeById(idToRun)
     }
 
     func dismissInspection() {
@@ -1100,7 +1112,7 @@ final class ClioViewModel: ObservableObject {
             }
         }
 
-        // If the user is already inspecting the steps and presses Enter, run the action now!
+        // If currently inspecting steps and user presses Return, perform the action based on the dissected steps!
         if inspectWorkflow != nil {
             runInspectedWorkflow()
             return
@@ -1130,10 +1142,7 @@ final class ClioViewModel: ObservableObject {
             return
         }
 
-        // Fallback for custom dynamic query execution when no saved workflow matched
-        executeByQuery(trimmed)
-        self.query = ""
-        AppDelegate.shared?.hidePanel()
+        // Do not conduct any actions with Clio cursor or execute hands-free actions
     }
 
     func deleteWorkflow(id: String) {
@@ -1189,6 +1198,7 @@ final class ClioViewModel: ObservableObject {
     }
 
     private var recordingEventMonitor: Any?
+    private var recordedEvents: [[String: Any]] = []
 
     func startRecording() {
         // Clean up previous unsaved preview recording from disk
@@ -1196,7 +1206,7 @@ final class ClioViewModel: ObservableObject {
             try? FileManager.default.removeItem(at: oldVideoURL.deletingLastPathComponent())
         }
 
-        // Reset inputs and preview state
+        // Reset inputs, preview state, and client event buffer
         self.recordedName = ""
         self.recordedTrigger = ""
         self.previewVideoURL = nil
@@ -1205,7 +1215,19 @@ final class ClioViewModel: ObservableObject {
         self.recordingGrade = nil
         self.showSaveModal = false
         self.isRecording = true
+        self.recordedEvents.removeAll()
         self.startEventMonitoring()
+
+        // Notify Python backend immediately so event capture session is active from t=0
+        if let startUrl = URL(string: "/api/record/start", relativeTo: self.baseURL) {
+            var startReq = URLRequest(url: startUrl)
+            startReq.httpMethod = "POST"
+            startReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            startReq.httpBody = try? JSONSerialization.data(withJSONObject: [:])
+            Task {
+                _ = try? await URLSession.shared.data(for: startReq)
+            }
+        }
 
         // Start native Swift screen recording (runs inside authorized Clio.app process).
         // This avoids the repeated "would like to record" TCC notification that occurs when
@@ -1228,8 +1250,7 @@ final class ClioViewModel: ObservableObject {
 
             guard let videoURL = videoURL else { return }
 
-            // Notify Python backend to start event capture once the stream is actively recording.
-            // Pass swift_video_path so Python does NOT spawn its own recorder process.
+            // Update Python backend with the pre-allocated swift_video_path
             guard let url = URL(string: "/api/record/start", relativeTo: self.baseURL) else { return }
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
@@ -1248,6 +1269,8 @@ final class ClioViewModel: ObservableObject {
         self.showSaveModal = true
         self.isRecording = false
 
+        let buffered = self.recordedEvents
+
         // Stop Swift-native recording first — waits for AVCaptureFileOutput to finalize
         // the .mov container (moov atom written) before notifying Python.
         SwiftScreenRecorder.shared.stopRecording { [weak self] videoURL, _ in
@@ -1261,6 +1284,7 @@ final class ClioViewModel: ObservableObject {
             var body: [String: Any] = [
                 "name": "My Demonstrated Action",
                 "trigger": "my demonstrated action",
+                "events": buffered
             ]
             if !videoPath.isEmpty {
                 body["swift_video_path"] = videoPath
@@ -1378,7 +1402,7 @@ final class ClioViewModel: ObservableObject {
     private func startEventMonitoring() {
         stopEventMonitoring()
         self.recordingEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [
-            .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .keyDown, .scrollWheel
+            .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .leftMouseDragged, .keyDown, .scrollWheel
         ]) { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.sendFeedEvent(event)
@@ -1394,56 +1418,59 @@ final class ClioViewModel: ObservableObject {
     }
 
     private func sendFeedEvent(_ event: NSEvent) {
-        guard let url = URL(string: "/api/record/feed", relativeTo: baseURL) else { return }
         let screenH = NSScreen.main?.frame.height ?? 900
         let mouseLoc = NSEvent.mouseLocation
         let x = Double(mouseLoc.x)
         let y = Double(screenH - mouseLoc.y)
+        let quartzY = Float(y)
         var targetBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
         var targetAppName = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
         var isDockItem = false
         var dockTitle = ""
         var windowBoundsDict: [String: Double]? = nil
 
-        let sys = AXUIElementCreateSystemWide()
-        var elem: AXUIElement?
-        if AXUIElementCopyElementAtPosition(sys, Float(mouseLoc.x), Float(mouseLoc.y), &elem) == .success, let elem = elem {
-            var pid: pid_t = 0
-            if AXUIElementGetPid(elem, &pid) == .success && pid > 0 {
-                if let app = NSRunningApplication(processIdentifier: pid) {
-                    targetBundle = app.bundleIdentifier ?? targetBundle
-                    targetAppName = app.localizedName ?? targetAppName
+        // Only query element at mouse position for mouse events (not for keyboard typing)
+        if event.type != .keyDown {
+            let sys = AXUIElementCreateSystemWide()
+            var elem: AXUIElement?
+            if AXUIElementCopyElementAtPosition(sys, Float(mouseLoc.x), quartzY, &elem) == .success, let elem = elem {
+                var pid: pid_t = 0
+                if AXUIElementGetPid(elem, &pid) == .success && pid > 0 {
+                    if let app = NSRunningApplication(processIdentifier: pid) {
+                        targetBundle = app.bundleIdentifier ?? targetBundle
+                        targetAppName = app.localizedName ?? targetAppName
+                    }
                 }
-            }
 
-            var winElem: AnyObject?
-            if AXUIElementCopyAttributeValue(elem, kAXWindowAttribute as CFString, &winElem) == .success, let wElem = winElem {
-                var posVal: AnyObject?
-                var sizeVal: AnyObject?
-                let axW = wElem as! AXUIElement
-                if AXUIElementCopyAttributeValue(axW, kAXPositionAttribute as CFString, &posVal) == .success,
-                   AXUIElementCopyAttributeValue(axW, kAXSizeAttribute as CFString, &sizeVal) == .success {
-                    var pt = CGPoint.zero
-                    var sz = CGSize.zero
-                    AXValueGetValue(posVal as! AXValue, .cgPoint, &pt)
-                    AXValueGetValue(sizeVal as! AXValue, .cgSize, &sz)
-                    windowBoundsDict = [
-                        "x": Double(pt.x),
-                        "y": Double(pt.y),
-                        "width": Double(sz.width),
-                        "height": Double(sz.height)
-                    ]
+                var winElem: AnyObject?
+                if AXUIElementCopyAttributeValue(elem, kAXWindowAttribute as CFString, &winElem) == .success, let wElem = winElem {
+                    var posVal: AnyObject?
+                    var sizeVal: AnyObject?
+                    let axW = wElem as! AXUIElement
+                    if AXUIElementCopyAttributeValue(axW, kAXPositionAttribute as CFString, &posVal) == .success,
+                       AXUIElementCopyAttributeValue(axW, kAXSizeAttribute as CFString, &sizeVal) == .success {
+                        var pt = CGPoint.zero
+                        var sz = CGSize.zero
+                        AXValueGetValue(posVal as! AXValue, .cgPoint, &pt)
+                        AXValueGetValue(sizeVal as! AXValue, .cgSize, &sz)
+                        windowBoundsDict = [
+                            "x": Double(pt.x),
+                            "y": Double(pt.y),
+                            "width": Double(sz.width),
+                            "height": Double(sz.height)
+                        ]
+                    }
                 }
-            }
 
-            var roleVal: AnyObject?
-            if AXUIElementCopyAttributeValue(elem, kAXRoleAttribute as CFString, &roleVal) == .success,
-               let role = roleVal as? String, role == "AXDockItem" {
-                isDockItem = true
-                var titleVal: AnyObject?
-                if AXUIElementCopyAttributeValue(elem, kAXTitleAttribute as CFString, &titleVal) == .success,
-                   let title = titleVal as? String {
-                    dockTitle = title
+                var roleVal: AnyObject?
+                if AXUIElementCopyAttributeValue(elem, kAXRoleAttribute as CFString, &roleVal) == .success,
+                   let role = roleVal as? String, role == "AXDockItem" {
+                    isDockItem = true
+                    var titleVal: AnyObject?
+                    if AXUIElementCopyAttributeValue(elem, kAXTitleAttribute as CFString, &titleVal) == .success,
+                       let title = titleVal as? String {
+                        dockTitle = title
+                    }
                 }
             }
         }
@@ -1455,6 +1482,7 @@ final class ClioViewModel: ObservableObject {
             "app_name": targetAppName,
             "is_dock_item": isDockItem,
             "dock_item_title": dockTitle,
+            "timestamp": Date().timeIntervalSince1970
         ]
         if let wb = windowBoundsDict {
             payload["window_bounds"] = wb
@@ -1465,6 +1493,9 @@ final class ClioViewModel: ObservableObject {
             payload["button"] = "left"
         } else if event.type == .leftMouseUp {
             payload["event_type"] = "mouse_up"
+            payload["button"] = "left"
+        } else if event.type == .leftMouseDragged {
+            payload["event_type"] = "mouse_drag"
             payload["button"] = "left"
         } else if event.type == .rightMouseDown {
             payload["event_type"] = "mouse_down"
@@ -1503,6 +1534,11 @@ final class ClioViewModel: ObservableObject {
             payload["key"] = keyStr
         }
 
+        // Buffer locally to guarantee zero event loss
+        self.recordedEvents.append(payload)
+
+        // Asynchronously post to backend
+        guard let url = URL(string: "/api/record/feed", relativeTo: baseURL) else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1749,10 +1785,10 @@ struct ClioBarView: View {
             HStack(spacing: 10) {
                 // Minimalist Obsidian Eclipse 'C' Monogram
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8)
+                    Circle()
                         .fill(ObsidianTheme.surfaceElevated)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8)
+                            Circle()
                                 .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
                         )
                         .frame(width: 32, height: 32)
@@ -1855,398 +1891,14 @@ struct ClioBarView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
 
-            // Screen Recording Preview & Save Demonstration Card (Obsidian Glass HUD)
+            // Content panels
             if vm.showSaveModal {
-                Divider().background(ObsidianTheme.borderSubtle)
-                VStack(alignment: .leading, spacing: 10) {
-                    // Header Bar with Title, Quality Score, and Quick Action Buttons
-                    HStack(spacing: 8) {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(ObsidianTheme.platinum)
-                                .frame(width: 6, height: 6)
-                            Text("SCREEN RECORDING CAPTURED")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(ObsidianTheme.platinum)
-                        }
-
-                        // Quality Evaluation Score Badge
-                        if let score = vm.recordingScore, let grade = vm.recordingGrade {
-                            HStack(spacing: 4) {
-                                Text("QUALITY:")
-                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                    .foregroundColor(ObsidianTheme.slate)
-                                Text("\(Int(score))/100 • \(grade)")
-                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                    .foregroundColor(ObsidianTheme.platinum)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(ObsidianTheme.surfaceElevated)
-                            .overlay(Capsule().stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                            .clipShape(Capsule())
-                        }
-
-                        Spacer()
-
-                        // External Player & Finder Quick Actions
-                        if let videoURL = vm.previewVideoURL {
-                            Button(action: {
-                                NSWorkspace.shared.open(videoURL)
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "arrow.up.right.video")
-                                        .font(.system(size: 9))
-                                    Text("QUICKTIME")
-                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                }
-                                .foregroundColor(ObsidianTheme.slate)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(ObsidianTheme.surface)
-                                .cornerRadius(5)
-                                .overlay(RoundedRectangle(cornerRadius: 5).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                            .help("Open full recording in QuickTime Player")
-
-                            Button(action: {
-                                NSWorkspace.shared.activateFileViewerSelecting([videoURL])
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "folder")
-                                        .font(.system(size: 9))
-                                    Text("FINDER")
-                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                }
-                                .foregroundColor(ObsidianTheme.slate)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(ObsidianTheme.surface)
-                                .cornerRadius(5)
-                                .overlay(RoundedRectangle(cornerRadius: 5).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                            .help("Reveal recording video file in Finder")
-                        }
-                    }
-
-                    // Native Video Player Surface
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(ObsidianTheme.surface)
-                            .frame(height: 250)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
-                            )
-
-                        if vm.isStoppingRecording {
-                            VStack(spacing: 8) {
-                                ProgressView()
-                                    .scaleEffect(0.8)
-                                Text("FINALIZING SCREEN RECORDING & EVALUATING QUALITY...")
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundColor(ObsidianTheme.slate)
-                            }
-                        } else if let videoURL = vm.previewVideoURL {
-                            ScreenRecordingPlayerView(videoURL: videoURL)
-                                .frame(height: 250)
-                                .cornerRadius(8)
-                                .clipped()
-                        } else {
-                            VStack(spacing: 6) {
-                                Image(systemName: "video.slash")
-                                    .font(.system(size: 24))
-                                    .foregroundColor(ObsidianTheme.slateDark)
-                                Text("No recording preview available")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(ObsidianTheme.slate)
-                            }
-                        }
-                    }
-                    .frame(height: 250)
-
-                    // Action Labeling and Persistence Controls
-                    HStack(spacing: 8) {
-                        TextField("Action Name (e.g. Open Notes & Write)", text: $vm.recordedName)
-                            .textFieldStyle(.plain)
-                            .padding(7)
-                            .background(ObsidianTheme.surface)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                            .cornerRadius(6)
-                            .foregroundColor(ObsidianTheme.platinum)
-                            .font(.system(size: 12))
-                            .onSubmit {
-                                vm.saveRecordedWorkflow()
-                            }
-
-                        TextField("Trigger phrase (e.g. 'open notes')", text: $vm.recordedTrigger)
-                            .textFieldStyle(.plain)
-                            .padding(7)
-                            .background(ObsidianTheme.surface)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                            .cornerRadius(6)
-                            .foregroundColor(ObsidianTheme.platinum)
-                            .font(.system(size: 12))
-                            .onSubmit {
-                                vm.saveRecordedWorkflow()
-                            }
-
-                        Button("Discard") {
-                            vm.discardRecording()
-                        }
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(ObsidianTheme.slate)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(ObsidianTheme.surface)
-                        .cornerRadius(6)
-                        .buttonStyle(.plain)
-                        .help("Discard this screen recording")
-
-                        Button("Save & Add") {
-                            vm.saveRecordedWorkflow()
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(ObsidianTheme.surface)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background(ObsidianTheme.platinum)
-                        .cornerRadius(6)
-                        .buttonStyle(.plain)
-                        .help("Save demonstration and add to Clio's memory")
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(ObsidianTheme.cardGlass)
+                saveModalView
             } else if let inspected = vm.inspectWorkflow {
-                // Steps In Order View (Show steps in order before performing action)
-                Divider().background(ObsidianTheme.borderSubtle)
-                VStack(alignment: .leading, spacing: 8) {
-                    // Header: Workflow Name, Trigger, Video & Step Count
-                    HStack(alignment: .center, spacing: 8) {
-                        Image(systemName: "list.bullet.rectangle.fill")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(ObsidianTheme.platinum)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(inspected.displayName)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(ObsidianTheme.platinum)
-                            if let trig = inspected.canonical_trigger, !trig.isEmpty {
-                                Text("trigger: \"\(trig)\"")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(ObsidianTheme.slate)
-                            }
-                        }
-
-                        Spacer()
-
-                        // If video recording exists, show "▶ VIDEO" button
-                        if let vPath = inspected.video_path, !vPath.isEmpty {
-                            Button(action: {
-                                vm.previewExistingWorkflowRecording(inspected)
-                            }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "play.circle.fill")
-                                        .font(.system(size: 10))
-                                    Text("VIDEO")
-                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                }
-                                .foregroundColor(ObsidianTheme.platinum)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(ObsidianTheme.surfaceElevated)
-                                .cornerRadius(4)
-                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                            .help("View recorded demonstration video")
-                        }
-
-                        Text("\(inspected.orderedSteps.count) steps")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(ObsidianTheme.slate)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(ObsidianTheme.surfaceElevated)
-                            .cornerRadius(4)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.top, 10)
-
-                    // Steps In Order List
-                    ScrollView(.vertical, showsIndicators: inspected.orderedSteps.count > 5) {
-                        VStack(spacing: 4) {
-                            if inspected.orderedSteps.isEmpty {
-                                HStack {
-                                    Spacer()
-                                    Text("No dissected steps recorded for this workflow.")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(ObsidianTheme.slate)
-                                        .padding(.vertical, 12)
-                                    Spacer()
-                                }
-                            } else {
-                                ForEach(inspected.orderedSteps) { step in
-                                    HStack(spacing: 8) {
-                                        // Step Order Number Pill
-                                        Text("\(step.displayOrder)")
-                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                            .foregroundColor(ObsidianTheme.platinum)
-                                            .frame(width: 18, height: 18)
-                                            .background(ObsidianTheme.zinc)
-                                            .clipShape(Circle())
-
-                                        // Action Icon
-                                        Image(systemName: step.actionIcon)
-                                            .font(.system(size: 11))
-                                            .foregroundColor(ObsidianTheme.slate)
-                                            .frame(width: 16)
-
-                                        // Step Description
-                                        Text(step.displayDescription)
-                                            .font(.system(size: 11, weight: .regular))
-                                            .foregroundColor(ObsidianTheme.platinumDim)
-                                            .lineLimit(1)
-
-                                        Spacer()
-
-                                        // Action Type Badge
-                                        Text(step.actionBadge)
-                                            .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                            .foregroundColor(ObsidianTheme.slate)
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 1)
-                                            .background(ObsidianTheme.surfaceElevated)
-                                            .cornerRadius(3)
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .background(ObsidianTheme.surfaceElevated.opacity(0.4))
-                                    .cornerRadius(6)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 14)
-                    }
-                    .frame(maxHeight: 180)
-
-                    // Footer Controls: Back (Esc) & Run Action (⏎)
-                    HStack(spacing: 8) {
-                        Button(action: {
-                            vm.dismissInspection()
-                        }) {
-                            HStack(spacing: 4) {
-                                Text("Back")
-                                    .font(.system(size: 11, weight: .medium))
-                                Text("Esc")
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundColor(ObsidianTheme.slate)
-                            }
-                            .foregroundColor(ObsidianTheme.slate)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(ObsidianTheme.surfaceElevated)
-                            .cornerRadius(6)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                        }
-                        .buttonStyle(.plain)
-
-                        Spacer()
-
-                        Button(action: {
-                            vm.runInspectedWorkflow()
-                        }) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "play.fill")
-                                    .font(.system(size: 9))
-                                Text("Run Action")
-                                    .font(.system(size: 11, weight: .bold))
-                                Text("⏎")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .opacity(0.8)
-                            }
-                            .foregroundColor(ObsidianTheme.surface)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                            .background(ObsidianTheme.platinum)
-                            .cornerRadius(6)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Execute this action with Clio virtual cursor (Return)")
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 10)
-                }
-                .background(ObsidianTheme.cardGlass)
+                inspectedWorkflowView(inspected)
             } else if !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty {
-                // Search Results / Suggested Workflows with Video Preview Buttons
-                Divider().background(ObsidianTheme.borderSubtle)
-                VStack(spacing: 2) {
-                    ForEach(Array(vm.workflows.prefix(4).enumerated()), id: \.element.id) { idx, wf in
-                        HStack(spacing: 8) {
-                            Image(systemName: "command")
-                                .font(.system(size: 11))
-                                .foregroundColor(idx == vm.selectedIndex ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(wf.displayName)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(idx == vm.selectedIndex ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
-                                if let trig = wf.canonical_trigger, !trig.isEmpty {
-                                    Text(trig)
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundColor(ObsidianTheme.slate)
-                                }
-                            }
-
-                            Spacer()
-
-                            // If video recording exists, show "▶ VIDEO" button
-                            if let vPath = wf.video_path, !vPath.isEmpty {
-                                Button(action: {
-                                    vm.previewExistingWorkflowRecording(wf)
-                                }) {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "play.circle.fill")
-                                            .font(.system(size: 10))
-                                        Text("VIDEO")
-                                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                    }
-                                    .foregroundColor(ObsidianTheme.platinum)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 3)
-                                    .background(ObsidianTheme.surfaceElevated)
-                                    .cornerRadius(4)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                                }
-                                .buttonStyle(.plain)
-                                .help("View screen recording of this action")
-                            }
-
-                            Text("\(wf.displaySteps) steps")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(ObsidianTheme.slate)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(idx == vm.selectedIndex ? ObsidianTheme.surfaceElevated : Color.clear)
-                        .cornerRadius(6)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            vm.selectedIndex = idx
-                            vm.inspectWorkflowDetails(wf)
-                        }
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(ObsidianTheme.cardGlass)
+                searchResultsView
             }
-
         }
         .frame(width: 680)
         .background(ObsidianTheme.bgGlass)
@@ -2285,6 +1937,406 @@ struct ClioBarView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("FocusClioField"))) { _ in
             isFieldFocused = true
+        }
+    }
+
+    // MARK: - Subviews for Fast Type Checking
+
+    @ViewBuilder
+    private var saveModalView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(ObsidianTheme.platinum)
+                        .frame(width: 6, height: 6)
+                    Text("SCREEN RECORDING CAPTURED")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                }
+
+                if let score = vm.recordingScore, let grade = vm.recordingGrade {
+                    HStack(spacing: 4) {
+                        Text("QUALITY:")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                        Text("\(Int(score))/100 • \(grade)")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.platinum)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .overlay(Capsule().stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                    .clipShape(Capsule())
+                }
+
+                Spacer()
+
+                if let videoURL = vm.previewVideoURL {
+                    Button(action: {
+                        NSWorkspace.shared.open(videoURL)
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.right.video")
+                                .font(.system(size: 9))
+                            Text("QUICKTIME")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        }
+                        .foregroundColor(ObsidianTheme.slate)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(ObsidianTheme.surface)
+                        .cornerRadius(5)
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open full recording in QuickTime Player")
+
+                    Button(action: {
+                        NSWorkspace.shared.activateFileViewerSelecting([videoURL])
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 9))
+                            Text("FINDER")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        }
+                        .foregroundColor(ObsidianTheme.slate)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(ObsidianTheme.surface)
+                        .cornerRadius(5)
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Reveal recording video file in Finder")
+                }
+            }
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(ObsidianTheme.surface)
+                    .frame(height: 250)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
+                    )
+
+                if vm.isStoppingRecording {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        Text("FINALIZING SCREEN RECORDING & EVALUATING QUALITY...")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                } else if let videoURL = vm.previewVideoURL {
+                    ScreenRecordingPlayerView(videoURL: videoURL)
+                        .frame(height: 250)
+                        .cornerRadius(8)
+                        .clipped()
+                } else {
+                    VStack(spacing: 6) {
+                        Image(systemName: "video.slash")
+                            .font(.system(size: 24))
+                            .foregroundColor(ObsidianTheme.slateDark)
+                        Text("No recording preview available")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                }
+            }
+            .frame(height: 250)
+
+            HStack(spacing: 8) {
+                TextField("Action Name (e.g. Open Notes & Write)", text: $vm.recordedName)
+                    .textFieldStyle(.plain)
+                    .padding(7)
+                    .background(ObsidianTheme.surface)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                    .cornerRadius(6)
+                    .foregroundColor(ObsidianTheme.platinum)
+                    .font(.system(size: 12))
+                    .onSubmit {
+                        vm.saveRecordedWorkflow()
+                    }
+
+                TextField("Trigger phrase (e.g. 'open notes')", text: $vm.recordedTrigger)
+                    .textFieldStyle(.plain)
+                    .padding(7)
+                    .background(ObsidianTheme.surface)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                    .cornerRadius(6)
+                    .foregroundColor(ObsidianTheme.platinum)
+                    .font(.system(size: 12))
+                    .onSubmit {
+                        vm.saveRecordedWorkflow()
+                    }
+
+                Button("Discard") {
+                    vm.discardRecording()
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(ObsidianTheme.slate)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(ObsidianTheme.surface)
+                .cornerRadius(6)
+                .buttonStyle(.plain)
+                .help("Discard this screen recording")
+
+                Button("Save & Add") {
+                    vm.saveRecordedWorkflow()
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(ObsidianTheme.surface)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(ObsidianTheme.platinum)
+                .cornerRadius(6)
+                .buttonStyle(.plain)
+                .help("Save demonstration and add to Clio's memory")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
+    private func inspectedWorkflowView(_ inspected: WorkflowItem) -> some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: "list.bullet.rectangle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(ObsidianTheme.platinum)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(inspected.displayName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    if let trig = inspected.canonical_trigger, !trig.isEmpty {
+                        Text("trigger: \"\(trig)\"")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                }
+
+                Spacer()
+
+                if let vPath = inspected.video_path, !vPath.isEmpty {
+                    Button(action: {
+                        vm.previewExistingWorkflowRecording(inspected)
+                    }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 10))
+                            Text("VIDEO")
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        }
+                        .foregroundColor(ObsidianTheme.platinum)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(ObsidianTheme.surfaceElevated)
+                        .cornerRadius(4)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .help("View recorded demonstration video")
+                }
+
+                Text("\(inspected.orderedSteps.count) steps")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            ScrollView(.vertical, showsIndicators: inspected.orderedSteps.count > 5) {
+                VStack(spacing: 4) {
+                    if inspected.orderedSteps.isEmpty {
+                        HStack {
+                            Spacer()
+                            Text("No dissected steps recorded for this workflow.")
+                                .font(.system(size: 11))
+                                .foregroundColor(ObsidianTheme.slate)
+                                .padding(.vertical, 12)
+                            Spacer()
+                        }
+                    } else {
+                        ForEach(inspected.orderedSteps) { step in
+                            HStack(spacing: 8) {
+                                Text("\(step.displayOrder)")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundColor(ObsidianTheme.platinum)
+                                    .frame(width: 18, height: 18)
+                                    .background(ObsidianTheme.zinc)
+                                    .clipShape(Circle())
+
+                                Image(systemName: step.actionIcon)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(ObsidianTheme.slate)
+                                    .frame(width: 16)
+
+                                Text(step.displayDescription)
+                                    .font(.system(size: 11, weight: .regular))
+                                    .foregroundColor(ObsidianTheme.platinumDim)
+                                    .lineLimit(1)
+
+                                Spacer()
+
+                                Text(step.actionBadge)
+                                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                    .foregroundColor(ObsidianTheme.slate)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(ObsidianTheme.surfaceElevated)
+                                    .cornerRadius(3)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(ObsidianTheme.surfaceElevated.opacity(0.4))
+                            .cornerRadius(6)
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+            }
+            .frame(maxHeight: 180)
+
+            HStack(spacing: 8) {
+                Button(action: {
+                    vm.dismissInspection()
+                }) {
+                    HStack(spacing: 4) {
+                        Text("Back")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Esc")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                    .foregroundColor(ObsidianTheme.slate)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button(action: {
+                    vm.runInspectedWorkflow()
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 9))
+                        Text("Perform Action")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("⏎")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slateDark)
+                    }
+                    .foregroundColor(ObsidianTheme.surface)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(ObsidianTheme.platinum)
+                    .cornerRadius(6)
+                }
+                .buttonStyle(.plain)
+                .help("Perform this action in the background based on the dissected steps")
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+        }
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
+    private var searchResultsView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(spacing: 2) {
+            ForEach(Array(vm.workflows.prefix(4).enumerated()), id: \.element.id) { idx, wf in
+                SearchResultRowView(
+                    wf: wf,
+                    isSelected: idx == vm.selectedIndex,
+                    onPreview: { vm.previewExistingWorkflowRecording(wf) },
+                    onSelect: {
+                        vm.selectedIndex = idx
+                        vm.inspectWorkflowDetails(wf)
+                    }
+                )
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(ObsidianTheme.cardGlass)
+    }
+}
+
+struct SearchResultRowView: View {
+    let wf: WorkflowItem
+    let isSelected: Bool
+    let onPreview: () -> Void
+    let onSelect: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "command")
+                .font(.system(size: 11))
+                .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(wf.displayName)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
+                if let trig = wf.canonical_trigger, !trig.isEmpty {
+                    Text(trig)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                }
+            }
+
+            Spacer()
+
+            if let vPath = wf.video_path, !vPath.isEmpty {
+                Button(action: onPreview) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 10))
+                        Text("VIDEO")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundColor(ObsidianTheme.platinum)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("View screen recording of this action")
+            }
+
+            Text("\(wf.displaySteps) steps")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(ObsidianTheme.slate)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(isSelected ? ObsidianTheme.surfaceElevated : Color.clear)
+        .cornerRadius(6)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onSelect()
         }
     }
 }

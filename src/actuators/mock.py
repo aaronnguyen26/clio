@@ -209,7 +209,7 @@ class MockActuator(BaseActuator):
     # Application Lifecycle Primitives
     # =========================================================================
 
-    def launch_app(self, app_name_or_bundle: str, timeout: float = 5.0) -> bool:
+    def launch_app(self, app_name_or_bundle: str, timeout: float = 5.0, background: bool = False) -> bool:
         """Simulates launching an application."""
         self.check_failsafe()
 
@@ -223,6 +223,7 @@ class MockActuator(BaseActuator):
                     "app": app_name_or_bundle,
                     "bundle_id": app_name_or_bundle,
                     "timeout": timeout,
+                    "background": background,
                 },
                 success=False,
                 error=f"Configured launch failure for {app_name_or_bundle}",
@@ -230,7 +231,8 @@ class MockActuator(BaseActuator):
             self._history.append(action)
             raise ApplicationLaunchError(f"Failed to launch application: {app_name_or_bundle}")
 
-        self._frontmost_app = app_name_or_bundle
+        if not background:
+            self._frontmost_app = app_name_or_bundle
         self.running_apps.add(app_name_or_bundle)
 
         # Ensure at least one virtual window exists for launched app
@@ -256,6 +258,7 @@ class MockActuator(BaseActuator):
                     "app": app_name_or_bundle,
                     "bundle_id": app_name_or_bundle,
                     "timeout": timeout,
+                    "background": background,
                 },
                 success=True,
             )

@@ -430,29 +430,36 @@ class MacOSActuator(BaseActuator):
     # -----------------------------------------------------------------------
     # FEAT-ACT-03: AppLauncherAndFocus
     # -----------------------------------------------------------------------
-    def launch_app(self, app_name_or_bundle: str, timeout: float = 5.0) -> bool:
+    def launch_app(self, app_name_or_bundle: str, timeout: float = 5.0, background: bool = False) -> bool:
         """Launch an app by name or bundle ID. Uses subprocess exclusively to avoid GIL deadlock."""
         self.check_failsafe()
 
         target_lower = app_name_or_bundle.lower()
         short_target = target_lower.split(".")[-1] if "." in target_lower else target_lower
 
-        # Quick check: already frontmost? (single ctypes call, fast)
-        try:
-            front = self.get_frontmost_app().lower()
-            if short_target in front or front in short_target:
-                return True
-        except Exception:
-            pass
+        if not background:
+            # Quick check: already frontmost? (single ctypes call, fast)
+            try:
+                front = self.get_frontmost_app().lower()
+                if short_target in front or front in short_target:
+                    return True
+            except Exception:
+                pass
 
         is_bundle = "." in app_name_or_bundle
-        cmd = ["open", "-a" if not is_bundle else "-b", app_name_or_bundle]
+        cmd = ["open"]
+        if background:
+            cmd.append("-g")  # Launches without bringing application to foreground
+        cmd.extend(["-b" if is_bundle else "-a", app_name_or_bundle])
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=5.0)
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
             if res.returncode != 0:
                 # Try alternate: open by short name
-                fallback_cmd = ["open", "-a", short_target.capitalize()]
-                subprocess.run(fallback_cmd, capture_output=True, text=True, check=False, timeout=5.0)
+                fallback_cmd = ["open"]
+                if background:
+                    fallback_cmd.append("-g")
+                fallback_cmd.extend(["-a", short_target.capitalize()])
+                subprocess.run(fallback_cmd, capture_output=True, text=True, check=False, timeout=timeout)
         except Exception as e:
             if isinstance(e, ApplicationLaunchError):
                 raise
