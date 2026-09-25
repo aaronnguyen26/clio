@@ -1650,6 +1650,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Pre-authorize screen recording from the Swift process (Clio.app's authorized context).
+        // CGPreflightScreenCaptureAccess() checks silently without a dialog.
+        // CGRequestScreenCaptureAccess() presents the one-time system dialog if not yet granted.
+        // Doing this at launch ensures no "would like to record" notification appears mid-recording.
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+        }
+
         // Verify accessibility quietly without opening Settings
         _ = AXIsProcessTrusted()
         _ = VirtualCursorOverlayManager.shared

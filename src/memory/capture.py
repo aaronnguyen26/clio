@@ -527,22 +527,13 @@ class LiveDemonstrationCapture:
         if sys.platform != "darwin":
             return None
 
-        # 1. Primary: Fast, silent CoreGraphics framebuffer capture via ctypes
-        try:
-            if self._capture_screen_frame_cg(frame_path) and os.path.exists(frame_path):
-                frame_data = {
-                    "frame_index": frame_idx,
-                    "path": frame_path,
-                    "timestamp": now_ts,
-                    "label": label,
-                }
-                with self._lock:
-                    self._captured_frames.append(frame_data)
-                return frame_path
-        except Exception as e:
-            logger.debug("CoreGraphics screen frame capture error: %s. Falling back to screencapture.", e)
-
-        # 2. Secondary fallback: screencapture -x -t jpg subshell invocation
+        # Primary path: screencapture -x -t jpg (pre-authorized system binary).
+        # NOTE: CGDisplayCreateImage via ctypes is intentionally NOT used here even though it is faster.
+        # Python has its own TCC identity separate from Clio.app; calling CGDisplayCreateImage from
+        # Python triggers macOS to emit a new "Clio would like to record your screen" privacy
+        # notification on EVERY frame capture. screencapture is a system binary with implicit
+        # screen capture authorization and never produces these notifications.
+        # screencapture -x = no sound, -t jpg = JPEG output
         try:
             res = subprocess.run(
                 ["screencapture", "-x", "-t", "jpg", frame_path],
