@@ -924,6 +924,10 @@ class ClioServer:
 
                 # 2. Demonstration Recording Start
                 if path == "/api/record/start":
+                    # Swift may provide its pre-allocated video path so Python skips screencapture
+                    swift_video_path = body.get("swift_video_path", "").strip()
+                    if swift_video_path:
+                        server_instance.demonstration_capture.set_swift_video_path(swift_video_path)
                     res = server_instance.start_recording()
                     self._send_json(HTTPStatus.OK, res)
                     return
@@ -939,6 +943,10 @@ class ClioServer:
                     name = body.get("name", "Demonstrated Task").strip() or "Demonstrated Task"
                     trigger = body.get("trigger", "").strip()
                     desc = body.get("description", "").strip()
+                    # Swift sends the finalized video path once AVCaptureFileOutput completes
+                    swift_video_path = body.get("swift_video_path", "").strip()
+                    if swift_video_path:
+                        server_instance.demonstration_capture.set_swift_video_path(swift_video_path)
                     res = server_instance.stop_recording(
                         name=name,
                         trigger=trigger,

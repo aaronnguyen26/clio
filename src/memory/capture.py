@@ -403,6 +403,20 @@ class LiveDemonstrationCapture:
         with self._lock:
             return list(self._captured_frames)
 
+    def set_swift_video_path(self, path: str) -> None:
+        """Called by the server when the Swift layer provides a pre-recorded video path.
+
+        In macOS 15 Sequoia, video recording is handled by AVCaptureSession inside the
+        authorized Swift process (ClioBar.swift SwiftScreenRecorder). The video path is
+        passed here so Python treats it as the session's video without spawning screencapture.
+        """
+        if not path:
+            return
+        with self._lock:
+            self._swift_video_path = path
+            self._video_path = Path(path)
+        logger.info("Swift video path registered: %s", path)
+
     def _init_cg_capture(self) -> bool:
         """Initializes direct CoreGraphics and ImageIO ctypes bindings for fast desktop frame capture."""
         if self._cg_capture_initialized:
@@ -586,8 +600,19 @@ class LiveDemonstrationCapture:
         t.start()
 
     def _start_video_recorder(self) -> None:
-        """Starts continuous native video recording via macOS screencapture."""
+        """Starts continuous native video recording.
+
+        If the Swift layer has already provided a video path via set_swift_video_path(),
+        this method is a no-op — Swift's AVCaptureSession handles recording inside the
+        authorized Clio.app process, avoiding repeated TCC notifications in macOS 15 Sequoia.
+        """
         if self._mock or sys.platform != "darwin":
+            return
+        # If Swift is handling video recording, trust its path and skip spawning screencapture.
+        with self._lock:
+            has_swift_path = bool(getattr(self, "_swift_video_path", None))
+        if has_swift_path:
+            logger.info("Swift is handling screen recording — skipping screencapture spawn.")
             return
         try:
             self._session_dir.mkdir(parents=True, exist_ok=True)
@@ -912,6 +937,8 @@ class LiveDemonstrationCapture:
             self._window_movements.clear()
             self._last_window_bounds = None
             self._quality_report = None
+            # Reset Swift-provided video path for this new session
+            self._swift_video_path = None
             self._session_id = str(uuid.uuid4())[:8]
             self._session_dir = self._recordings_base_dir / self._session_id
             self._frames_dir = self._session_dir / "frames"

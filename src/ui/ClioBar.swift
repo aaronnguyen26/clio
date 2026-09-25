@@ -285,6 +285,111 @@ struct WorkflowItem: Identifiable, Decodable {
     var matchScore: Int { Int((confidence ?? 1.0) * 100) }
 }
 
+// MARK: - Swift-Native Screen Recorder (AVCaptureSession — authorized Clio.app process)
+//
+// Rationale: In macOS 15 Sequoia, spawning `screencapture -v` from Python triggers a
+// "Clio would like to record your screen" notification on EVERY recording session start,
+// even when permission is already granted in Privacy & Security. This is because macOS
+// attributes the screen capture request to the spawning process's TCC chain separately.
+// Additionally, subprocess-spawned screencapture only captures the desktop layer (wallpaper
+// + dock) in Sequoia — not application windows — unless the calling process has proper entitlements.
+//
+// Fix: Record entirely from within the authorized Clio.app Swift process using AVCaptureSession
+// + AVCaptureScreenInput(displayID: CGMainDisplayID()). This:
+//   1. Captures the FULL screen including all application windows.
+//   2. Shows the privacy notification at most ONCE (at startup via CGRequestScreenCaptureAccess).
+//   3. Never triggers repeated TCC dialogs mid-recording.
+final class SwiftScreenRecorder: NSObject, AVCaptureFileOutputRecordingDelegate {
+    static let shared = SwiftScreenRecorder()
+
+    private var captureSession: AVCaptureSession?
+    private var movieOutput: AVCaptureMovieFileOutput?
+    private var stopCompletion: ((URL?, Error?) -> Void)?
+
+    /// Starts recording the full display. Returns the URL where the video will be written,
+    /// or nil if screen capture is not authorized or session setup fails.
+    func startRecording() -> URL? {
+        guard CGPreflightScreenCaptureAccess() else {
+            CGRequestScreenCaptureAccess()
+            return nil
+        }
+
+        stopExistingSession()
+
+        let session = AVCaptureSession()
+        // CGMainDisplayID() = the primary display — captures all windows, not just desktop
+        guard let screenInput = AVCaptureScreenInput(displayID: CGMainDisplayID()) else { return nil }
+        screenInput.capturesCursor = true          // include cursor in recording
+        screenInput.capturesMouseClicks = false    // no click highlight (avoids Quartz event access)
+
+        guard session.canAddInput(screenInput) else { return nil }
+        session.addInput(screenInput)
+
+        let output = AVCaptureMovieFileOutput()
+        // Increase max duration to cover long recordings
+        output.maxRecordedDuration = CMTime(seconds: 3600, preferredTimescale: 1)
+        guard session.canAddOutput(output) else { return nil }
+        session.addOutput(output)
+
+        // Determine output path under ~/.clio/recordings/<session_uuid>/recording.mov
+        let sessionID = UUID().uuidString
+        let recordingsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".clio/recordings/\(sessionID)")
+        try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+        let outputURL = recordingsDir.appendingPathComponent("recording.mov")
+
+        self.captureSession = session
+        self.movieOutput = output
+
+        // Start session and begin recording on a background thread
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak output] in
+            guard let self = self, let output = output else { return }
+            session.startRunning()
+            // Brief warm-up so the session is stable before recording starts
+            Thread.sleep(forTimeInterval: 0.25)
+            output.startRecording(to: outputURL, recordingDelegate: self)
+        }
+
+        return outputURL
+    }
+
+    /// Stops the current recording session and delivers the finalized .mov URL via completion.
+    func stopRecording(completion: @escaping (URL?, Error?) -> Void) {
+        guard let output = movieOutput else {
+            completion(nil, nil)
+            return
+        }
+        stopCompletion = completion
+        output.stopRecording()
+    }
+
+    // MARK: AVCaptureFileOutputRecordingDelegate
+    nonisolated func fileOutput(
+        _ output: AVCaptureFileOutput,
+        didFinishRecordingTo outputFileURL: URL,
+        from connections: [AVCaptureConnection],
+        error: Error?
+    ) {
+        let completion = stopCompletion
+        stopCompletion = nil
+        captureSession?.stopRunning()
+        captureSession = nil
+        movieOutput = nil
+        // Deliver on main thread
+        DispatchQueue.main.async {
+            completion?(outputFileURL, error)
+        }
+    }
+
+    private func stopExistingSession() {
+        movieOutput?.stopRecording()
+        captureSession?.stopRunning()
+        captureSession = nil
+        movieOutput = nil
+        stopCompletion = nil
+    }
+}
+
 struct ScreenRecordingPlayerView: NSViewRepresentable {
     let videoURL: URL
 
@@ -716,11 +821,22 @@ final class ClioViewModel: ObservableObject {
         self.isRecording = true
         self.startEventMonitoring()
 
+        // Start native Swift screen recording (runs inside authorized Clio.app process).
+        // This avoids the repeated "would like to record" TCC notification that occurs when
+        // screencapture is spawned from Python (separate TCC identity in macOS 15 Sequoia).
+        let videoURL = SwiftScreenRecorder.shared.startRecording()
+
+        // Notify Python backend to start event capture. Pass swift_video_path so Python
+        // does NOT spawn its own screencapture process.
         guard let url = URL(string: "/api/record/start", relativeTo: baseURL) else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = "{}".data(using: .utf8)
+        var body: [String: Any] = [:]
+        if let vPath = videoURL?.path {
+            body["swift_video_path"] = vPath
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         Task {
             _ = try? await URLSession.shared.data(for: req)
         }
@@ -732,43 +848,66 @@ final class ClioViewModel: ObservableObject {
         self.showSaveModal = true
         self.isRecording = false
 
-        guard let url = URL(string: "/api/record/stop", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = "{\"name\":\"My Demonstrated Action\",\"trigger\":\"my demonstrated action\"}".data(using: .utf8)
+        // Stop Swift-native recording first — waits for AVCaptureFileOutput to finalize
+        // the .mov container (moov atom written) before notifying Python.
+        SwiftScreenRecorder.shared.stopRecording { [weak self] videoURL, _ in
+            guard let self = self else { return }
+            let videoPath = videoURL?.path ?? ""
 
-        Task {
-            do {
-                let (data, resp) = try await URLSession.shared.data(for: req)
-                if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        await MainActor.run {
-                            self.isStoppingRecording = false
-                            self.previewWorkflowId = json["workflow_id"] as? String
-                            if let vPath = json["video_path"] as? String, !vPath.isEmpty {
-                                self.previewVideoURL = URL(fileURLWithPath: vPath)
+            guard let url = URL(string: "/api/record/stop", relativeTo: self.baseURL) else { return }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            // Include the finalized video path so Python can use it directly
+            let body: [String: Any] = [
+                "name": "My Demonstrated Action",
+                "trigger": "my demonstrated action",
+                "swift_video_path": videoPath,
+            ]
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+            Task {
+                do {
+                    let (data, resp) = try await URLSession.shared.data(for: req)
+                    if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            await MainActor.run {
+                                self.isStoppingRecording = false
+                                self.previewWorkflowId = json["workflow_id"] as? String
+                                // Prefer Swift's video URL (already finalized); fall back to Python's path
+                                if let vPath = json["video_path"] as? String, !vPath.isEmpty {
+                                    self.previewVideoURL = URL(fileURLWithPath: vPath)
+                                } else if !videoPath.isEmpty {
+                                    self.previewVideoURL = URL(fileURLWithPath: videoPath)
+                                }
+                                self.recordingScore = json["recording_score"] as? Double
+                                self.recordingGrade = json["recording_grade"] as? String
+                                let origName = json["name"] as? String ?? ""
+                                if self.recordedName.isEmpty {
+                                    self.recordedName = (origName == "My Demonstrated Action") ? "" : origName
+                                }
+                                let origTrig = json["canonical_trigger"] as? String ?? ""
+                                if self.recordedTrigger.isEmpty {
+                                    self.recordedTrigger = (origTrig == "my demonstrated action") ? "" : origTrig
+                                }
                             }
-                            self.recordingScore = json["recording_score"] as? Double
-                            self.recordingGrade = json["recording_grade"] as? String
-                            let origName = json["name"] as? String ?? ""
-                            if self.recordedName.isEmpty {
-                                self.recordedName = (origName == "My Demonstrated Action") ? "" : origName
-                            }
-                            let origTrig = json["canonical_trigger"] as? String ?? ""
-                            if self.recordedTrigger.isEmpty {
-                                self.recordedTrigger = (origTrig == "my demonstrated action") ? "" : origTrig
-                            }
+                            return
                         }
-                        return
                     }
-                }
-                await MainActor.run {
-                    self.isStoppingRecording = false
-                }
-            } catch {
-                await MainActor.run {
-                    self.isStoppingRecording = false
+                    await MainActor.run {
+                        self.isStoppingRecording = false
+                        // Even if Python failed, show the locally-recorded video
+                        if !videoPath.isEmpty {
+                            self.previewVideoURL = URL(fileURLWithPath: videoPath)
+                        }
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.isStoppingRecording = false
+                        if !videoPath.isEmpty {
+                            self.previewVideoURL = URL(fileURLWithPath: videoPath)
+                        }
+                    }
                 }
             }
         }
