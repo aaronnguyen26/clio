@@ -254,6 +254,56 @@ final class SpeechDictationManager: ObservableObject {
 
 // MARK: - Models
 
+struct WorkflowStepItem: Identifiable, Decodable {
+    var id: String { step_id ?? "step_\(order ?? 0)" }
+    let step_id: String?
+    let order: Int?
+    let description: String?
+    let action: String?
+
+    enum CodingKeys: String, CodingKey {
+        case step_id
+        case order
+        case description
+        case action
+    }
+
+    var displayOrder: Int { order ?? 1 }
+    var displayDescription: String {
+        if let d = description, !d.isEmpty { return d }
+        let act = action ?? "action"
+        return act.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+    var actionIcon: String {
+        switch action {
+        case "click": return "hand.point.up.left.fill"
+        case "double_click": return "hand.tap.fill"
+        case "right_click": return "contextualmenu.and.cursor"
+        case "drag": return "arrow.up.and.down.and.arrow.left.and.right"
+        case "type_text": return "character.cursor.ibeam"
+        case "key_combo", "press_key": return "keyboard"
+        case "focus_app", "launch_app": return "app.fill"
+        case "wait": return "clock"
+        case "scroll": return "arrow.up.and.down"
+        default: return "circle.fill"
+        }
+    }
+    var actionBadge: String {
+        switch action {
+        case "click": return "CLICK"
+        case "double_click": return "DBL-CLICK"
+        case "right_click": return "R-CLICK"
+        case "drag": return "DRAG"
+        case "type_text": return "TYPE"
+        case "key_combo", "press_key": return "KEY"
+        case "focus_app", "launch_app": return "FOCUS"
+        case "wait": return "WAIT"
+        case "scroll": return "SCROLL"
+        default: return action?.uppercased() ?? "STEP"
+        }
+    }
+}
+
 struct WorkflowItem: Identifiable, Decodable {
     var id: String { workflow_id ?? rawId ?? UUID().uuidString }
     let workflow_id: String?
@@ -266,6 +316,7 @@ struct WorkflowItem: Identifiable, Decodable {
     let video_path: String?
     let recording_score: Double?
     let recording_grade: String?
+    let steps: [WorkflowStepItem]?
 
     enum CodingKeys: String, CodingKey {
         case workflow_id
@@ -278,13 +329,18 @@ struct WorkflowItem: Identifiable, Decodable {
         case video_path
         case recording_score
         case recording_grade
+        case steps
     }
 
     var rawId: String? { id_field }
     var displayName: String { name }
     var displayDesc: String { description ?? "" }
-    var displaySteps: Int { step_count ?? 0 }
+    var displaySteps: Int { steps?.count ?? step_count ?? 0 }
     var matchScore: Int { Int((confidence ?? 1.0) * 100) }
+    var orderedSteps: [WorkflowStepItem] {
+        guard let s = steps else { return [] }
+        return s.sorted(by: { $0.displayOrder < $1.displayOrder })
+    }
 }
 
 // MARK: - Swift-Native Screen Recorder (Apple ScreenCaptureKit + SCRecordingOutput)
@@ -872,6 +928,9 @@ final class ClioViewModel: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var statusPillText: String = "CONNECTING..."
 
+    // Workflow Steps Inspection (show steps in order before taking action)
+    @Published var inspectWorkflow: WorkflowItem? = nil
+
     private var sseTask: Task<Void, Never>?
     private let baseURL = URL(string: "http://127.0.0.1:8765")!
     private let speechManager = SpeechDictationManager()
@@ -938,6 +997,7 @@ final class ClioViewModel: ObservableObject {
     func search(text: String) async {
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
             await fetchWorkflows()
+            self.inspectWorkflow = nil
             return
         }
         guard let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
@@ -947,9 +1007,68 @@ final class ClioViewModel: ObservableObject {
             let items = try JSONDecoder().decode([WorkflowItem].self, from: data)
             self.workflows = items
             self.selectedIndex = 0
+            self.checkAndInspectQuery(text)
         } catch {
             // Silently handled
         }
+    }
+
+    func checkAndInspectQuery(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !trimmed.isEmpty else {
+            self.inspectWorkflow = nil
+            return
+        }
+        // If the query directly matches a known workflow name or canonical trigger,
+        // show the steps in order to perform that action without executing yet.
+        if let exactMatch = workflows.first(where: {
+            $0.displayName.trimmingCharacters(in: .whitespaces).lowercased() == trimmed ||
+            ($0.canonical_trigger?.trimmingCharacters(in: .whitespaces).lowercased() == trimmed)
+        }) {
+            inspectWorkflowDetails(exactMatch)
+        } else if let cur = inspectWorkflow {
+            let nameMatch = cur.displayName.localizedCaseInsensitiveContains(trimmed)
+            let trigMatch = cur.canonical_trigger?.localizedCaseInsensitiveContains(trimmed) ?? false
+            if !nameMatch && !trigMatch {
+                self.inspectWorkflow = nil
+            }
+        }
+    }
+
+    func inspectWorkflowDetails(_ wf: WorkflowItem) {
+        self.inspectWorkflow = wf
+        // If steps are not yet populated, fetch from server
+        if wf.steps == nil || wf.steps!.isEmpty {
+            guard let url = URL(string: "/api/workflows/\(wf.id)", relativeTo: baseURL) else { return }
+            Task {
+                do {
+                    let (data, response) = try await URLSession.shared.data(from: url)
+                    if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                        let fullItem = try JSONDecoder().decode(WorkflowItem.self, from: data)
+                        await MainActor.run {
+                            if self.inspectWorkflow?.id == wf.id {
+                                self.inspectWorkflow = fullItem
+                            }
+                        }
+                    }
+                } catch {
+                    // Silently handled
+                }
+            }
+        }
+    }
+
+    func runInspectedWorkflow() {
+        guard let wf = inspectWorkflow else { return }
+        let idToRun = wf.id
+        self.inspectWorkflow = nil
+        self.query = ""
+        executeById(idToRun)
+        AppDelegate.shared?.hidePanel()
+    }
+
+    func dismissInspection() {
+        self.inspectWorkflow = nil
     }
 
     func executeSelected() {
@@ -961,6 +1080,7 @@ final class ClioViewModel: ObservableObject {
         // 1. Explicit user commands to close / dismiss the bar
         if ["close", "hide", "quit", "exit", "dismiss", "cancel", "done", "esc"].contains(lower) {
             self.query = ""
+            self.inspectWorkflow = nil
             AppDelegate.shared?.hidePanel()
             return
         }
@@ -974,28 +1094,45 @@ final class ClioViewModel: ObservableObject {
             }) {
                 deleteWorkflow(id: match.id)
                 self.query = ""
+                self.inspectWorkflow = nil
                 AppDelegate.shared?.hidePanel()
                 return
             }
         }
 
+        // If the user is already inspecting the steps and presses Enter, run the action now!
+        if inspectWorkflow != nil {
+            runInspectedWorkflow()
+            return
+        }
+
         let normQuery = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
 
-        // Check if there is an exact or canonical trigger match in learned memory
+        // When the user types an action in the Clio bar, it shouldn't take any action yet;
+        // it should show the steps in order to perform that action.
         if let match = workflows.first(where: {
             let dName = $0.displayName.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
             let cTrig = $0.canonical_trigger?.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
             return dName == normQuery || cTrig == normQuery
         }) {
-            executeById(match.id)
-        } else if let topMatch = workflows.first, (topMatch.confidence ?? 0) >= 0.70 {
-            executeById(topMatch.id)
-        } else {
-            executeByQuery(trimmed)
+            inspectWorkflowDetails(match)
+            return
         }
-        self.query = ""
 
-        // Close the bar based on user command: task dispatched, clear screen for hands-free automation
+        // Check if there is a selected or top matching workflow
+        if selectedIndex >= 0 && selectedIndex < workflows.count {
+            inspectWorkflowDetails(workflows[selectedIndex])
+            return
+        }
+
+        if let topMatch = workflows.first {
+            inspectWorkflowDetails(topMatch)
+            return
+        }
+
+        // Fallback for custom dynamic query execution when no saved workflow matched
+        executeByQuery(trimmed)
+        self.query = ""
         AppDelegate.shared?.hidePanel()
     }
 
@@ -1593,6 +1730,11 @@ struct ClioBarView: View {
         if vm.showSaveModal {
             return 430
         }
+        if let inspected = vm.inspectWorkflow {
+            let count = max(1, inspected.orderedSteps.count)
+            let rows = min(count, 5)
+            return 58 + 48 + CGFloat(rows * 36) + 48 + 16
+        }
         let trimmed = vm.query.trimmingCharacters(in: .whitespaces)
         if !trimmed.isEmpty && !vm.workflows.isEmpty {
             let rowCount = min(vm.workflows.count, 4)
@@ -1879,6 +2021,167 @@ struct ClioBarView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(ObsidianTheme.cardGlass)
+            } else if let inspected = vm.inspectWorkflow {
+                // Steps In Order View (Show steps in order before performing action)
+                Divider().background(ObsidianTheme.borderSubtle)
+                VStack(alignment: .leading, spacing: 8) {
+                    // Header: Workflow Name, Trigger, Video & Step Count
+                    HStack(alignment: .center, spacing: 8) {
+                        Image(systemName: "list.bullet.rectangle.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(ObsidianTheme.platinum)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(inspected.displayName)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(ObsidianTheme.platinum)
+                            if let trig = inspected.canonical_trigger, !trig.isEmpty {
+                                Text("trigger: \"\(trig)\"")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(ObsidianTheme.slate)
+                            }
+                        }
+
+                        Spacer()
+
+                        // If video recording exists, show "▶ VIDEO" button
+                        if let vPath = inspected.video_path, !vPath.isEmpty {
+                            Button(action: {
+                                vm.previewExistingWorkflowRecording(inspected)
+                            }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "play.circle.fill")
+                                        .font(.system(size: 10))
+                                    Text("VIDEO")
+                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                }
+                                .foregroundColor(ObsidianTheme.platinum)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(ObsidianTheme.surfaceElevated)
+                                .cornerRadius(4)
+                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                            .help("View recorded demonstration video")
+                        }
+
+                        Text("\(inspected.orderedSteps.count) steps")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(ObsidianTheme.surfaceElevated)
+                            .cornerRadius(4)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+
+                    // Steps In Order List
+                    ScrollView(.vertical, showsIndicators: inspected.orderedSteps.count > 5) {
+                        VStack(spacing: 4) {
+                            if inspected.orderedSteps.isEmpty {
+                                HStack {
+                                    Spacer()
+                                    Text("No dissected steps recorded for this workflow.")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(ObsidianTheme.slate)
+                                        .padding(.vertical, 12)
+                                    Spacer()
+                                }
+                            } else {
+                                ForEach(inspected.orderedSteps) { step in
+                                    HStack(spacing: 8) {
+                                        // Step Order Number Pill
+                                        Text("\(step.displayOrder)")
+                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                            .foregroundColor(ObsidianTheme.platinum)
+                                            .frame(width: 18, height: 18)
+                                            .background(ObsidianTheme.zinc)
+                                            .clipShape(Circle())
+
+                                        // Action Icon
+                                        Image(systemName: step.actionIcon)
+                                            .font(.system(size: 11))
+                                            .foregroundColor(ObsidianTheme.slate)
+                                            .frame(width: 16)
+
+                                        // Step Description
+                                        Text(step.displayDescription)
+                                            .font(.system(size: 11, weight: .regular))
+                                            .foregroundColor(ObsidianTheme.platinumDim)
+                                            .lineLimit(1)
+
+                                        Spacer()
+
+                                        // Action Type Badge
+                                        Text(step.actionBadge)
+                                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                            .foregroundColor(ObsidianTheme.slate)
+                                            .padding(.horizontal, 4)
+                                            .padding(.vertical, 1)
+                                            .background(ObsidianTheme.surfaceElevated)
+                                            .cornerRadius(3)
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(ObsidianTheme.surfaceElevated.opacity(0.4))
+                                    .cornerRadius(6)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                    }
+                    .frame(maxHeight: 180)
+
+                    // Footer Controls: Back (Esc) & Run Action (⏎)
+                    HStack(spacing: 8) {
+                        Button(action: {
+                            vm.dismissInspection()
+                        }) {
+                            HStack(spacing: 4) {
+                                Text("Back")
+                                    .font(.system(size: 11, weight: .medium))
+                                Text("Esc")
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundColor(ObsidianTheme.slate)
+                            }
+                            .foregroundColor(ObsidianTheme.slate)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(ObsidianTheme.surfaceElevated)
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer()
+
+                        Button(action: {
+                            vm.runInspectedWorkflow()
+                        }) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 9))
+                                Text("Run Action")
+                                    .font(.system(size: 11, weight: .bold))
+                                Text("⏎")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .opacity(0.8)
+                            }
+                            .foregroundColor(ObsidianTheme.surface)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background(ObsidianTheme.platinum)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Execute this action with Clio virtual cursor (Return)")
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                }
+                .background(ObsidianTheme.cardGlass)
             } else if !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty {
                 // Search Results / Suggested Workflows with Video Preview Buttons
                 Divider().background(ObsidianTheme.borderSubtle)
@@ -1935,7 +2238,7 @@ struct ClioBarView: View {
                         .contentShape(Rectangle())
                         .onTapGesture {
                             vm.selectedIndex = idx
-                            vm.executeById(wf.id)
+                            vm.inspectWorkflowDetails(wf)
                         }
                     }
                 }
@@ -1959,11 +2262,16 @@ struct ClioBarView: View {
         .onExitCommand {
             if vm.showSaveModal {
                 vm.discardRecording()
+            } else if vm.inspectWorkflow != nil {
+                vm.dismissInspection()
             } else {
                 AppDelegate.shared?.hidePanel()
             }
         }
         .onChange(of: vm.showSaveModal) { _ in
+            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+        }
+        .onChange(of: vm.inspectWorkflow?.id) { _ in
             AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
         }
         .onChange(of: vm.workflows.count) { _ in

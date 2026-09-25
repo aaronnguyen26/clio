@@ -87,7 +87,7 @@ class TestClioServerEndpoints:
             assert data["virtual_cursor"]["state"] == "idle"
 
     def test_get_workflows(self, test_server: ClioServer) -> None:
-        """GET /api/workflows returns array of saved workflows."""
+        """GET /api/workflows returns array of saved workflows with ordered steps."""
         url = f"http://{test_server.host}:{test_server.port}/api/workflows"
         with urlopen(url, timeout=3.0) as resp:
             assert resp.status == 200
@@ -96,9 +96,25 @@ class TestClioServerEndpoints:
             assert len(data) >= 1
             assert data[0]["id"] == "wf_notes_weekly_todo"
             assert "Create Weekly To-Do" in data[0]["name"]
+            assert "steps" in data[0]
+            assert isinstance(data[0]["steps"], list)
+            assert len(data[0]["steps"]) >= 1
+            assert "description" in data[0]["steps"][0]
+            assert "order" in data[0]["steps"][0]
+
+    def test_get_single_workflow(self, test_server: ClioServer) -> None:
+        """GET /api/workflows/<id> returns specific workflow with ordered steps."""
+        url = f"http://{test_server.host}:{test_server.port}/api/workflows/wf_notes_weekly_todo"
+        with urlopen(url, timeout=3.0) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["id"] == "wf_notes_weekly_todo"
+            assert "steps" in data
+            assert len(data["steps"]) >= 1
+            assert data["steps"][0]["order"] == 1
 
     def test_get_search(self, test_server: ClioServer) -> None:
-        """GET /api/search?q=todo returns ranked matches."""
+        """GET /api/search?q=todo returns ranked matches with steps."""
         url = f"http://{test_server.host}:{test_server.port}/api/search?q=notes+todo"
         with urlopen(url, timeout=3.0) as resp:
             assert resp.status == 200
@@ -107,6 +123,8 @@ class TestClioServerEndpoints:
             assert len(data) >= 1
             assert data[0]["workflow_id"] == "wf_notes_weekly_todo"
             assert data[0]["confidence"] > 0.0
+            assert "steps" in data[0]
+            assert isinstance(data[0]["steps"], list)
 
     def test_post_set_tone(self, test_server: ClioServer) -> None:
         """POST /api/tone updates companion tone profile."""

@@ -515,6 +515,7 @@ class ClioServer:
                 elif isinstance(wf.triggers, list) and wf.triggers:
                     canonical = wf.triggers[0]
                 env = wf.environment if (hasattr(wf, "environment") and isinstance(wf.environment, dict)) else {}
+                step_dicts = [s.to_dict() if hasattr(s, "to_dict") else s for s in wf.steps] if getattr(wf, "steps", None) else []
                 results.append(
                     {
                         "workflow_id": wf.id,
@@ -527,6 +528,7 @@ class ClioServer:
                         "video_path": env.get("video_path") or "",
                         "recording_score": env.get("recording_score"),
                         "recording_grade": env.get("recording_grade"),
+                        "steps": step_dicts,
                     }
                 )
 
@@ -536,6 +538,7 @@ class ClioServer:
         if dyn_spec:
             with self._lock:
                 self._dynamic_specs[dyn_spec.id] = dyn_spec
+            dyn_steps = [s.to_dict() if hasattr(s, "to_dict") else s for s in dyn_spec.steps] if getattr(dyn_spec, "steps", None) else []
             results.append({
                 "workflow_id": dyn_spec.id,
                 "name": dyn_spec.name,
@@ -547,6 +550,7 @@ class ClioServer:
                 "video_path": "",
                 "recording_score": None,
                 "recording_grade": None,
+                "steps": dyn_steps,
             })
             results.sort(
                 key=lambda x: (
@@ -570,6 +574,7 @@ class ClioServer:
                 elif isinstance(full_wf.triggers, list) and full_wf.triggers:
                     canonical = full_wf.triggers[0]
                 env = full_wf.environment if (hasattr(full_wf, "environment") and isinstance(full_wf.environment, dict)) else {}
+                step_dicts = [s.to_dict() if hasattr(s, "to_dict") else s for s in full_wf.steps] if getattr(full_wf, "steps", None) else []
                 out.append(
                     {
                         "id": full_wf.id,
@@ -581,6 +586,7 @@ class ClioServer:
                         "video_path": env.get("video_path") or "",
                         "recording_score": env.get("recording_score"),
                         "recording_grade": env.get("recording_grade"),
+                        "steps": step_dicts,
                     }
                 )
         return out
@@ -893,9 +899,17 @@ class ClioServer:
                     self._send_json(HTTPStatus.OK, server_instance.get_status())
                     return
 
-                # 4. Workflows List
+                # 4. Workflows List or Single Workflow
                 if path == "/api/workflows":
                     self._send_json(HTTPStatus.OK, server_instance.list_workflows())
+                    return
+                if path.startswith("/api/workflows/"):
+                    w_id = path.split("/api/workflows/")[-1].strip()
+                    wf = server_instance.memory.get_workflow(w_id)
+                    if wf:
+                        self._send_json(HTTPStatus.OK, wf.to_dict())
+                    else:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Workflow not found"})
                     return
 
                 # 5. Search Workflows
