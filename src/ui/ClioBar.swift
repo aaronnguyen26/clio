@@ -339,8 +339,9 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
                     return
                 }
 
-                // SCContentFilter with excludingWindows: [] captures the full display with all windows across movements
-                let filter = SCContentFilter(display: display, excludingWindows: [])
+                // SCContentFilter with excludingApplications: [], exceptingWindows: [] captures the full display
+                // including all on-screen application windows, menubar, dock, and window movement across desktops.
+                let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
 
                 let targetScreen = NSScreen.screens.first(where: {
                     ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == display.displayID
@@ -436,7 +437,8 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
                     writer.finishWriting { [weak self] in
                         guard let self = self else { return }
                         let isSuccess = (writer.status == .completed)
-                        let finalURL = isSuccess ? validateOutput(self.currentOutputURL) : nil
+                        let hasValidFile = FileManager.default.fileExists(atPath: self.currentOutputURL?.path ?? "") && ((try? FileManager.default.attributesOfItem(atPath: self.currentOutputURL?.path ?? "")[.size] as? Int64) ?? 0) > 1024
+                        let finalURL = (isSuccess || hasValidFile) ? validateOutput(self.currentOutputURL) : nil
                         let finalCompletion = self.stopCompletion
                         self.cleanup()
                         DispatchQueue.main.async {
@@ -459,6 +461,8 @@ final class SwiftScreenRecorder: NSObject, @unchecked Sendable, SCStreamOutput, 
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen else { return }
         guard CMSampleBufferIsValid(sampleBuffer) else { return }
+        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
+        guard CMSampleBufferGetImageBuffer(sampleBuffer) != nil else { return }
 
         // Only append complete frames containing rendered window/screen content
         if let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
@@ -1013,11 +1017,11 @@ final class ClioViewModel: ObservableObject {
                             await MainActor.run {
                                 self.isStoppingRecording = false
                                 self.previewWorkflowId = json["workflow_id"] as? String
-                                // Prefer Swift's video URL (already finalized); fall back to Python's path
-                                if let vPath = json["video_path"] as? String, !vPath.isEmpty {
-                                    self.previewVideoURL = URL(fileURLWithPath: vPath)
-                                } else if !videoPath.isEmpty {
+                                // Strictly prefer Swift-recorded full screen video with active windows over any fallback
+                                if !videoPath.isEmpty && FileManager.default.fileExists(atPath: videoPath) {
                                     self.previewVideoURL = URL(fileURLWithPath: videoPath)
+                                } else if let vPath = json["video_path"] as? String, !vPath.isEmpty && FileManager.default.fileExists(atPath: vPath) {
+                                    self.previewVideoURL = URL(fileURLWithPath: vPath)
                                 }
                                 self.recordingScore = json["recording_score"] as? Double
                                 self.recordingGrade = json["recording_grade"] as? String
@@ -2091,6 +2095,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // MARK: - Main Entry Point
+
+if CommandLine.arguments.contains("--test-record") {
+    let recorder = SwiftScreenRecorder.shared
+    print("[TestRecord] Starting recording...")
+    let outURL = recorder.startRecording()
+    print("[TestRecord] startRecording returned URL: \(String(describing: outURL))")
+    var completed = false
+    Task {
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        print("[TestRecord] Stopping recording...")
+        recorder.stopRecording { url, err in
+            print("[TestRecord] stopRecording completion - URL: \(String(describing: url)), Error: \(String(describing: err))")
+            if let u = url {
+                print("[TestRecord] Video file exists: \(FileManager.default.fileExists(atPath: u.path))")
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: u.path),
+                   let size = attrs[.size] as? Int64 {
+                    print("[TestRecord] File size: \(size) bytes")
+                }
+            }
+            completed = true
+        }
+    }
+    while !completed {
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+    }
+    exit(0)
+}
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

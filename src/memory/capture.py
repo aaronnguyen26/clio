@@ -527,6 +527,13 @@ class LiveDemonstrationCapture:
         if not self._is_recording and label not in ("start", "end", "synthesize_fallback"):
             return None
 
+        with self._lock:
+            has_swift = bool(getattr(self, "_swift_video_path", None))
+        if has_swift and label not in ("synthesize_fallback",):
+            # When Swift is recording via ScreenCaptureKit, do not spawn screencapture (which captures only wallpaper).
+            # Milestone keyframes are extracted directly from the finalized Retina video container in stop_recording.
+            return None
+
         frames_dir = self._frames_dir
         frames_dir.mkdir(parents=True, exist_ok=True)
 
@@ -856,6 +863,16 @@ class LiveDemonstrationCapture:
         if self._is_valid_video_container(target):
             return target
 
+        # If swift video path was registered and exists with size > 1024 bytes, check QuickTime atoms
+        if target.exists() and target.stat().st_size > 1024:
+            try:
+                with open(target, "rb") as f:
+                    head = f.read(65536)
+                if any(atom in head for atom in (b"moov", b"mdat", b"wide", b"ftyp")):
+                    return target
+            except Exception:
+                pass
+
         logger.info(
             "Recording at %s is missing, empty (<= 1024 bytes), or invalid. Triggering fallback video synthesis...",
             target,
@@ -865,6 +882,12 @@ class LiveDemonstrationCapture:
 
     def _start_frame_capturer(self) -> None:
         """Runs periodic frame capture in the background (2 frames/sec) during active recording."""
+        with self._lock:
+            has_swift = bool(getattr(self, "_swift_video_path", None))
+        if has_swift:
+            logger.info("Swift is handling screen recording — skipping background periodic screencapture.")
+            return
+
         self._frame_capturer_stop_event.clear()
 
         def _capturer() -> None:

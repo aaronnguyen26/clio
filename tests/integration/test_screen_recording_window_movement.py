@@ -154,6 +154,8 @@ class Verifier: NSObject, SCStreamOutput {{
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {{
         guard type == .screen, CMSampleBufferIsValid(sampleBuffer) else {{ return }}
+        guard CMSampleBufferDataIsReady(sampleBuffer) else {{ return }}
+        guard CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {{ return }}
         if let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
            let attachments = attachmentsArray.first,
            let statusRaw = attachments[.status] as? Int,
@@ -467,6 +469,67 @@ print("pixel_diffs:" + String(diffs))
         })
         self.assertTrue(res_discard["success"])
         self.assertFalse(session_folder.exists(), "Session folder should be purged on discard")
+
+    @unittest.skipUnless(sys.platform == "darwin", "Requires macOS Cocoa environment")
+    def test_clio_bar_test_record_captures_active_windows(self) -> None:
+        """Runs bin/clio-bar --test-record and verifies active window frames are recorded with rich color diversity."""
+        project_root = Path(__file__).resolve().parent.parent.parent
+        bar_bin = project_root / "bin" / "clio-bar"
+        probe_bin = project_root / "bin" / "clio-probe"
+
+        if not bar_bin.exists() or not os.access(bar_bin, os.X_OK):
+            subprocess.run(["swiftc", "-O", str(project_root / "src/ui/ClioBar.swift"), "-o", str(bar_bin)], check=True)
+        if not probe_bin.exists() or not os.access(probe_bin, os.X_OK):
+            subprocess.run(["swiftc", "-O", str(project_root / "tools/clio-probe.swift"), "-o", str(probe_bin)], check=True)
+
+        res = subprocess.run([str(bar_bin), "--test-record"], capture_output=True, text=True, timeout=15.0)
+        self.assertEqual(res.returncode, 0, f"clio-bar --test-record failed: {res.stderr}")
+
+        import re
+        m = re.search(r"recordings/([A-Z0-9]+)/recording\.mov", res.stdout)
+        self.assertIsNotNone(m, f"Could not find recording path in stdout: {res.stdout}")
+        session_id = m.group(1)
+        video_path = project_root / "recordings" / session_id / "recording.mov"
+        self.assertTrue(video_path.exists(), f"Video file does not exist: {video_path}")
+        self.assertGreater(video_path.stat().st_size, 50_000, "Recorded video too small")
+
+        frames_dir = Path(self.temp_dir) / f"frames_{session_id}"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        probe_res = subprocess.run([str(probe_bin), str(video_path), str(frames_dir)], capture_output=True, text=True, timeout=10.0)
+        self.assertEqual(probe_res.returncode, 0, f"clio-probe failed: {probe_res.stderr}")
+
+        frame_files = sorted(list(frames_dir.glob("*.jpg")))
+        self.assertGreater(len(frame_files), 0, "No frames extracted by clio-probe")
+
+        # Verify frame color diversity using Swift
+        verify_script = f"""
+        import AppKit
+        guard let img = NSImage(contentsOfFile: "{frame_files[0]}"),
+              let rep = img.representations.first as? NSBitmapImageRep else {{
+            exit(1)
+        }}
+        var samples: [String: Int] = [:]
+        let stepX = max(1, rep.pixelsWide / 20)
+        let stepY = max(1, rep.pixelsHigh / 20)
+        for y in stride(from: 50, to: rep.pixelsHigh, by: stepY) {{
+            for x in stride(from: 50, to: rep.pixelsWide, by: stepX) {{
+                if let c = rep.colorAt(x: x, y: y) {{
+                    let key = String(format: "r:%.2f g:%.2f b:%.2f", c.redComponent, c.greenComponent, c.blueComponent)
+                    samples[key, default: 0] += 1
+                }}
+            }}
+        }}
+        print("UNIQUE_COLORS:\\(samples.count)")
+        """
+        chk = subprocess.run(["swift", "-e", verify_script], capture_output=True, text=True, timeout=10.0)
+        self.assertEqual(chk.returncode, 0, f"Color verification failed: {chk.stderr}")
+        c_match = re.search(r"UNIQUE_COLORS:(\d+)", chk.stdout)
+        self.assertIsNotNone(c_match)
+        unique_colors = int(c_match.group(1))
+        self.assertGreaterEqual(unique_colors, 40, f"Frame color diversity too low ({unique_colors}); likely wallpaper-only!")
+
+        # Clean up test recording
+        shutil.rmtree(video_path.parent, ignore_errors=True)
 
 
 if __name__ == "__main__":

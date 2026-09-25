@@ -2,11 +2,6 @@ import AVFoundation
 import AppKit
 import Foundation
 
-if CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "--check-perms" {
-    let preflight = CGPreflightScreenCaptureAccess()
-    print("CGPreflightScreenCaptureAccess: \(preflight)")
-    exit(0)
-}
 
 guard CommandLine.arguments.count > 1 else {
     let err = ["error": "Missing video file path"]
