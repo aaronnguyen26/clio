@@ -525,10 +525,47 @@ class ClioServer:
             "accessibility_trusted": self.check_accessibility_permission(),
         }
 
+    @staticmethod
+    def _normalize_workflow_key(name: str, trigger: str = "") -> str:
+        """Derives a normalized semantic key for an action to guarantee zero duplicate suggestions."""
+        def _clean_token(s: str) -> str:
+            s_clean = re.sub(r"[^a-z0-9]", "", (s or "").lower())
+            for prefix in ("open", "launch", "focus", "start", "goto", "view", "tab", "opentab"):
+                if s_clean.startswith(prefix) and len(s_clean) > len(prefix):
+                    s_clean = s_clean[len(prefix):]
+            if s_clean.startswith("www"):
+                s_clean = s_clean[3:]
+            if s_clean.endswith("com") and len(s_clean) > 3:
+                s_clean = s_clean[:-3]
+
+            if "youtube" in s_clean or s_clean == "yt":
+                return "youtube"
+            if "facebook" in s_clean or s_clean == "fb":
+                return "facebook"
+            if "google" in s_clean or s_clean == "gg":
+                return "google"
+            if "instagram" in s_clean or s_clean == "ig":
+                return "instagram"
+            if "notes" in s_clean or s_clean == "note":
+                return "note"
+            if "calendar" in s_clean:
+                return "calendar"
+            if "messages" in s_clean or s_clean == "msg":
+                return "messages"
+
+            return s_clean
+
+        key_n = _clean_token(name)
+        key_t = _clean_token(trigger)
+        return key_n or key_t or (name.strip().lower())
+
     def search_workflows(self, query: str) -> List[Dict[str, Any]]:
-        """Searches remembered workflows via 4-tier NL retrieval and dynamic intent synthesis."""
+        """Searches remembered workflows via 4-tier NL retrieval and dynamic intent synthesis.
+        
+        Guarantees that each unique action appears at most ONCE with zero duplication.
+        """
         matches = self.dialogue.retrieval.query(query)
-        results = []
+        candidates: List[Dict[str, Any]] = []
         for m in matches:
             wf = self.memory.get_workflow(m.workflow_id)
             if wf:
@@ -539,7 +576,9 @@ class ClioServer:
                     canonical = wf.triggers[0]
                 env = wf.environment if (hasattr(wf, "environment") and isinstance(wf.environment, dict)) else {}
                 step_dicts = [s.to_dict() if hasattr(s, "to_dict") else s for s in wf.steps] if getattr(wf, "steps", None) else []
-                results.append(
+                v_path = env.get("video_path") or ""
+                has_video = bool(v_path and os.path.exists(v_path))
+                candidates.append(
                     {
                         "workflow_id": wf.id,
                         "name": wf.name,
@@ -548,46 +587,78 @@ class ClioServer:
                         "match_type": getattr(m, "match_type", "retrieval"),
                         "canonical_trigger": canonical,
                         "step_count": len(wf.steps),
-                        "video_path": env.get("video_path") or "",
+                        "video_path": v_path,
+                        "has_video": has_video,
                         "recording_score": env.get("recording_score"),
                         "recording_grade": env.get("recording_grade"),
                         "steps": step_dicts,
+                        "updated_at": getattr(wf, "updated_at", ""),
                     }
                 )
+
+        # Deduplicate candidates by semantic action key (keeping highest quality/recency)
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for item in candidates:
+            k = self._normalize_workflow_key(item["name"], item.get("canonical_trigger", ""))
+            if k not in deduped:
+                deduped[k] = item
+            else:
+                existing = deduped[k]
+                existing_score = (
+                    (100 if existing.get("has_video") else 0)
+                    + existing.get("step_count", 0) * 5
+                    + (existing.get("confidence", 0.0) * 10)
+                )
+                new_score = (
+                    (100 if item.get("has_video") else 0)
+                    + item.get("step_count", 0) * 5
+                    + (item.get("confidence", 0.0) * 10)
+                )
+                if new_score > existing_score or (new_score == existing_score and str(item.get("updated_at", "")) > str(existing.get("updated_at", ""))):
+                    deduped[k] = item
+
+        results = list(deduped.values())
 
         # Dynamic Intent matching for arbitrary apps and browser tabs
         from src.executor.intent_synthesizer import DynamicIntentSynthesizer
         dyn_spec = DynamicIntentSynthesizer.parse_intent(query)
         if dyn_spec:
-            with self._lock:
-                self._dynamic_specs[dyn_spec.id] = dyn_spec
-            dyn_steps = [s.to_dict() if hasattr(s, "to_dict") else s for s in dyn_spec.steps] if getattr(dyn_spec, "steps", None) else []
-            results.append({
-                "workflow_id": dyn_spec.id,
-                "name": dyn_spec.name,
-                "description": dyn_spec.description,
-                "confidence": 0.75,
-                "match_type": "dynamic_intent",
-                "canonical_trigger": dyn_spec.triggers.get("canonical", query),
-                "step_count": len(dyn_spec.steps),
-                "video_path": "",
-                "recording_score": None,
-                "recording_grade": None,
-                "steps": dyn_steps,
-            })
-            results.sort(
-                key=lambda x: (
-                    x.get("confidence", 0.0),
-                    1 if x.get("match_type") != "dynamic_intent" else 0,
-                ),
-                reverse=True,
+            dyn_key = self._normalize_workflow_key(
+                dyn_spec.name,
+                dyn_spec.triggers.get("canonical", query) if isinstance(dyn_spec.triggers, dict) else query,
             )
+            # Only add dynamic intent if NO recorded workflow exists for this action
+            if dyn_key not in deduped:
+                with self._lock:
+                    self._dynamic_specs[dyn_spec.id] = dyn_spec
+                dyn_steps = [s.to_dict() if hasattr(s, "to_dict") else s for s in dyn_spec.steps] if getattr(dyn_spec, "steps", None) else []
+                results.append({
+                    "workflow_id": dyn_spec.id,
+                    "name": dyn_spec.name,
+                    "description": dyn_spec.description,
+                    "confidence": 0.75,
+                    "match_type": "dynamic_intent",
+                    "canonical_trigger": dyn_spec.triggers.get("canonical", query) if isinstance(dyn_spec.triggers, dict) else query,
+                    "step_count": len(dyn_spec.steps),
+                    "video_path": "",
+                    "recording_score": None,
+                    "recording_grade": None,
+                    "steps": dyn_steps,
+                })
+
+        results.sort(
+            key=lambda x: (
+                x.get("confidence", 0.0),
+                1 if x.get("match_type") != "dynamic_intent" else 0,
+            ),
+            reverse=True,
+        )
         return results
 
     def list_workflows(self) -> List[Dict[str, Any]]:
-        """Lists all workflows saved in memory."""
+        """Lists all workflows saved in memory, deduplicated by semantic action key."""
         raw_list = self.memory.list_workflows()
-        out = []
+        deduped: Dict[str, Dict[str, Any]] = {}
         for wf in raw_list:
             full_wf = self.memory.get_workflow(wf["id"])
             if full_wf:
@@ -598,21 +669,32 @@ class ClioServer:
                     canonical = full_wf.triggers[0]
                 env = full_wf.environment if (hasattr(full_wf, "environment") and isinstance(full_wf.environment, dict)) else {}
                 step_dicts = [s.to_dict() if hasattr(s, "to_dict") else s for s in full_wf.steps] if getattr(full_wf, "steps", None) else []
-                out.append(
-                    {
-                        "id": full_wf.id,
-                        "name": full_wf.name,
-                        "description": full_wf.description,
-                        "step_count": len(full_wf.steps),
-                        "canonical_trigger": canonical,
-                        "target_app": full_wf.target_app,
-                        "video_path": env.get("video_path") or "",
-                        "recording_score": env.get("recording_score"),
-                        "recording_grade": env.get("recording_grade"),
-                        "steps": step_dicts,
-                    }
-                )
-        return out
+                v_path = env.get("video_path") or ""
+                has_video = bool(v_path and os.path.exists(v_path))
+                item = {
+                    "id": full_wf.id,
+                    "name": full_wf.name,
+                    "description": full_wf.description,
+                    "step_count": len(full_wf.steps),
+                    "canonical_trigger": canonical,
+                    "target_app": full_wf.target_app,
+                    "video_path": v_path,
+                    "has_video": has_video,
+                    "recording_score": env.get("recording_score"),
+                    "recording_grade": env.get("recording_grade"),
+                    "steps": step_dicts,
+                    "updated_at": getattr(full_wf, "updated_at", ""),
+                }
+                k = self._normalize_workflow_key(full_wf.name, canonical)
+                if k not in deduped:
+                    deduped[k] = item
+                else:
+                    existing = deduped[k]
+                    existing_score = (100 if existing.get("has_video") else 0) + existing.get("step_count", 0) * 5
+                    new_score = (100 if item.get("has_video") else 0) + item.get("step_count", 0) * 5
+                    if new_score > existing_score or (new_score == existing_score and str(item.get("updated_at", "")) > str(existing.get("updated_at", ""))):
+                        deduped[k] = item
+        return list(deduped.values())
 
     def delete_workflow(self, workflow_id: str) -> Dict[str, Any]:
         """Deletes a saved workflow from memory and notifies subscribers."""

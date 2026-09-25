@@ -1687,6 +1687,38 @@ class LiveDemonstrationCapture:
                 spec.steps.insert(0, focus_step)
 
         if save and self.memory is not None:
+            # Deduplication: Re-use existing workflow ID if an action with matching name or trigger already exists
+            try:
+                def _norm(s: str) -> str:
+                    s_clean = re.sub(r"[^a-z0-9]", "", (s or "").lower())
+                    for prefix in ("open", "launch", "focus", "start", "goto"):
+                        if s_clean.startswith(prefix) and len(s_clean) > len(prefix):
+                            s_clean = s_clean[len(prefix):]
+                    synonyms = {"yt": "youtube", "fb": "facebook", "gg": "google", "ig": "instagram"}
+                    return synonyms.get(s_clean, s_clean)
+
+                spec_name_key = _norm(spec.name)
+                spec_trig_key = _norm(spec.triggers.get("canonical", "") if isinstance(spec.triggers, dict) else "")
+
+                for existing_meta in self.memory.list_workflows():
+                    ewf = self.memory.get_workflow(existing_meta["id"])
+                    if not ewf:
+                        continue
+                    ewf_name_key = _norm(ewf.name)
+                    ewf_trig_key = _norm(ewf.triggers.get("canonical", "") if isinstance(ewf.triggers, dict) else "")
+
+                    if (spec_name_key and ewf_name_key and spec_name_key == ewf_name_key) or \
+                       (spec_trig_key and ewf_trig_key and spec_trig_key == ewf_trig_key):
+                        logger.info(
+                            "Deduplication: Workflow '%s' matches existing ID '%s'. Updating existing workflow instead of creating duplicate.",
+                            spec.name,
+                            ewf.id,
+                        )
+                        spec.id = ewf.id
+                        break
+            except Exception as match_ex:
+                logger.debug("Deduplication matching error: %s", match_ex)
+
             try:
                 self.memory.save_workflow(spec)
                 logger.info(

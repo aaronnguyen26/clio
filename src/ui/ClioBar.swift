@@ -971,15 +971,50 @@ final class ClioViewModel: ObservableObject {
         }
     }
 
+    func deduplicateWorkflows(_ items: [WorkflowItem]) -> [WorkflowItem] {
+        var seen = Set<String>()
+        var deduped: [WorkflowItem] = []
+        for item in items {
+            func cleanToken(_ str: String) -> String {
+                var s = str.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                s = s.replacingOccurrences(of: "open ", with: "")
+                     .replacingOccurrences(of: "launch ", with: "")
+                     .replacingOccurrences(of: "focus ", with: "")
+                     .replacingOccurrences(of: "tab: ", with: "")
+                     .replacingOccurrences(of: "www.", with: "")
+                     .replacingOccurrences(of: ".com", with: "")
+                if s.contains("youtube") || s == "yt" { return "youtube" }
+                if s.contains("facebook") || s == "fb" { return "facebook" }
+                if s.contains("google") || s == "gg" { return "google" }
+                if s.contains("instagram") || s == "ig" { return "instagram" }
+                if s.contains("notes") || s == "note" { return "note" }
+                if s.contains("calendar") { return "calendar" }
+                if s.contains("messages") || s == "msg" { return "messages" }
+                return s
+            }
+            let key = cleanToken(item.displayName)
+            let trigKey = cleanToken(item.canonical_trigger ?? "")
+            let primary = !key.isEmpty ? key : trigKey
+            if !primary.isEmpty && seen.contains(primary) {
+                continue
+            }
+            if !primary.isEmpty { seen.insert(primary) }
+            if !key.isEmpty { seen.insert(key) }
+            if !trigKey.isEmpty { seen.insert(trigKey) }
+            deduped.append(item)
+        }
+        return deduped
+    }
+
     func fetchWorkflows() async {
         guard let url = URL(string: "/api/workflows", relativeTo: baseURL) else { return }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 let items = try JSONDecoder().decode([WorkflowItem].self, from: data)
-                self.workflows = items
+                self.workflows = self.deduplicateWorkflows(items)
                 self.isConnected = true
-                if self.selectedIndex >= items.count { self.selectedIndex = 0 }
+                if self.selectedIndex >= self.workflows.count { self.selectedIndex = 0 }
             }
         } catch {
             // Silently suppress -1004 connection errors while retrying
@@ -1018,7 +1053,7 @@ final class ClioViewModel: ObservableObject {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             let items = try JSONDecoder().decode([WorkflowItem].self, from: data)
-            self.workflows = items
+            self.workflows = self.deduplicateWorkflows(items)
             self.selectedIndex = 0
             self.checkAndInspectQuery(text)
         } catch {
