@@ -68,7 +68,11 @@ class TestMemoryModels(unittest.TestCase):
         valid_abs = TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x=100, abs_y=200)
         valid_abs.validate()
 
-        invalid_abs = TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x=-10, abs_y=200)
+        # COORD-FLAW-01: Multi-monitor setups allow negative absolute coordinates
+        valid_neg_abs = TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x=-10, abs_y=200)
+        valid_neg_abs.validate()
+
+        invalid_abs = TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x="invalid", abs_y=200)  # type: ignore
         with self.assertRaises(ValidationError):
             invalid_abs.validate()
 

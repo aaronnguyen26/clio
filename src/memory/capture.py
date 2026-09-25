@@ -70,6 +70,38 @@ def get_frontmost_app_info() -> Tuple[Optional[str], Optional[int]]:
         return None, None
 
 
+def get_frontmost_window_bounds(target_bundle_id: Optional[str] = None) -> Optional["WindowBounds"]:  # noqa: F821 — forward ref resolved at runtime
+    """Returns the position and size of the frontmost application window.
+
+    Uses CoreGraphics CGWindowListCopyWindowInfo via MacOSActuator (thread-safe,
+    requires no special AX threading context, and never segfaults across background
+    worker threads).
+
+    Used by the native CGEventTap callback to attach window_bounds to raw mouse events
+    so the recorder pipeline can compute normalised (norm_x, norm_y) coordinates for
+    resolution-independent replay (Bug #4 fix).
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        from src.actuators.macos import MacOSActuator
+        from src.memory.recorder import WindowBounds
+
+        act = MacOSActuator()
+        wins = act.get_windows(target_bundle_id) if target_bundle_id else act.get_windows()
+        if wins:
+            # First window in list is frontmost in z-order
+            w = wins[0]
+            if w.width > 0 and w.height > 0:
+                return WindowBounds(x=w.x, y=w.y, width=w.width, height=w.height)
+    except Exception:
+        pass
+    return None
+
+
+
+
+
 # -----------------------------------------------------------------------------
 # macOS Native Event Tap Types & Bindings
 # -----------------------------------------------------------------------------
@@ -252,7 +284,17 @@ class LiveDemonstrationCapture:
                 self._raw_events.append(event)
 
     def start_recording(self) -> bool:
-        """Starts capturing user actions."""
+        """Starts capturing user actions.
+
+        On real macOS (non-mock), this launches the CGEventTap listener and the
+        60 Hz universal mouse poller as a belt-and-suspenders fallback.  When the
+        CGEventTap returns NULL (Accessibility permission not granted), the poller
+        ensures at least button-state transitions are captured.
+
+        In mock / CI mode neither background tap is started; events are delivered
+        exclusively through :meth:`feed_event` (used by tests and
+        ``/api/record/feed``).
+        """
         with self._lock:
             if self._is_recording:
                 return True
@@ -264,6 +306,12 @@ class LiveDemonstrationCapture:
             self._last_bundle_check = self._start_time
 
         self._start_app_tracker()
+
+        # Wire native event capture on real macOS (Bug #7 fix).
+        # Mock mode: feed_event() is the only delivery path (tests / UI feed endpoint).
+        if not self._mock and sys.platform == "darwin" and self._native is not None:
+            self._start_native_tap()          # CGEventTap (preferred; starts universal poller if tap is NULL)
+
         logger.info("Started demonstration recording (active app: %s).", self._active_bundle_id)
         return True
 
@@ -395,6 +443,22 @@ class LiveDemonstrationCapture:
                     if flags & native.kCGEventFlagMaskControl:
                         modifiers.append("ctrl")
 
+                    # Fetch window bounds once per mouse event so norm_x/y can be
+                    # computed during coalescing (Bug #4 fix).  Keyboard events do
+                    # not need coordinates, so bounds is only fetched for mouse types.
+                    win_bounds = None
+                    if ev_type in (
+                        native.kCGEventLeftMouseDown,  1,
+                        native.kCGEventLeftMouseUp,    2,
+                        native.kCGEventRightMouseDown, 3,
+                        native.kCGEventRightMouseUp,   4,
+                        native.kCGEventLeftMouseDragged, 6,
+                    ):
+                        try:
+                            win_bounds = get_frontmost_window_bounds(cur_bundle)
+                        except Exception:
+                            pass
+
                     # Map event types
                     if ev_type in (native.kCGEventLeftMouseDown, 1):
                         self.feed_event(RawEvent(
@@ -405,6 +469,7 @@ class LiveDemonstrationCapture:
                             button="left",
                             modifiers=modifiers,
                             bundle_id=cur_bundle,
+                            window_bounds=win_bounds,
                         ))
                     elif ev_type in (native.kCGEventLeftMouseUp, 2):
                         self.feed_event(RawEvent(
@@ -415,6 +480,7 @@ class LiveDemonstrationCapture:
                             button="left",
                             modifiers=modifiers,
                             bundle_id=cur_bundle,
+                            window_bounds=win_bounds,
                         ))
                     elif ev_type in (native.kCGEventRightMouseDown, 3):
                         self.feed_event(RawEvent(
@@ -425,6 +491,7 @@ class LiveDemonstrationCapture:
                             button="right",
                             modifiers=modifiers,
                             bundle_id=cur_bundle,
+                            window_bounds=win_bounds,
                         ))
                     elif ev_type in (native.kCGEventRightMouseUp, 4):
                         self.feed_event(RawEvent(
@@ -435,6 +502,18 @@ class LiveDemonstrationCapture:
                             button="right",
                             modifiers=modifiers,
                             bundle_id=cur_bundle,
+                            window_bounds=win_bounds,
+                        ))
+                    elif ev_type in (native.kCGEventLeftMouseDragged, 6):
+                        self.feed_event(RawEvent(
+                            event_type=RawEventType.MOUSE_DRAG,
+                            timestamp=now,
+                            x=float(pt.x),
+                            y=float(pt.y),
+                            button="left",
+                            modifiers=modifiers,
+                            bundle_id=cur_bundle,
+                            window_bounds=win_bounds,
                         ))
                     elif ev_type in (native.kCGEventKeyDown, 10):
                         keycode = int(native.cg.CGEventGetIntegerValueField(event_ref, native.kCGKeyboardEventKeycode))
@@ -458,6 +537,7 @@ class LiveDemonstrationCapture:
                 | (1 << native.kCGEventLeftMouseUp)
                 | (1 << native.kCGEventRightMouseDown)
                 | (1 << native.kCGEventRightMouseUp)
+                | (1 << native.kCGEventLeftMouseDragged)
                 | (1 << native.kCGEventKeyDown)
             )
 
@@ -472,6 +552,7 @@ class LiveDemonstrationCapture:
 
             if not port:
                 logger.warning("CGEventTapCreate returned NULL. Universal poller active as fallback.")
+                self._start_universal_poller()
                 return
 
             self._mach_port = port
@@ -492,6 +573,19 @@ class LiveDemonstrationCapture:
                 return list(self._raw_events)
             self._is_recording = False
             events = list(self._raw_events)
+
+        if self._native and self._mach_port:
+            try:
+                self._native.cg.CGEventTapEnable(self._mach_port, False)
+            except Exception:
+                pass
+            self._mach_port = None
+        if self._native and self._run_loop:
+            try:
+                self._native.cf.CFRunLoopStop(self._run_loop)
+            except Exception:
+                pass
+            self._run_loop = None
 
         logger.info("Stopped demonstration recording. Total raw events: %d", len(events))
         return events
@@ -526,6 +620,15 @@ class LiveDemonstrationCapture:
             target_bundle_id=target_bundle_id,
         )
 
+        # Include anaphoric execution aliases so that saying "perform that action", "do that action", "run that"
+        # can also directly match via NL retrieval
+        if isinstance(spec.triggers, dict):
+            aliases = list(spec.triggers.get("aliases", []))
+            for alias in ["perform that action", "do that action", "run that action", "run recorded task", "do that", "perform that"]:
+                if alias not in aliases and alias != spec.triggers.get("canonical"):
+                    aliases.append(alias)
+            spec.triggers["aliases"] = aliases
+
         # Prepend a focus step if targeting an application and not already present
         if target_bundle_id and spec.steps:
             first_action = spec.steps[0].action
@@ -543,8 +646,25 @@ class LiveDemonstrationCapture:
                 spec.steps.insert(0, focus_step)
 
         if save and self.memory is not None:
-            self.memory.save_workflow(spec)
-            logger.info("Successfully dissected and saved workflow '%s' (ID: %s, steps: %d)", spec.name, spec.id, len(spec.steps))
+            try:
+                self.memory.save_workflow(spec)
+                logger.info(
+                    "Successfully dissected and saved workflow '%s' (ID: %s, steps: %d)",
+                    spec.name,
+                    spec.id,
+                    len(spec.steps),
+                )
+            except Exception as save_err:
+                import traceback
+                logger.error(
+                    "Failed to persist workflow '%s' to memory: %s\n%s",
+                    spec.name,
+                    save_err,
+                    traceback.format_exc(),
+                )
+                raise RuntimeError(
+                    f"Workflow dissection succeeded but database save failed: {save_err}"
+                ) from save_err
 
         return spec
 

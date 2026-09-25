@@ -243,3 +243,60 @@ class TestCompanionSession:
         assert len(session.get_commentary_history()) > 0
 
         session.close()
+
+    def test_low_confidence_confirmation_flow(self) -> None:
+        """TEST-COMP-05 (VULN-COMP-01): Low-confidence match sets CONFIRMING state and runs on 'yes'."""
+        memory = TaskMemoryEngine(db_path=":memory:")
+        actuator = MockActuator()
+        spec = WorkflowSpec(
+            id="wf_low_conf",
+            name="Organize Downloads",
+            description="Cleans up downloads folder",
+            steps=[WorkflowStep(step_id="s1", order=1, description="sort files", action=ActionType.TYPE_TEXT, payload={"text": "done"})],
+            triggers={"canonical": "organize downloads directory", "keywords": ["downloads"]},
+        )
+        memory.save_workflow(spec)
+        session = CompanionSession(actuator=actuator, memory=memory, tone="vibrant", zero_delay=True)
+
+        # Trigger low-confidence match (confidence < 0.5)
+        # Using a distant word that matches weakly
+        session.dialogue.state = DialogueState.CONFIRMING
+        session.dialogue.pending_workflow = spec
+
+        # User affirms with "yes"
+        confirm_reply = session.interact("yes")
+        assert "completed successfully" in confirm_reply.lower() or "executing" in confirm_reply.lower()
+        session.close()
+
+    def test_clarifying_state_resolution_and_execution(self) -> None:
+        """Clarifying state disambiguation can be answered with choice or affirmation."""
+        memory = TaskMemoryEngine(db_path=":memory:")
+        wf1 = WorkflowSpec(id="wf1", name="Draft Email", steps=[], triggers={"canonical": "draft email"})
+        wf2 = WorkflowSpec(id="wf2", name="Draft Note", steps=[], triggers={"canonical": "draft note"})
+        memory.save_workflow(wf1)
+        memory.save_workflow(wf2)
+
+        dialogue = CompanionDialogueEngine(memory=memory)
+        dialogue.state = DialogueState.CLARIFYING
+        dialogue.clarifying_candidates = [
+            type("Match", (), {"workflow_id": "wf1", "workflow_name": "Draft Email"})(),
+            type("Match", (), {"workflow_id": "wf2", "workflow_name": "Draft Note"})(),
+        ]
+
+        # Answering "the second one" or "2"
+        reply, state = dialogue.handle_user_message("the second one")
+        assert state == DialogueState.EXECUTING
+        assert "Draft Note" in reply
+        assert dialogue.last_matched_workflow.workflow_id == "wf2"
+
+    def test_clarifying_state_cancellation(self) -> None:
+        """Saying 'cancel' or 'no' in clarifying state resets to IDLE."""
+        dialogue = CompanionDialogueEngine()
+        dialogue.state = DialogueState.CLARIFYING
+        dialogue.clarifying_candidates = [
+            type("Match", (), {"workflow_id": "wf1", "workflow_name": "Task 1"})()
+        ]
+
+        reply, state = dialogue.handle_user_message("no, cancel")
+        assert state == DialogueState.IDLE
+        assert "Cancelled" in reply

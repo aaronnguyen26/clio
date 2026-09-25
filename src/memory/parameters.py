@@ -13,8 +13,11 @@ Supports:
 from __future__ import annotations
 
 import datetime
+import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class ParameterEngine:
@@ -96,7 +99,8 @@ class ParameterEngine:
                 val = runtime_params[key]
                 return cls._format_value(val, list_format=list_format)
 
-            # Missing parameter: retain verbatim ${key}
+            # Missing parameter: retain verbatim ${key} and log warning
+            logger.warning("Unresolved parameter token '${%s}' in template.", key)
             return match.group(0)
 
         # Single-pass regex substitution prevents recursive template injection

@@ -27,6 +27,28 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = os.path.expanduser("~/.task_automator/task_memory.db")
 
+CREDENTIAL_PATTERNS = [
+    re.compile(r"sk-[a-zA-Z0-9_\-]{20,}"),
+    re.compile(r"ghp_[a-zA-Z0-9]{20,}"),
+    re.compile(r"github_pat_[a-zA-Z0-9_]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"eyJ[a-zA-Z0-9_\-]{10,}\.eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]+"),
+    re.compile(r"(?:bearer\s+|token\s+|password\s*[:=]\s*)([a-zA-Z0-9_\-\.]{16,})", re.IGNORECASE),
+]
+
+
+def redact_sensitive_text(text: str) -> str:
+    """Scrubs sensitive credentials, tokens, and secrets with variable placeholder."""
+    if not text:
+        return text
+    redacted = text
+    for pattern in CREDENTIAL_PATTERNS:
+        if pattern.groups > 0:
+            redacted = pattern.sub(lambda m: m.group(0).replace(m.group(1), "${SENSITIVE_PARAM}"), redacted)
+        else:
+            redacted = pattern.sub("${SENSITIVE_PARAM}", redacted)
+    return redacted
+
 
 class TaskMemoryEngine:
     """Embedded SQLite workflow store with WAL mode, versioning, and FTS5 search."""
@@ -35,7 +57,24 @@ class TaskMemoryEngine:
         if db_path is None:
             db_path = DEFAULT_DB_PATH
         if db_path != ":memory:":
-            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+            db_dir = os.path.dirname(os.path.abspath(db_path))
+            os.makedirs(db_dir, mode=0o700, exist_ok=True)
+            try:
+                os.chmod(db_dir, 0o700)
+            except OSError:
+                pass
+            if not os.path.exists(db_path):
+                try:
+                    fd = os.open(db_path, os.O_CREAT | os.O_RDWR, 0o600)
+                    os.close(fd)
+                except OSError:
+                    pass
+            else:
+                try:
+                    os.chmod(db_path, 0o600)
+                except OSError:
+                    pass
+
         self.db_path = db_path
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(
@@ -49,12 +88,19 @@ class TaskMemoryEngine:
         with self._lock:
             # Enforce foreign keys & busy timeouts
             self._conn.execute("PRAGMA foreign_keys = ON;")
-            self._conn.execute("PRAGMA busy_timeout = 5000;")
+            self._conn.execute("PRAGMA busy_timeout = 30000;")
             if db_path != ":memory:" and pragma_wal:
                 try:
                     self._conn.execute("PRAGMA journal_mode = WAL;")
                 except sqlite3.OperationalError:
                     pass
+                for ext in ["", "-wal", "-shm"]:
+                    p = f"{db_path}{ext}"
+                    if os.path.exists(p):
+                        try:
+                            os.chmod(p, 0o600)
+                        except OSError:
+                            pass
 
             self._init_db()
 
@@ -177,19 +223,20 @@ class TaskMemoryEngine:
         description = getattr(spec, "description", "") or ""
 
         with self._lock:
-            cur = self._conn.cursor()
-            cur.execute("SELECT version FROM workflows WHERE id = ?", (spec_id,))
-            row = cur.fetchone()
+            with self._conn:
+                cur = self._conn.cursor()
+                cur.execute("SELECT version FROM workflows WHERE id = ?", (spec_id,))
+                row = cur.fetchone()
 
-            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            if row:
-                new_version = row["version"] + 1
-                if hasattr(spec, "version"):
-                    spec.version = new_version
-                if hasattr(spec, "updated_at"):
-                    spec.updated_at = now
-                spec_json = spec.to_json() if hasattr(spec, "to_json") else json.dumps(spec.to_dict())
-                with self._conn:
+                now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                if row:
+                    new_version = row["version"] + 1
+                    if hasattr(spec, "version"):
+                        spec.version = new_version
+                    if hasattr(spec, "updated_at"):
+                        spec.updated_at = now
+                    spec_json = spec.to_json() if hasattr(spec, "to_json") else json.dumps(spec.to_dict())
+                    spec_json = redact_sensitive_text(spec_json)
                     self._conn.execute(
                         """
                         UPDATE workflows
@@ -198,13 +245,13 @@ class TaskMemoryEngine:
                         """,
                         (name, description, new_version, spec_json, now, spec_id),
                     )
-            else:
-                new_version = getattr(spec, "version", 1) or 1
-                if hasattr(spec, "updated_at"):
-                    spec.updated_at = now
-                created_at = getattr(spec, "created_at", now) or now
-                spec_json = spec.to_json() if hasattr(spec, "to_json") else json.dumps(spec.to_dict())
-                with self._conn:
+                else:
+                    new_version = getattr(spec, "version", 1) or 1
+                    if hasattr(spec, "updated_at"):
+                        spec.updated_at = now
+                    created_at = getattr(spec, "created_at", now) or now
+                    spec_json = spec.to_json() if hasattr(spec, "to_json") else json.dumps(spec.to_dict())
+                    spec_json = redact_sensitive_text(spec_json)
                     self._conn.execute(
                         """
                         INSERT INTO workflows (id, name, description, version, active, spec_json, created_at, updated_at)
@@ -213,8 +260,7 @@ class TaskMemoryEngine:
                         (spec_id, name, description, new_version, spec_json, created_at, now),
                     )
 
-            # Record immutable version history
-            with self._conn:
+                # Record immutable version history in the same transaction
                 self._conn.execute(
                     """
                     INSERT INTO workflow_versions (workflow_id, version, change_summary, spec_json, created_at)
@@ -294,6 +340,9 @@ class TaskMemoryEngine:
 
         rec.validate()
         params_json = json.dumps(rec.parameters_used) if rec.parameters_used else None
+        if params_json:
+            params_json = redact_sensitive_text(params_json)
+        error_msg = redact_sensitive_text(rec.error_message) if rec.error_message else None
 
         with self._lock:
             with self._conn:
@@ -307,7 +356,7 @@ class TaskMemoryEngine:
                         rec.status,
                         rec.duration_ms,
                         rec.steps_completed,
-                        rec.error_message,
+                        error_msg,
                         rec.timestamp,
                         params_json,
                     ),

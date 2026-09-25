@@ -162,28 +162,32 @@ class NLRetrievalEngine:
 
         # Substring match on canonical
         if canonical and len(norm_utterance) >= 3:
-            ratio = len(norm_utterance) / max(len(norm_utterance), len(canonical))
             if canonical in norm_utterance:
-                score = round(0.85 + 0.05 * ratio, 3)
+                length_disparity = min(1.0, len(canonical) / len(norm_utterance))
+                score = round(0.85 + 0.05 * length_disparity, 3)
                 score = min(0.90, max(0.85, score))
                 sub_candidates.append((score, canonical))
-            elif ratio >= 0.50 and re.search(r"\b" + re.escape(norm_utterance) + r"\b", canonical):
-                score = round(0.85 + 0.05 * ratio, 3)
-                score = min(0.90, max(0.85, score))
-                sub_candidates.append((score, canonical))
+            elif re.search(r"\b" + re.escape(norm_utterance) + r"\b", canonical):
+                length_disparity = min(1.0, len(norm_utterance) / len(canonical))
+                if length_disparity >= 0.50:
+                    score = round(0.85 + 0.05 * length_disparity, 3)
+                    score = min(0.90, max(0.85, score))
+                    sub_candidates.append((score, canonical))
 
         # Substring match on aliases
         for alias in aliases:
             if alias and len(norm_utterance) >= 3:
-                ratio = len(norm_utterance) / max(len(norm_utterance), len(alias))
                 if alias in norm_utterance:
-                    score = round(0.85 + 0.04 * ratio, 3)
+                    length_disparity = min(1.0, len(alias) / len(norm_utterance))
+                    score = round(0.85 + 0.04 * length_disparity, 3)
                     score = min(0.89, max(0.85, score))
                     sub_candidates.append((score, alias))
-                elif ratio >= 0.50 and re.search(r"\b" + re.escape(norm_utterance) + r"\b", alias):
-                    score = round(0.85 + 0.04 * ratio, 3)
-                    score = min(0.89, max(0.85, score))
-                    sub_candidates.append((score, alias))
+                elif re.search(r"\b" + re.escape(norm_utterance) + r"\b", alias):
+                    length_disparity = min(1.0, len(norm_utterance) / len(alias))
+                    if length_disparity >= 0.50:
+                        score = round(0.85 + 0.04 * length_disparity, 3)
+                        score = min(0.89, max(0.85, score))
+                        sub_candidates.append((score, alias))
 
         best_sub_score = max((s for s, _ in sub_candidates), default=0.0)
         best_sub_trigger = next((t for s, t in sub_candidates if s == best_sub_score), canonical)
@@ -206,7 +210,14 @@ class NLRetrievalEngine:
         keywords: List[str],
     ) -> Optional[Tuple[float, str]]:
         """Tier 4: Token overlap (Jaccard similarity) & keyword fuzzy matching (confidence: 0.50 - 0.85)."""
-        tokens_u = set(re.findall(r"\w+", norm_utterance))
+        CONVERSATIONAL_STOPWORDS = {
+            "could", "you", "please", "kindly", "help", "me", "to",
+            "the", "a", "an", "can", "i", "want", "would", "like",
+        }
+        raw_tokens_u = set(re.findall(r"\w+", norm_utterance))
+        tokens_u = {t for t in raw_tokens_u if t not in CONVERSATIONAL_STOPWORDS}
+        if not tokens_u:
+            tokens_u = raw_tokens_u
         if not tokens_u:
             return None
 
@@ -218,7 +229,8 @@ class NLRetrievalEngine:
         for target in all_targets:
             if not target:
                 continue
-            tokens_t = set(re.findall(r"\w+", target))
+            raw_tokens_t = set(re.findall(r"\w+", target))
+            tokens_t = {t for t in raw_tokens_t if t not in CONVERSATIONAL_STOPWORDS} or raw_tokens_t
             if not tokens_t:
                 continue
             intersection = tokens_u.intersection(tokens_t)

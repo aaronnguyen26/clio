@@ -22,6 +22,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 import uuid
 
+from src.memory.engine import redact_sensitive_text
 from src.memory.models import (
     ActionType,
     CoordMode,
@@ -298,15 +299,36 @@ class EventCoalescingStage:
                 # Check hotkey combination (Cmd, Alt, Ctrl modifiers or compound key like 'cmd+l')
                 combo_parts = [p.strip().lower() for p in key_clean.split("+")] if "+" in key_clean else []
                 has_combo = bool(set(combo_parts).intersection({"cmd", "command", "alt", "option", "ctrl", "control", "shift", "fn"}))
-                has_cmd_ctrl = has_combo or bool(set(ev.modifiers).intersection({"cmd", "command", "alt", "option", "ctrl", "control"}))
+
+                is_nav_or_special = key_clean in (
+                    "tab", "\t", "k_48",
+                    "return", "enter", "\r", "\n", "k_36",
+                    "escape", "esc", "k_53",
+                    "backspace", "delete", "\b", "\x7f", "k_51",
+                    "up", "down", "left", "right", "k_123", "k_124", "k_125", "k_126",
+                )
+                modifiers_lower = [str(m).lower() for m in ev.modifiers] if ev.modifiers else []
+                has_shift = "shift" in modifiers_lower
+                has_cmd_ctrl = (
+                    has_combo
+                    or bool(set(modifiers_lower).intersection({"cmd", "command", "alt", "option", "ctrl", "control"}))
+                    or (has_shift and is_nav_or_special)
+                )
                 if has_cmd_ctrl:
                     self._flush_typing(typing_buffer, typing_start_t, typing_last_t, steps, step_timestamps, current_active_bundle)
                     if has_combo:
                         hotkey_keys = combo_parts
                     else:
                         hotkey_keys = [m.lower() for m in ev.modifiers]
-                        if ev.key and ev.key.lower() not in hotkey_keys:
-                            hotkey_keys.append(ev.key.lower())
+                        k_norm = {
+                            "k_48": "tab", "\t": "tab",
+                            "k_36": "return", "\r": "return", "\n": "return", "enter": "return",
+                            "k_53": "escape", "esc": "escape",
+                            "k_51": "backspace", "delete": "backspace", "\b": "backspace", "\x7f": "backspace",
+                            "k_123": "left", "k_124": "right", "k_125": "down", "k_126": "up",
+                        }.get(key_clean, key_clean)
+                        if k_norm and k_norm.lower() not in hotkey_keys:
+                            hotkey_keys.append(k_norm.lower())
 
                     step_idx = len(steps) + 1
                     target_dict = {}
@@ -326,6 +348,23 @@ class EventCoalescingStage:
                     step_timestamps.append((ev.timestamp, ev.timestamp + 0.05))
                     i += 1
                     continue
+
+                # In character typing mode, return/enter and tab insert newlines and tabs into buffer
+                if ev_type in ("key_char", "keychar"):
+                    if key_clean in ("return", "enter", "\r", "\n", "k_36"):
+                        if not typing_buffer:
+                            typing_start_t = ev.timestamp
+                        typing_last_t = ev.timestamp
+                        typing_buffer.append("\n")
+                        i += 1
+                        continue
+                    if key_clean in ("tab", "\t", "k_48"):
+                        if not typing_buffer:
+                            typing_start_t = ev.timestamp
+                        typing_last_t = ev.timestamp
+                        typing_buffer.append("\t")
+                        i += 1
+                        continue
 
                 # Check special control & navigation keys
                 if key_clean in ("return", "enter", "\r", "\n", "k_36"):
@@ -490,16 +529,76 @@ class EventCoalescingStage:
 
                 if ev_type in ("mouse_down", "mousedown"):
                     up_ev: Optional[RawEvent] = None
-                    if i + 1 < n:
+                    last_drag_ev: Optional[RawEvent] = None
+                    j = i + 1
+                    while j < n:
+                        next_ev = events[j]
                         next_t = (
-                            events[i + 1].event_type.value
-                            if isinstance(events[i + 1].event_type, RawEventType)
-                            else str(events[i + 1].event_type).lower()
+                            next_ev.event_type.value
+                            if isinstance(next_ev.event_type, RawEventType)
+                            else str(next_ev.event_type).lower()
                         )
                         if next_t in ("mouse_up", "mouseup"):
-                            up_ev = events[i + 1]
-                            i += 1  # Consume mouse_up
-                    click_end_t = up_ev.timestamp if up_ev else click_start_t + 0.05
+                            up_ev = next_ev
+                            i = j  # Consume all drag/move events up to and including mouse_up
+                            break
+                        elif next_t in ("mouse_drag", "mousedrag", "mouse_move", "mousemove"):
+                            last_drag_ev = next_ev
+                            j += 1
+                        else:
+                            break
+
+                    click_end_t = up_ev.timestamp if up_ev else (last_drag_ev.timestamp if last_drag_ev else click_start_t + 0.05)
+                    end_x = up_ev.x if up_ev else (last_drag_ev.x if last_drag_ev else click_x)
+                    end_y = up_ev.y if up_ev else (last_drag_ev.y if last_drag_ev else click_y)
+
+                    drag_dist = math.hypot(end_x - click_x, end_y - click_y)
+                    if drag_dist > 8.0:
+                        step_idx = len(steps) + 1
+                        drag_target: Dict[str, Any] = {
+                            "screen_x": int(end_x),
+                            "screen_y": int(end_y),
+                            "start_x": int(click_x),
+                            "start_y": int(click_y),
+                        }
+                        if ev.bundle_id and ev.bundle_id not in clio_bundles:
+                            drag_target["bundle_id"] = ev.bundle_id
+                            drag_target["app_name"] = ev.bundle_id.split(".")[-1]
+                        elif current_active_bundle:
+                            drag_target["bundle_id"] = current_active_bundle
+                            drag_target["app_name"] = current_active_bundle.split(".")[-1]
+
+                        if ev.window_bounds and ev.window_bounds.width > 0 and ev.window_bounds.height > 0:
+                            drag_target["norm_x"] = round(max(0.0, min(1.0, (end_x - ev.window_bounds.x) / ev.window_bounds.width)), 4)
+                            drag_target["norm_y"] = round(max(0.0, min(1.0, (end_y - ev.window_bounds.y) / ev.window_bounds.height)), 4)
+                            drag_target["start_norm_x"] = round(max(0.0, min(1.0, (click_x - ev.window_bounds.x) / ev.window_bounds.width)), 4)
+                            drag_target["start_norm_y"] = round(max(0.0, min(1.0, (click_y - ev.window_bounds.y) / ev.window_bounds.height)), 4)
+
+                        duration = max(0.1, round(click_end_t - click_start_t, 2))
+                        steps.append(
+                            WorkflowStep(
+                                step_id=f"step_{step_idx}",
+                                order=step_idx,
+                                description=f"Drag mouse from ({click_x:.0f}, {click_y:.0f}) to ({end_x:.0f}, {end_y:.0f})",
+                                action=ActionType.DRAG,
+                                target=drag_target,
+                                payload={
+                                    "start_x": int(click_x),
+                                    "start_y": int(click_y),
+                                    "end_x": int(end_x),
+                                    "end_y": int(end_y),
+                                    "duration": duration,
+                                },
+                                coordinates=TargetCoordinates(
+                                    mode=CoordMode.SCREEN_ABSOLUTE,
+                                    abs_x=int(end_x),
+                                    abs_y=int(end_y),
+                                ),
+                            )
+                        )
+                        step_timestamps.append((click_start_t, click_end_t))
+                        i += 1
+                        continue
                 else:
                     click_end_t = click_start_t + 0.05
 
@@ -743,6 +842,13 @@ class WorkflowRecorderPipeline:
         # Stage 4: Pause clamping
         final_steps = self.clamping_stage.clamp(coalesced_steps, step_timestamps)
 
+        # Sensitive Credential Scrubbing (SEC-VULN-02)
+        for st in final_steps:
+            if isinstance(st.payload, dict) and "text" in st.payload:
+                st.payload["text"] = redact_sensitive_text(str(st.payload["text"]))
+            if st.description:
+                st.description = redact_sensitive_text(st.description)
+
         # Extract primary bundle_id if not explicitly provided
         if not target_bundle_id:
             for ev in normalized_events:
@@ -752,7 +858,22 @@ class WorkflowRecorderPipeline:
 
         canon = canonical_trigger.strip() or name.strip().lower()
         aliases: List[str] = []
-        keywords = [w.lower() for w in re.findall(r"\w+", canon) if len(w) > 3]
+        name_clean = name.strip().lower()
+        if name_clean and name_clean != canon:
+            aliases.append(name_clean)
+        canon_clean = re.sub(r"[^\w\s]", " ", canon).strip()
+        canon_clean = re.sub(r"\s+", " ", canon_clean)
+        if canon_clean and canon_clean != canon and canon_clean not in aliases:
+            aliases.append(canon_clean)
+
+        raw_keywords = re.findall(r"\w+", f"{canon} {name_clean}")
+        seen_kw = set()
+        keywords: List[str] = []
+        for w in raw_keywords:
+            w_lower = w.lower()
+            if len(w_lower) >= 3 and w_lower not in seen_kw:
+                seen_kw.add(w_lower)
+                keywords.append(w_lower)
 
         spec_id = f"wf_rec_{uuid.uuid4().hex[:8]}"
         desc = description or f"Demonstrated workflow with {len(final_steps)} recorded steps."

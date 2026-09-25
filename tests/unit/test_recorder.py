@@ -195,3 +195,66 @@ class TestWorkflowRecorder(unittest.TestCase):
         self.assertEqual(len(spec.steps), 1)
         self.assertEqual(spec.steps[0].target.get("norm_x"), 0.5)
         self.assertEqual(spec.steps[0].target.get("norm_y"), 0.5)
+
+    def test_mouse_drag_coalescing(self):
+        """TEST-REC-10 (CRIT-LOGIC-01): Mouse down/up with distance > 8px emits ActionType.DRAG."""
+        pipeline = WorkflowRecorderPipeline()
+        events = [
+            RawEvent(event_type=RawEventType.MOUSE_DOWN, x=100.0, y=100.0, timestamp=1.0),
+            RawEvent(event_type=RawEventType.MOUSE_DRAG, x=150.0, y=150.0, timestamp=1.1),
+            RawEvent(event_type=RawEventType.MOUSE_UP, x=200.0, y=200.0, timestamp=1.2),
+        ]
+        spec = pipeline.process_raw_events(events, name="Drag Demo")
+        self.assertEqual(len(spec.steps), 1)
+        self.assertEqual(spec.steps[0].action, ActionType.DRAG)
+        self.assertEqual(spec.steps[0].payload.get("start_x"), 100)
+        self.assertEqual(spec.steps[0].payload.get("start_y"), 100)
+        self.assertEqual(spec.steps[0].payload.get("end_x"), 200)
+        self.assertEqual(spec.steps[0].payload.get("end_y"), 200)
+
+    def test_shift_tab_preservation(self):
+        """TEST-REC-11 (HIGH-LOGIC-01): Shift modifier is preserved on non-alphanumeric hotkeys."""
+        pipeline = WorkflowRecorderPipeline()
+        events = [
+            RawEvent(
+                event_type=RawEventType.KEY_DOWN,
+                timestamp=1.0,
+                key="tab",
+                modifiers=["shift"],
+            ),
+            RawEvent(
+                event_type=RawEventType.KEY_UP,
+                timestamp=1.05,
+                key="tab",
+                modifiers=["shift"],
+            ),
+        ]
+        spec = pipeline.process_raw_events(events, name="Shift Tab Demo")
+        self.assertEqual(len(spec.steps), 1)
+        self.assertEqual(spec.steps[0].action, ActionType.PRESS_HOTKEY)
+        self.assertEqual(spec.steps[0].payload.get("keys"), ["shift", "tab"])
+
+    def test_credential_redaction(self):
+        """TEST-REC-12 (SEC-VULN-02): Sensitive API tokens are scrubbed into placeholders."""
+        pipeline = WorkflowRecorderPipeline()
+        secret_key = "sk-1234567890abcdefghijklmnopqrstuv"
+        events = [
+            RawEvent(event_type=RawEventType.KEY_CHAR, key=c, timestamp=1.0 + i * 0.01)
+            for i, c in enumerate(secret_key)
+        ]
+        spec = pipeline.process_raw_events(events, name="Secret Typing Demo")
+        self.assertEqual(len(spec.steps), 1)
+        self.assertEqual(spec.steps[0].payload.get("text"), "${SENSITIVE_PARAM}")
+
+    def test_recorder_derives_aliases_and_keywords_from_name(self):
+        """Recorder pipeline derives alias from name and extracts keywords of len >= 3."""
+        pipeline = WorkflowRecorderPipeline()
+        spec = pipeline.process_raw_events(
+            [],
+            name="Open Safari and search",
+            canonical_trigger="open safari",
+        )
+        self.assertEqual(spec.triggers["canonical"], "open safari")
+        self.assertIn("open safari and search", spec.triggers["aliases"])
+        self.assertIn("safari", spec.triggers["keywords"])
+        self.assertIn("search", spec.triggers["keywords"])

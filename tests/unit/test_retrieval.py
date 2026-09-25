@@ -158,3 +158,10 @@ class TestNLRetrievalEngine(unittest.TestCase):
 
         sanitized_ja = NLRetrievalEngine.sanitize_fts5_query("メモを作成")
         self.assertIn('"メモを作成"', sanitized_ja)
+
+    def test_conversational_stopwords_retrieval(self):
+        """TEST-RET-13 (RETR-FLAW-02): Polite natural language queries match without score dilution."""
+        matches = self.retrieval.query("could you please kindly help me write my weekly to-do list")
+        self.assertGreaterEqual(len(matches), 1)
+        self.assertEqual(matches[0].workflow_id, "wf_notes_todo")
+        self.assertGreaterEqual(matches[0].confidence, 0.75)

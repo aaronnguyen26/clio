@@ -190,6 +190,27 @@ class TestDemonstrationCaptureAndBackgroundMode(unittest.TestCase):
         focus_actions = [a for a in mock_actuator.history if a.action_type in ("focus_app", "activate_app")]
         self.assertEqual(len(focus_actions), 0)
 
+    def test_dissect_and_save_propagates_db_error(self) -> None:
+        """When TaskMemoryEngine fails to save, dissect_and_save raises RuntimeError."""
+        def faulty_save(_):
+            raise Exception("Disk I/O error or lock collision")
+
+        self.memory.save_workflow = faulty_save
+        self.capture.start_recording()
+        self.capture.feed_event(
+            RawEvent(event_type=RawEventType.KEY_DOWN, timestamp=time.time(), key="a")
+        )
+        with self.assertRaises(RuntimeError) as ctx:
+            self.capture.dissect_and_save(name="Faulty Task")
+        self.assertIn("database save failed", str(ctx.exception))
+
+    def test_mock_capture_tap_not_started(self) -> None:
+        """In mock mode, background native tap thread is not started."""
+        capture = LiveDemonstrationCapture(memory=self.memory, mock=True)
+        capture.start_recording()
+        self.assertIsNone(capture._tap_thread)
+        capture.stop_recording()
+
 
 if __name__ == "__main__":
     unittest.main()

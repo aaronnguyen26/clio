@@ -105,11 +105,6 @@ class _NativeCoreGraphicsBindings:
             return (500.0, 500.0)
         try:
             loc = self.cg.CGEventGetLocation(ev)
-            # On macOS ARM64 Apple Silicon, CGEventGetLocation struct return via ctypes
-            # evaluates to (0.0, 0.0) due to libffi floating-point register ABI differences.
-            # Return neutral coordinates so the 50Hz watchdog does not falsely trip on top-left.
-            if loc.x == 0.0 and loc.y == 0.0:
-                return (500.0, 500.0)
             return (float(loc.x), float(loc.y))
         finally:
             self.cf.CFRelease(ev)
@@ -292,9 +287,6 @@ class FailsafeWatchdog:
         if not (math.isfinite(x) and math.isfinite(y)):
             return None
 
-        # Filter out (0.0, 0.0) — Apple Silicon ctypes struct zero fallback
-        if abs(x) < 1.0 and abs(y) < 1.0:
-            return None
 
         displays = self.get_display_bounds()
         m = self.margin

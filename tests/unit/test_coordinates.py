@@ -14,6 +14,7 @@ import unittest
 
 from src.actuators.types import WindowInfo
 from src.memory.coordinates import CoordinateAdapter
+from src.memory.models import CoordMode, TargetCoordinates
 
 
 class TestCoordinateAdapter(unittest.TestCase):
@@ -127,3 +128,10 @@ class TestCoordinateAdapter(unittest.TestCase):
         rx, ry, rw, rh = CoordinateAdapter.to_screen_rect(0.1, 0.1, 0.5, 0.5, self.window)
         self.assertEqual((rx, ry), (280, 160))
         self.assertEqual((rw, rh), (400, 300))
+
+    def test_negative_coordinates_validation(self):
+        """TEST-COORD-10 (COORD-FLAW-01): Negative screen coordinates are valid on multi-monitor setups."""
+        coords = TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x=-1440, abs_y=-200)
+        coords.validate()
+        self.assertEqual(coords.abs_x, -1440)
+        self.assertEqual(coords.abs_y, -200)

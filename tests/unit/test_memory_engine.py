@@ -217,3 +217,40 @@ class TestTaskMemoryEngine(unittest.TestCase):
         # Ensure FTS query returns 0 matches for soft-deleted workflow
         matches_after = self.engine.search_workflows_fts("unique_soft_delete_trigger_token")
         self.assertEqual(len(matches_after), 0)
+
+    def test_posix_permissions(self):
+        """TEST-MEM-11 (SEC-VULN-01): Enforce 0700 dir and 0600 file permissions on task_memory.db."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_dir = os.path.join(tmpdir, "restricted_dir")
+            db_path = os.path.join(target_dir, "test.db")
+            engine = TaskMemoryEngine(db_path=db_path)
+            engine.close()
+
+            dir_mode = os.stat(target_dir).st_mode & 0o777
+            file_mode = os.stat(db_path).st_mode & 0o777
+            self.assertEqual(dir_mode, 0o700)
+            self.assertEqual(file_mode, 0o600)
+
+    def test_credential_redaction_at_rest(self):
+        """TEST-MEM-12 (SEC-VULN-02): Ensure API keys in workflows and telemetry are scrubbed."""
+        spec = WorkflowSpec(
+            id="wf_secret",
+            name="Workflow with Secret",
+            description="Typing API key sk-abcdef1234567890abcdef123456",
+            steps=[
+                WorkflowStep(
+                    step_id="step_1",
+                    order=1,
+                    description="Enter secret",
+                    action=ActionType.TYPE_TEXT,
+                    payload={"text": "ghp_1234567890abcdefghijklmnopqrstuv"},
+                )
+            ],
+        )
+        self.engine.save_workflow(spec)
+        retrieved = self.engine.get_workflow("wf_secret")
+        self.assertIsNotNone(retrieved)
+        self.assertNotIn("sk-abcdef", retrieved.description)
+        self.assertIn("${SENSITIVE_PARAM}", retrieved.description)
+        self.assertNotIn("ghp_123456", retrieved.steps[0].payload["text"])
+        self.assertIn("${SENSITIVE_PARAM}", retrieved.steps[0].payload["text"])

@@ -39,4 +39,8 @@ codesign --force --deep --sign - /Users/minhnguyen/Desktop/Clio.app
 mdimport /Applications/Clio.app || true
 touch /Applications/Clio.app || true
 
+echo "==> Packaging dist/Clio-macOS.zip..."
+mkdir -p dist
+zip -r -FS dist/Clio-macOS.zip "${APP_BUNDLE}"
+
 echo "==> Build and Spotlight registration complete!"

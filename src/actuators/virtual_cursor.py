@@ -28,6 +28,7 @@ from enum import Enum
 import logging
 import math
 import os
+import queue
 import sys
 import threading
 import time
@@ -137,6 +138,15 @@ class _VirtualCursorNativeBindings:
 
         # CoreGraphics function prototypes
         cg = self.cg
+        cg.CGEventCreate.argtypes = [c_void_p]
+        cg.CGEventCreate.restype = c_void_p
+
+        cg.CGEventGetLocation.argtypes = [c_void_p]
+        cg.CGEventGetLocation.restype = CGPoint
+
+        cg.CGEventPost.argtypes = [c_uint32, c_void_p]
+        cg.CGEventPost.restype = None
+
         cg.CGEventCreateMouseEvent.argtypes = [c_void_p, c_uint32, CGPoint, c_uint32]
         cg.CGEventCreateMouseEvent.restype = c_void_p
 
@@ -215,6 +225,23 @@ class _VirtualCursorNativeBindings:
     def resolve_pid_from_bundle_id(self, bundle_id: str) -> Optional[int]:
         """Resolves target process PID from a macOS application bundle ID or name."""
         import subprocess
+        import re
+
+        # Fast and reliable lookup via macOS lsappinfo
+        if "." in bundle_id:
+            try:
+                out = subprocess.check_output(
+                    ["lsappinfo", "info", "-bundleid", bundle_id],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                    timeout=1.0,
+                )
+                m = re.search(r'\bpid\s*=\s*(\d+)', out)
+                if m:
+                    return int(m.group(1))
+            except Exception:
+                pass
+
         clean = bundle_id.split(".")[-1] if "." in bundle_id else bundle_id
         try:
             res = subprocess.run(["pgrep", "-x", clean], capture_output=True, text=True, check=False)
@@ -347,6 +374,9 @@ class VirtualCursor:
         self._history: List[VirtualCursorEvent] = []
         self._trajectory: List[Tuple[float, float, float]] = [(self._vx, self._vy, time.time())]
         self._listeners: List[Callable[[VirtualCursorEvent], None]] = []
+        self._listener_queue: queue.Queue = queue.Queue(maxsize=1000)
+        self._listener_thread: Optional[threading.Thread] = None
+        self._cancel_event = threading.Event()
         self._lock = threading.RLock()
 
     # -------------------------------------------------------------------------
@@ -553,7 +583,7 @@ class VirtualCursor:
                         speed=dist / actual_duration,
                         velocity=(vx_vel, vy_vel),
                     )
-                    self._record_event(inter_event)
+                    self._record_event(inter_event, save_to_history=False)
 
                 if not self._mock and step_delay > 0:
                     time.sleep(step_delay)
@@ -916,6 +946,10 @@ class VirtualCursor:
         if self.target_pid is not None:
             return self.target_pid
 
+        if getattr(self, "background_mode", False):
+            logger.warning("VirtualCursor running in background mode without target PID; refusing to fall back to frontmost app.")
+            return None
+
         native = _get_native_bindings()
         if native:
             pid = native.resolve_frontmost_pid()
@@ -952,6 +986,9 @@ class VirtualCursor:
             if native:
                 from ctypes import c_uint16
                 for ch in text:
+                    if self._cancel_event.is_set():
+                        logger.info("type_text aborted by cancellation event.")
+                        break
                     if ch in ("\n", "\r"):
                         ev_d = native.cg.CGEventCreateKeyboardEvent(None, 36, True)
                         ev_u = native.cg.CGEventCreateKeyboardEvent(None, 36, False)
@@ -1126,14 +1163,6 @@ class VirtualCursor:
             if native_tmp:
                 pid = native_tmp.resolve_frontmost_pid()
         if pid is None:
-            try:
-                import subprocess
-                res = subprocess.run(["pgrep", "-x", "Finder"], capture_output=True, text=True, check=False)
-                if res.returncode == 0 and res.stdout.strip():
-                    pid = int(res.stdout.strip().splitlines()[0])
-            except Exception:
-                pass
-        if pid is None:
             logger.debug("VirtualCursor: No target_pid set; live click skipped to preserve physical mouse.")
             return
 
@@ -1156,27 +1185,6 @@ class VirtualCursor:
             native.cg.CGEventSetIntegerValueField(ev, native.kCGMouseEventClickState, click_state)
             native.cg.CGEventPostToPid(pid, ev)
             native.cf.CFRelease(ev)
-
-        # In live macOS desktop mode: only dispatch via HID if not in background mode and target process is frontmost
-        front_pid = native.resolve_frontmost_pid()
-        if not self.background_mode and (pid is None or front_pid == pid) and sys.platform == "darwin":
-            try:
-                loc_ev = native.cg.CGEventCreate(None)
-                if loc_ev:
-                    pt = native.cg.CGEventGetLocation(loc_ev)
-                    orig_x, orig_y = float(pt.x), float(pt.y)
-                    native.cf.CFRelease(loc_ev)
-
-                    hid_ev = native.cg.CGEventCreateMouseEvent(None, cg_type, native.CGPoint(x, y), cg_btn)
-                    if hid_ev:
-                        native.cg.CGEventSetIntegerValueField(hid_ev, native.kCGMouseEventClickState, click_state)
-                        native.cg.CGEventPost(0, hid_ev)  # kCGHIDEventTap
-                        native.cf.CFRelease(hid_ev)
-
-                    # Instantly restore hardware mouse position
-                    native.cg.CGWarpMouseCursorPosition(native.CGPoint(orig_x, orig_y))
-            except Exception as e:
-                logger.debug("Live click dispatch error: %s", e)
 
     def _dispatch_native_drag_event(self, x: float, y: float, button: str) -> None:
         """Dispatches mouse dragged event directly to target process PID."""
@@ -1209,22 +1217,18 @@ class VirtualCursor:
     # Telemetry, Observers & Assertion Helpers
     # -------------------------------------------------------------------------
 
-    def _record_event(self, event: VirtualCursorEvent) -> None:
+    def _record_event(self, event: VirtualCursorEvent, save_to_history: bool = True) -> None:
         """Records event to history and notifies subscribed listeners (non-blocking, off-lock)."""
-        self._history.append(event)
-        listeners = list(self._listeners)
+        if save_to_history:
+            self._history.append(event)
+        with self._lock:
+            listeners = list(self._listeners)
         if listeners:
-            # Fire listeners in a daemon thread so we NEVER hold self._lock while
-            # a listener tries to acquire another lock (e.g. ClioServer._lock → deadlock).
-            import threading
-            def _dispatch():
-                for listener in listeners:
-                    try:
-                        listener(event)
-                    except Exception as e:
-                        logger.error("Error in virtual cursor listener callback: %s", e)
-            t = threading.Thread(target=_dispatch, daemon=True)
-            t.start()
+            for listener in listeners:
+                try:
+                    listener(event)
+                except Exception as e:
+                    logger.error("Error in virtual cursor listener callback: %s", e)
 
     def add_listener(self, callback: Callable[[VirtualCursorEvent], None]) -> None:
         """Subscribes an observer callback to receive virtual cursor events."""

@@ -68,10 +68,11 @@ class TargetCoordinates:
             if self.norm_y is not None and not (0.0 <= float(self.norm_y) <= 1.0):
                 raise ValidationError(f"norm_y must be within [0.0, 1.0], got {self.norm_y}")
         elif self.mode == CoordMode.SCREEN_ABSOLUTE:
-            if self.abs_x is not None and self.abs_x < 0:
-                raise ValidationError(f"abs_x must be >= 0, got {self.abs_x}")
-            if self.abs_y is not None and self.abs_y < 0:
-                raise ValidationError(f"abs_y must be >= 0, got {self.abs_y}")
+            # Multi-monitor setups can have valid negative absolute screen coordinates
+            if self.abs_x is not None and not isinstance(self.abs_x, (int, float)):
+                raise ValidationError(f"abs_x must be numeric, got {self.abs_x}")
+            if self.abs_y is not None and not isinstance(self.abs_y, (int, float)):
+                raise ValidationError(f"abs_y must be numeric, got {self.abs_y}")
 
     def to_dict(self) -> Dict[str, Any]:
         return {

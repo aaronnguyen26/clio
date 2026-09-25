@@ -129,14 +129,16 @@ def build_web_automation_workflow(target_url: str = "https://news.ycombinator.co
 def build_cross_domain_workflow(
     source_url: str = "https://en.wikipedia.org/wiki/Autonomous_agent",
     target_app_bundle: str = "com.apple.Notes",
+    extracted_text: Optional[str] = None,
 ) -> WorkflowSpec:
     """Benchmark 3: Cross-Domain Workflow (Web <-> Desktop data transfer)."""
-    extracted_summary = (
+    default_summary = (
         "## Autonomous Agent Research Brief\n\n"
         "An autonomous agent is an entity that makes decisions and performs actions "
         "in an environment to achieve specific objectives hands-free without human intervention.\n\n"
         f"Source: {source_url}\n"
     )
+    extracted_summary = extracted_text if extracted_text is not None else default_summary
 
     steps = [
         # Phase 1: Web source retrieval

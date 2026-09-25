@@ -96,3 +96,59 @@ Validate the completed application by executing an autonomous end-to-end task: l
 - [ ] The app autonomously opens the native Notes app on the machine.
 - [ ] Creates a new note and writes a formatted weekly to-do list without any manual human typing or clicking.
 - [ ] Confirms successful completion of the to-do list creation back to the user.
+
+## Follow-up — 2026-09-24T17:58:04Z
+
+Conduct a comprehensive security and logic architecture audit of the Clio autonomous desktop companion app as a senior security and logic engineer (10+ years experience), diagnosing latent vulnerabilities, race conditions, and architectural flaws, and generating architectural test cases that have zero impact on the user's computer and desktop workflow.
+
+Working directory: /Users/minhnguyen/Desktop/Coding/imitate
+Integrity mode: demo
+
+## Requirements
+
+### R1. Non-Disruptive & Background Safety Guarantees
+All architectural investigations, validations, and test case executions must be strictly non-disruptive to the user's machine and workflow:
+- Independent Virtual Cursor Only: Never touch or displace the user's physical hardware mouse pointer (`kCGHIDEventTap` / `CGWarpMouseCursorPosition` are strictly prohibited). All cursor simulation must route through Clio's independent `VirtualCursor` (`CGEventPostToPid` or `MockActuator`).
+- Background-Only Application Launches: Any application launched or inspected during tests must run strictly in the background (e.g. `open -g -j` or headless mock) without stealing active window focus, popping up over user windows, or interrupting user input.
+- Strict View-Only Codebase Preservation: Zero modifications to existing files in `src/` or `tests/`.
+
+### R2. Threat Model & Attack Surface Audit
+Perform a systematic security analysis across all application boundaries:
+- Local HTTP and SSE Server (`src/server/server.py`): Cross-Origin Resource Sharing (CORS), Cross-Site Request Forgery (CSRF), DNS rebinding, unauthenticated local REST endpoints (`/api/replay`, `/api/record/*`, `/api/chat`) enabling local/remote arbitrary OS action replay or execution, and lack of origin verification.
+- OS Actuators & IPC Security (`src/actuators/`): Ctypes CoreGraphics boundary safety, AppleScript/shell injection vulnerabilities in application launching or window management (`subprocess.run(["open", ...])`), Quartz event injection vectors, and failsafe watchdog bypass conditions.
+- Storage & Data Security (`src/memory/`): SQL injection vectors in dynamic queries or schema migrations, plaintext storage of sensitive user input in SQLite task logs, and local file permission boundaries.
+
+### R3. Core Logic, State Machine & Concurrency Diagnosis
+Audit internal runtime logic, event loops, and concurrency models for:
+- State Machine Race Conditions: Thread contention and state desynchronization between `ThreadingHTTPServer`, `AutonomousWorkflowExecutor`, `LiveDemonstrationCapture`, and `ExecutionPoller`.
+- Event Coalescing & Recording: Edge cases in `DemonstrationRecorder` and `LiveDemonstrationCapture` during high-frequency user input, multi-modifier hotkeys, mouse drag segmentation, and focus transitions.
+- SQLite Concurrency & Transactions: Database lock timeouts, write contention across worker threads, and uncommitted transaction rollbacks during unexpected aborts or failsafe triggers.
+- Parameter Extraction & Retrieval Logic: Failure modes in `NLRetrievalEngine` token scoring, coordinate scaling errors across multi-monitor setups, and dynamic variable binding hallucinations.
+
+### R4. Architectural Test Case Specifications
+Develop a complete architectural test suite specification covering the diagnosed failure modes and edge cases:
+- Each test case must specify Preconditions, Trigger Action, Expected Behavior, Failure/Vulnerability Mode, and Impact.
+- All test case executions must operate non-destructively using `MockActuator` or Clio's background `VirtualCursor` with isolated in-memory databases (`:memory:`).
+
+### R5. Senior Engineer Architecture Audit Deliverable
+Produce an in-depth, professional audit report (`AUDIT_REPORT.md`) containing:
+- Executive Summary & System Architecture Overview.
+- Threat Matrix & Severity Classification (Critical, High, Medium, Low/Informational).
+- Detailed Vulnerability & Logic Flaw Catalog with exact file and line references, root cause analysis, exploit/failure scenarios, and impact assessments.
+- Concrete, actionable remediation guidelines and hardened architecture recommendations.
+
+## Acceptance Criteria
+
+### Workflow & User Safety Guardrails
+- [ ] No hardware mouse displacement occurs during any testing phase (100% verified via virtual cursor invariants or mock actuators).
+- [ ] No active window focus is stolen from the user; background flags (`open -g -j` or mocks) are strictly used.
+- [ ] Existing codebase integrity is 100% preserved (`git diff src/ tests/` is clean).
+
+### Subsystem Audit Depth
+- [ ] Complete threat modeling and logic analysis across `src/actuators`, `src/memory`, `src/executor`, `src/server`, `src/companion`, and `src/benchmark`.
+- [ ] Vulnerabilities and concurrency bugs cited with specific file paths and line ranges.
+
+### Architectural Test Cases & Report Quality
+- [ ] Test cases specify clear, repeatable steps to verify each diagnosed vulnerability and logic failure mode without host machine side effects.
+- [ ] Final report in `AUDIT_REPORT.md` details threat ratings, architectural diagnosis, and remediation blueprints.
+

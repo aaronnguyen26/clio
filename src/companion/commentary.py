@@ -7,6 +7,7 @@ Provides real-time narrative commentary synthesis with configurable tone profile
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -113,6 +114,7 @@ class CommentaryEngine:
         self._last_commentary_time = 0.0
         self.commentary_log: List[str] = []
         self._listeners: List[Callable[[str], None]] = []
+        self._lock = threading.Lock()
 
         if self.bus is not None:
             self.bus.subscribe(self.handle_event)
@@ -126,7 +128,8 @@ class CommentaryEngine:
 
     def add_commentary_listener(self, listener: Callable[[str], None]) -> None:
         """Adds a callback to receive newly generated commentary text."""
-        self._listeners.append(listener)
+        with self._lock:
+            self._listeners.append(listener)
 
     def handle_event(self, event: ExecutionEvent) -> Optional[str]:
         """Processes an execution event and synthesizes personality commentary.
@@ -159,7 +162,10 @@ class CommentaryEngine:
         self._last_commentary_time = now
         self.commentary_log.append(formatted)
 
-        for listener in self._listeners:
+        with self._lock:
+            listeners_copy = list(self._listeners)
+
+        for listener in listeners_copy:
             try:
                 listener(formatted)
             except Exception as e:

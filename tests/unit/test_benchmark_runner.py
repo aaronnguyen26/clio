@@ -160,3 +160,19 @@ class TestBenchmarkRunnerExecution:
             assert rep.r6_compliant is True
             assert rep.error is None
             assert rep.duration_seconds >= 0.0
+
+    def test_r6_background_invariants_rejection(self) -> None:
+        """TEST-BM-01 (VULN-BM-01): verify_r6_background_invariants rejects illegal warp_mouse actions."""
+        actuator = MockActuator()
+        actuator.launch_app("com.apple.Notes")
+        assert BenchmarkCompletionVerifier.verify_r6_background_invariants(actuator) is True
+
+        from src.actuators.types import ActuatedAction
+        actuator._history.append(ActuatedAction(action_type="warp_mouse", parameters={}, timestamp=1.0))
+        assert BenchmarkCompletionVerifier.verify_r6_background_invariants(actuator) is False
+
+    def test_cross_domain_custom_extracted_text(self) -> None:
+        """TEST-BM-02 (VULN-BM-02): Dynamic research text is properly transferred in cross-domain recipe."""
+        custom_text = "Custom Autonomous Research Summary"
+        spec = build_cross_domain_workflow(extracted_text=custom_text)
+        assert spec.steps[4].payload["text"] == custom_text

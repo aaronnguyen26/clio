@@ -15,6 +15,7 @@ import logging
 import os
 from pathlib import Path
 import queue
+import re
 import sys
 import threading
 import time
@@ -48,10 +49,14 @@ class ClioServer:
         actuator: Optional[BaseActuator] = None,
         tone: str = "vibrant",
         zero_delay: bool = False,
+        auth_token: Optional[str] = None,
+        require_auth: bool = False,
     ) -> None:
         self.host = host
         self.port = port
         self.zero_delay = zero_delay
+        self.auth_token = auth_token
+        self.require_auth = require_auth or (auth_token is not None)
 
         # Core subsystems
         self.bus = ExecutionEventBus()
@@ -60,7 +65,11 @@ class ClioServer:
 
         # Determine if actuator is mock or live macOS
         from src.actuators.mock import MockActuator
-        is_mock = isinstance(self.actuator, MockActuator) or (getattr(self.actuator, "mode", None) == "mock")
+        is_mock = (
+            isinstance(self.actuator, MockActuator)
+            or (getattr(self.actuator, "mode", None) in ("mock", ActuatorMode.MOCK))
+            or ("Mock" in self.actuator.__class__.__name__)
+        )
         if sys.platform != "darwin":
             is_mock = True
 
@@ -104,6 +113,7 @@ class ClioServer:
         self._recent_commentary: List[str] = []
         self._sse_clients: List[queue.Queue[Dict[str, Any]]] = []
         self._dynamic_specs: Dict[str, WorkflowSpec] = {}
+        self._last_recorded_workflow_id: Optional[str] = None
 
         # Wire up listeners
         self._wire_listeners()
@@ -176,21 +186,21 @@ class ClioServer:
         self.virtual_cursor.add_listener(_on_cursor_event)
 
     def _broadcast_sse(self, data: Dict[str, Any]) -> None:
-        """Pushes a message dict to all active SSE queues."""
+        """Pushes a message dict to all active SSE queues using ring-buffer drop-oldest behavior."""
         with self._lock:
-            dead_clients: List[queue.Queue[Dict[str, Any]]] = []
-            for q in self._sse_clients:
+            for q in list(self._sse_clients):
                 try:
                     q.put_nowait(data)
                 except queue.Full:
-                    dead_clients.append(q)
-            for dead in dead_clients:
-                if dead in self._sse_clients:
-                    self._sse_clients.remove(dead)
+                    try:
+                        q.get_nowait()
+                        q.put_nowait(data)
+                    except Exception:
+                        pass
 
     def register_sse_client(self) -> queue.Queue[Dict[str, Any]]:
         """Registers a new SSE listener queue."""
-        q: queue.Queue[Dict[str, Any]] = queue.Queue(maxsize=100)
+        q: queue.Queue[Dict[str, Any]] = queue.Queue(maxsize=500)
         with self._lock:
             self._sse_clients.append(q)
         return q
@@ -234,9 +244,27 @@ class ClioServer:
                     "is_recording": self.demonstration_capture.is_recording,
                     "event_count": self.demonstration_capture.event_count,
                     "elapsed_seconds": round(self.demonstration_capture.elapsed_seconds, 1),
+                    "last_recorded_workflow_id": self._last_recorded_workflow_id,
                 },
+                "last_recorded_workflow_id": self._last_recorded_workflow_id,
+                "accessibility_trusted": self.check_accessibility_permission(),
                 "recent_commentary": list(self._recent_commentary),
             }
+
+    def check_accessibility_permission(self) -> bool:
+        """Returns True if process has macOS accessibility permissions, False otherwise."""
+        if sys.platform != "darwin":
+            return True
+        try:
+            import ctypes
+            hiservices = ctypes.cdll.LoadLibrary(
+                "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices"
+            )
+            hiservices.AXIsProcessTrusted.restype = ctypes.c_bool
+            hiservices.AXIsProcessTrusted.argtypes = []
+            return bool(hiservices.AXIsProcessTrusted())
+        except Exception:
+            return False
 
     def set_tone(self, tone: str) -> None:
         """Updates tone profile across dialogue and commentary subsystems."""
@@ -245,8 +273,14 @@ class ClioServer:
         self._broadcast_sse({"type": "tone_changed", "tone": tone})
 
     def start_recording(self) -> Dict[str, Any]:
-        """Starts capturing a live user demonstration."""
-        success = self.demonstration_capture.start_recording()
+        """Starts capturing a live user demonstration with mutual exclusion against execution."""
+        with self._lock:
+            if self._is_executing:
+                return {
+                    "success": False,
+                    "error": "Cannot start demonstration recording while a workflow is executing.",
+                }
+            success = self.demonstration_capture.start_recording()
         if success:
             self._broadcast_sse({
                 "type": "recording",
@@ -262,27 +296,77 @@ class ClioServer:
         description: str = "",
     ) -> Dict[str, Any]:
         """Stops capturing, auto-dissects events into WorkflowSpec, and saves to memory."""
-        spec = self.demonstration_capture.dissect_and_save(
-            name=name,
-            canonical_trigger=trigger,
-            description=description,
-        )
-        self._broadcast_sse({
-            "type": "recording",
-            "status": "stopped",
-            "workflow_id": spec.id,
-            "name": spec.name,
-            "step_count": len(spec.steps),
-            "timestamp": time.time(),
-        })
-        return {
-            "success": True,
-            "workflow_id": spec.id,
-            "name": spec.name,
-            "canonical_trigger": spec.triggers.get("canonical", ""),
-            "steps": [asdict(s) for s in spec.steps],
-            "total_steps": len(spec.steps),
+        try:
+            spec = self.demonstration_capture.dissect_and_save(
+                name=name,
+                canonical_trigger=trigger,
+                description=description,
+            )
+            with self._lock:
+                self._last_recorded_workflow_id = spec.id
+            self.dialogue.last_recorded_workflow_id = spec.id
+
+            self._broadcast_sse({
+                "type": "recording",
+                "status": "stopped",
+                "workflow_id": spec.id,
+                "name": spec.name,
+                "step_count": len(spec.steps),
+                "timestamp": time.time(),
+            })
+            return {
+                "success": True,
+                "workflow_id": spec.id,
+                "name": spec.name,
+                "canonical_trigger": spec.triggers.get("canonical", ""),
+                "steps": [asdict(s) for s in spec.steps],
+                "total_steps": len(spec.steps),
+            }
+        except Exception as e:
+            logger.error("Error stopping and saving demonstration: %s", e)
+            self._broadcast_sse({
+                "type": "recording",
+                "status": "error",
+                "error": str(e),
+                "timestamp": time.time(),
+            })
+            return {
+                "success": False,
+                "error": str(e),
+            }
+
+    def chat(self, message: str) -> Dict[str, Any]:
+        """Processes a natural language chat message through the companion dialogue engine (Bug #1 fix).
+
+        Routes through CompanionDialogueEngine state machine (IDLE -> CONFIRMING -> EXECUTING).
+        If EXECUTING is triggered, initiates asynchronous execution via execute_workflow_async.
+        """
+        reply, state = self.dialogue.handle_user_message(message)
+        state_str = state.value if hasattr(state, "value") else str(state)
+        response_payload: Dict[str, Any] = {
+            "reply": reply,
+            "state": state_str,
+            "triggered_workflow": None,
         }
+
+        if state == DialogueState.EXECUTING:
+            wf_match = getattr(self.dialogue, "last_matched_workflow", None)
+            wf_id = getattr(wf_match, "workflow_id", None) if wf_match else None
+            if not wf_id:
+                cleaned = message.strip()
+                matches = self.dialogue.retrieval.query(cleaned)
+                if matches and matches[0].confidence >= 0.5:
+                    wf_id = matches[0].workflow_id
+
+            if wf_id:
+                response_payload["triggered_workflow"] = wf_id
+                exec_res = self.execute_workflow_async(workflow_id=wf_id)
+                response_payload["execution"] = exec_res
+            else:
+                exec_res = self.execute_workflow_async(query=message)
+                response_payload["execution"] = exec_res
+
+        return response_payload
 
     def feed_recording_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Ingests an action or screen context event during demonstration."""
@@ -325,6 +409,8 @@ class ClioServer:
             "is_recording": self.demonstration_capture.is_recording,
             "event_count": self.demonstration_capture.event_count,
             "elapsed_seconds": round(self.demonstration_capture.elapsed_seconds, 1),
+            "last_recorded_workflow_id": self._last_recorded_workflow_id,
+            "accessibility_trusted": self.check_accessibility_permission(),
         }
 
     def search_workflows(self, query: str) -> List[Dict[str, Any]]:
@@ -361,12 +447,18 @@ class ClioServer:
                 "workflow_id": dyn_spec.id,
                 "name": dyn_spec.name,
                 "description": dyn_spec.description,
-                "confidence": 0.85,
+                "confidence": 0.75,
                 "match_type": "dynamic_intent",
                 "canonical_trigger": dyn_spec.triggers.get("canonical", query),
                 "step_count": len(dyn_spec.steps),
             })
-            results.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
+            results.sort(
+                key=lambda x: (
+                    x.get("confidence", 0.0),
+                    1 if x.get("match_type") != "dynamic_intent" else 0,
+                ),
+                reverse=True,
+            )
         return results
 
     def list_workflows(self) -> List[Dict[str, Any]]:
@@ -420,38 +512,78 @@ class ClioServer:
                     "success": False,
                     "error": "A workflow is already in progress.",
                 }
-
-        # Resolve spec
-        spec: Optional[WorkflowSpec] = None
-        if workflow_id:
-            with self._lock:
-                spec = self._dynamic_specs.get(workflow_id)
-            if not spec:
-                spec = self.memory.get_workflow(workflow_id)
-            if not spec:
-                return {"success": False, "error": f"Workflow '{workflow_id}' not found."}
-        elif query:
-            from src.executor.intent_synthesizer import DynamicIntentSynthesizer
-            dyn_spec = DynamicIntentSynthesizer.parse_intent(query)
-
-            matches = self.dialogue.retrieval.query(query)
-            if matches and matches[0].confidence >= 0.70:
-                spec = self.memory.get_workflow(matches[0].workflow_id)
-            elif dyn_spec:
-                spec = dyn_spec
-            elif matches and matches[0].confidence >= 0.40:
-                spec = self.memory.get_workflow(matches[0].workflow_id)
-
-            if not spec:
+            if self.demonstration_capture.is_recording:
                 return {
                     "success": False,
-                    "error": f"Could not find a workflow matching: '{query}'.",
+                    "error": "Cannot execute workflow while demonstration recording is active.",
                 }
-        else:
-            return {"success": False, "error": "Either workflow_id or query must be provided."}
+            # Reserve execution state under lock to prevent TOCTOU race
+            self._is_executing = True
+
+        # Resolve spec
+        try:
+            spec: Optional[WorkflowSpec] = None
+            if workflow_id:
+                with self._lock:
+                    spec = self._dynamic_specs.get(workflow_id)
+                if not spec:
+                    spec = self.memory.get_workflow(workflow_id)
+                if not spec:
+                    with self._lock:
+                        self._is_executing = False
+                    return {"success": False, "error": f"Workflow '{workflow_id}' not found."}
+            elif query:
+                # Anaphoric reference resolution ("perform that action", "do that action", "run that", etc.)
+                cleaned_q = re.sub(r"^(hey|hello|hi)(\s+clio)?[,!]?\s*", "", query, flags=re.IGNORECASE).strip()
+                cleaned_q = re.sub(r"^please\s+", "", cleaned_q, flags=re.IGNORECASE).strip()
+                norm_q = re.sub(r"[^\w\s]", "", cleaned_q.lower()).strip()
+                anaphoric_pattern = r"^(perform|do|run|execute|replay)\s+(that|the|this|my|last|recorded)?\s*(action|task|workflow|demonstration|what i just did)?$"
+                is_anaphoric = bool(re.match(anaphoric_pattern, norm_q)) or norm_q in (
+                    "do that", "perform that", "run that", "execute that", "do it", "run it",
+                    "perform that action", "do that action", "run that action", "execute that action",
+                    "perform the action", "do the action", "run the action", "execute the action",
+                    "run recorded task", "do recorded task", "perform recorded task",
+                    "run the recorded action", "perform the recorded action", "do what i just did",
+                    "run last task", "perform last task", "do last task",
+                )
+                if is_anaphoric:
+                    target_id = self._last_recorded_workflow_id or getattr(self.dialogue, "last_recorded_workflow_id", None)
+                    if target_id:
+                        spec = self.memory.get_workflow(target_id)
+                    if not spec:
+                        all_wfs = self.memory.list_workflows()
+                        if all_wfs:
+                            spec = self.memory.get_workflow(all_wfs[-1]["id"])
+
+                if not spec:
+                    from src.executor.intent_synthesizer import DynamicIntentSynthesizer
+                    dyn_spec = DynamicIntentSynthesizer.parse_intent(query)
+
+                    matches = self.dialogue.retrieval.query(query)
+                    if matches and matches[0].confidence >= 0.50:
+                        spec = self.memory.get_workflow(matches[0].workflow_id)
+                    elif dyn_spec:
+                        spec = dyn_spec
+                    elif matches:
+                        spec = self.memory.get_workflow(matches[0].workflow_id)
+
+                if not spec:
+                    with self._lock:
+                        self._is_executing = False
+                    return {
+                        "success": False,
+                        "error": f"Could not find a workflow matching: '{query}'.",
+                    }
+            else:
+                with self._lock:
+                    self._is_executing = False
+                return {"success": False, "error": "Either workflow_id or query must be provided."}
+        except Exception:
+            with self._lock:
+                self._is_executing = False
+            raise
 
         with self._lock:
-            self._is_executing = True
             self._current_workflow = spec
             self._current_step_index = 0
             self._total_steps = len(spec.steps)
@@ -486,7 +618,11 @@ class ClioServer:
 
     def cancel_execution(self) -> Dict[str, Any]:
         """Aborts the currently running workflow execution or confirms idle state."""
-        # Issue stop through actuator
+        # 1. Signal executor cancellation
+        if hasattr(self.executor, "cancel"):
+            self.executor.cancel()
+
+        # 2. Issue stop through actuator
         try:
             self.actuator.stop()
         except Exception as e:
@@ -518,11 +654,58 @@ class ClioServer:
                 # Suppress normal access logs to prevent clutter
                 pass
 
+            def _get_allowed_origin(self) -> Optional[str]:
+                req_origin = self.headers.get("Origin")
+                if not req_origin:
+                    return None
+                parsed = urlparse(req_origin)
+                host = (parsed.hostname or "").lower()
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                if host in ("127.0.0.1", "localhost") and (port == server_instance.port or port == 8765):
+                    return req_origin
+                return None
+
+            def _validate_host(self) -> bool:
+                host_header = self.headers.get("Host", "")
+                if not host_header:
+                    return True
+                host_name = host_header.split(":")[0].strip().lower()
+                if host_name not in ("127.0.0.1", "localhost", "testserver"):
+                    self.send_response(HTTPStatus.BAD_REQUEST)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(b'{"error": "Invalid Host header (DNS rebinding protection)"}')
+                    return False
+                return True
+
+            def _check_auth(self) -> bool:
+                if not server_instance.require_auth and not server_instance.auth_token:
+                    return True
+                expected = server_instance.auth_token
+                auth_header = self.headers.get("Authorization", "")
+                clio_token = self.headers.get("X-Clio-Token", "")
+                token = ""
+                if auth_header.startswith("Bearer "):
+                    token = auth_header[7:].strip()
+                elif clio_token:
+                    token = clio_token.strip()
+                if not token or token != expected:
+                    self.send_response(HTTPStatus.UNAUTHORIZED)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(b'{"error": "Unauthorized: valid token required"}')
+                    return False
+                return True
+
             def do_OPTIONS(self) -> None:
+                if not self._validate_host():
+                    return
                 self.send_response(HTTPStatus.OK)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                origin = self._get_allowed_origin()
+                if origin:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Clio-Token, X-Requested-With")
                 self.end_headers()
 
             def _send_json(self, status_code: int, data: Any) -> None:
@@ -530,11 +713,16 @@ class ClioServer:
                 self.send_response(status_code)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Access-Control-Allow-Origin", "*")
+                origin = self._get_allowed_origin()
+                if origin:
+                    self.send_header("Access-Control-Allow-Origin", origin)
                 self.end_headers()
                 self.wfile.write(payload)
 
             def do_GET(self) -> None:
+                if not self._validate_host():
+                    return
+
                 parsed = urlparse(self.path)
                 path = parsed.path
 
@@ -554,13 +742,19 @@ class ClioServer:
                         self.end_headers()
                     return
 
+                if path.startswith("/api/"):
+                    if not self._check_auth():
+                        return
+
                 # 2. SSE Stream
                 if path == "/api/stream":
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
                     self.send_header("Connection", "keep-alive")
-                    self.send_header("Access-Control-Allow-Origin", "*")
+                    origin = self._get_allowed_origin()
+                    if origin:
+                        self.send_header("Access-Control-Allow-Origin", origin)
                     self.end_headers()
 
                     client_q = server_instance.register_sse_client()
@@ -618,6 +812,15 @@ class ClioServer:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
             def do_POST(self) -> None:
+                if not self._validate_host():
+                    return
+                req_origin = self.headers.get("Origin")
+                if req_origin and not self._get_allowed_origin():
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "Forbidden cross-origin POST rejected"})
+                    return
+                if not self._check_auth():
+                    return
+
                 parsed = urlparse(self.path)
                 path = parsed.path
 
@@ -643,6 +846,20 @@ class ClioServer:
                     self._send_json(status_code, res)
                     return
 
+                # 1b. Companion Chat & Natural Language Turn (Bug #1 fix)
+                if path == "/api/chat":
+                    msg = (
+                        body.get("message", "").strip()
+                        or body.get("text", "").strip()
+                        or body.get("query", "").strip()
+                    )
+                    if not msg:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Message text is required."})
+                        return
+                    res = server_instance.chat(msg)
+                    self._send_json(HTTPStatus.OK, res)
+                    return
+
                 # 2. Demonstration Recording Start
                 if path == "/api/record/start":
                     res = server_instance.start_recording()
@@ -650,7 +867,7 @@ class ClioServer:
                     return
 
                 # 2b. Demonstration Event Feed (from client UI / screen monitor)
-                if path == "/api/record/feed":
+                if path in ("/api/record/feed", "/api/record/event"):
                     res = server_instance.feed_recording_event(body)
                     self._send_json(HTTPStatus.OK, res)
                     return
@@ -665,7 +882,8 @@ class ClioServer:
                         trigger=trigger,
                         description=desc,
                     )
-                    self._send_json(HTTPStatus.OK, res)
+                    status_code = HTTPStatus.OK if res.get("success") else HTTPStatus.INTERNAL_SERVER_ERROR
+                    self._send_json(status_code, res)
                     return
 
                 # 4. Cancel
@@ -692,6 +910,39 @@ class ClioServer:
                     self._send_json(status_code, res)
                     return
 
+                # 6b. Update Workflow
+                if path in ("/api/workflows/update", "/api/workflow/update"):
+                    w_id = body.get("workflow_id") or body.get("id", "")
+                    if not w_id:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": "workflow_id is required"})
+                        return
+                    wf = server_instance.memory.get_workflow(w_id)
+                    if not wf:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Workflow {w_id} not found"})
+                        return
+                    if "name" in body and body["name"]:
+                        wf.name = str(body["name"]).strip()
+                    if "triggers" in body:
+                        if isinstance(body["triggers"], dict):
+                            if isinstance(wf.triggers, dict):
+                                wf.triggers.update(body["triggers"])
+                            else:
+                                wf.triggers = dict(body["triggers"])
+                        elif isinstance(body["triggers"], list):
+                            wf.triggers = list(body["triggers"])
+                    elif "trigger" in body or "canonical_trigger" in body:
+                        trig = str(body.get("trigger") or body.get("canonical_trigger", "")).strip()
+                        if trig:
+                            if isinstance(wf.triggers, dict):
+                                wf.triggers["canonical"] = trig
+                            elif isinstance(wf.triggers, list):
+                                wf.triggers = {"canonical": trig, "aliases": wf.triggers}
+                    if "description" in body and body["description"] is not None:
+                        wf.description = str(body["description"]).strip()
+                    server_instance.memory.save_workflow(wf)
+                    self._send_json(HTTPStatus.OK, {"success": True, "workflow_id": wf.id, "name": wf.name})
+                    return
+
                 # 7. UI Visibility Control: Show / Hide / Toggle Bar
                 if path in ("/api/ui/show", "/api/ui/hide", "/api/ui/toggle"):
                     action = path.split("/")[-1]
@@ -707,6 +958,15 @@ class ClioServer:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
             def do_DELETE(self) -> None:
+                if not self._validate_host():
+                    return
+                req_origin = self.headers.get("Origin")
+                if req_origin and not self._get_allowed_origin():
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "Forbidden cross-origin DELETE rejected"})
+                    return
+                if not self._check_auth():
+                    return
+
                 parsed = urlparse(self.path)
                 path = parsed.path
                 if path.startswith("/api/workflows/"):
@@ -723,8 +983,28 @@ class ClioServer:
         except OSError as e:
             if getattr(e, "errno", None) == 48:
                 logger.warning("Port %d busy; clearing stale process and rebinding...", self.port)
-                import subprocess, os
-                subprocess.run(f"lsof -ti :{self.port} | grep -v '^{os.getpid()}$' | xargs kill -9", shell=True, check=False)
+                import subprocess, os, signal
+                try:
+                    port_num = int(self.port)
+                    res = subprocess.run(["lsof", "-ti", f":{port_num}"], capture_output=True, text=True, check=False)
+                    if res.returncode == 0 and res.stdout.strip():
+                        pids = [int(p) for p in res.stdout.strip().splitlines() if p.strip().isdigit()]
+                        my_pid = os.getpid()
+                        for p in pids:
+                            if p != my_pid:
+                                try:
+                                    os.kill(p, signal.SIGTERM)
+                                except ProcessLookupError:
+                                    pass
+                        time.sleep(0.3)
+                        for p in pids:
+                            if p != my_pid:
+                                try:
+                                    os.kill(p, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+                except Exception as ex:
+                    logger.warning("Failed to safely clear stale port %d: %s", self.port, ex)
                 time.sleep(0.5)
                 self._httpd = ThreadingHTTPServer((self.host, self.port), _Handler)
             else:

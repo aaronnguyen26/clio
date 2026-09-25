@@ -410,6 +410,7 @@ class WorkflowStep:
     timing: Dict[str, Any] = field(default_factory=lambda: {"pre_delay_ms": 0, "post_delay_ms": 50, "timeout_ms": 5000})
     verification: Dict[str, Any] = field(default_factory=dict)
     error_handling: Dict[str, Any] = field(default_factory=lambda: {"on_failure": "retry", "max_retries": 1})
+    coordinates: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -459,7 +460,7 @@ class TaskMemoryEngine:
 
     def __init__(self, db_path: str = ":memory:"):
         self.db_path = db_path
-        self._conn = sqlite3.connect(db_path)
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
 

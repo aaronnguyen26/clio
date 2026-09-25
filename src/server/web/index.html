@@ -567,11 +567,11 @@
       </p>
       <div>
         <label style="font-size: 10px; color: var(--text-sub); text-transform: uppercase; font-family: ui-monospace, monospace; font-weight: 600;">Task Name</label>
-        <input id="demo-name-input" type="text" value="write weekly todo list" style="width: 100%; margin-top: 4px; padding: 8px 12px; background: rgba(245,246,248,0.05); border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-main); font-size: 13px; outline: none;" />
+        <input id="demo-name-input" type="text" placeholder="e.g. Write weekly to-do list" style="width: 100%; margin-top: 4px; padding: 8px 12px; background: rgba(245,246,248,0.05); border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-main); font-size: 13px; outline: none;" />
       </div>
       <div>
         <label style="font-size: 10px; color: var(--text-sub); text-transform: uppercase; font-family: ui-monospace, monospace; font-weight: 600;">Trigger Phrase (what you type or say)</label>
-        <input id="demo-trigger-input" type="text" value="write todolist" style="width: 100%; margin-top: 4px; padding: 8px 12px; background: rgba(245,246,248,0.05); border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-main); font-size: 13px; outline: none;" />
+        <input id="demo-trigger-input" type="text" placeholder="e.g. write weekly to-do list" style="width: 100%; margin-top: 4px; padding: 8px 12px; background: rgba(245,246,248,0.05); border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-main); font-size: 13px; outline: none;" />
       </div>
       <div id="demo-dissected-preview" style="font-size: 11px; font-family: ui-monospace, monospace; color: var(--text-muted); max-height: 120px; overflow-y: auto; background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-subtle); display: none;"></div>
       <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px;">
@@ -619,6 +619,7 @@
       let recordTimerInterval = null;
       let recordStartEpoch = 0;
       let backgroundMode = true; // Background execution by default
+      let lastLearnedWorkflowId = null;
 
       // 1. Initial Data Fetch
       async function init() {
@@ -630,6 +631,9 @@
           updateStatus(statusRes);
           workflows = wfRes;
           renderWorkflows(workflows);
+          if (statusRes && statusRes.accessibility_trusted === false) {
+            addCommentaryMessage("⚠️ Accessibility permission not granted. Open System Settings -> Privacy & Security -> Accessibility to allow Clio to capture actions.");
+          }
         } catch (e) {
           console.error("Clio initialization error:", e);
         }
@@ -848,7 +852,21 @@
             body: JSON.stringify({ query: query, background: backgroundMode }),
           });
           const data = await res.json();
-          if (!data.success) {
+          if (data.success) {
+            return;
+          }
+
+          // Fallback to conversational Companion Chat
+          const chatRes = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: query }),
+          });
+          const chatData = await chatRes.json();
+          if (chatData && chatData.reply) {
+            addCommentaryMessage(chatData.reply);
+          }
+          if (!chatData || (!chatData.triggered_workflow && !chatData.execution)) {
             alert(data.error || "No matching workflow could be executed.");
           }
         } catch (e) {
@@ -889,16 +907,79 @@
             console.error("Start recording error:", e);
           }
         } else {
-          // Stop recording -> open save modal
+          // Stop recording -> halt on server immediately so server is not stuck in is_recording state!
           clearInterval(recordTimerInterval);
           recordTimerInterval = null;
           isRecording = false;
           recordBtn.classList.remove("recording");
           recordDot.textContent = "🔴";
-          recordLabel.textContent = "Record Task";
-          saveModal.style.display = "flex";
-          demoNameInput.focus();
-          demoNameInput.select();
+          recordLabel.textContent = "Dissecting...";
+          recordBtn.disabled = true;
+
+          try {
+            const res = await fetch("/api/record/stop", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name: "Demonstrated Task", trigger: "perform that action" }),
+            });
+            const data = await res.json();
+            recordBtn.disabled = false;
+            recordLabel.textContent = "Record Task";
+
+            if (data.success) {
+              lastLearnedWorkflowId = data.workflow_id;
+              saveModal.style.display = "flex";
+              demoNameInput.value = data.name || "Demonstrated Task";
+              demoTriggerInput.value = data.canonical_trigger || "perform that action";
+              triggerManuallyEdited = false;
+
+              if (data.steps && data.steps.length > 0) {
+                demoDissectedPreview.style.display = "block";
+                demoDissectedPreview.innerHTML = data.steps.map((s, i) => `${s.order || i+1}. ${escapeHtml(s.description || s.action)}`).join("<br/>");
+              } else {
+                demoDissectedPreview.style.display = "block";
+                demoDissectedPreview.innerHTML = "<em>No discrete events detected during demonstration.</em>";
+              }
+              demoNameInput.focus();
+              demoNameInput.select();
+
+              const wfRes = await fetch("/api/workflows").then(r => r.json());
+              workflows = wfRes;
+              renderWorkflows(workflows);
+              addCommentaryMessage(`🎉 Task recorded with ${data.total_steps} steps. Say 'perform that action' to run it anytime!`);
+            } else {
+              alert(data.error || "Failed to process recorded demonstration");
+            }
+          } catch (e) {
+            console.error("Stop recording error:", e);
+            recordBtn.disabled = false;
+            recordLabel.textContent = "Record Task";
+          }
+        }
+      });
+
+      let triggerManuallyEdited = false;
+      demoTriggerInput.addEventListener("input", () => {
+        triggerManuallyEdited = demoTriggerInput.value.trim().length > 0;
+      });
+      demoNameInput.addEventListener("input", () => {
+        if (!triggerManuallyEdited) {
+          demoTriggerInput.value = demoNameInput.value.toLowerCase();
+        }
+      });
+
+      demoNameInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          modalSaveBtn.click();
+        }
+      });
+      demoTriggerInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          modalSaveBtn.click();
         }
       });
 
@@ -910,25 +991,21 @@
         const name = demoNameInput.value.trim() || "Demonstrated Task";
         const trigger = demoTriggerInput.value.trim() || name.toLowerCase();
         modalSaveBtn.disabled = true;
-        modalSaveBtn.textContent = "Dissecting & Saving...";
+        modalSaveBtn.textContent = "Updating...";
         try {
-          const res = await fetch("/api/record/stop", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: name, trigger: trigger }),
-          });
-          const data = await res.json();
-          if (data.success) {
-            saveModal.style.display = "none";
-            const wfRes = await fetch("/api/workflows").then(r => r.json());
-            workflows = wfRes;
-            renderWorkflows(workflows);
-            searchInput.value = trigger;
-            performSearch(trigger);
-            alert(`🎉 Task '${data.name}' learned! Dissected into ${data.total_steps} steps. You can run it anytime by typing '${trigger}'.`);
-          } else {
-            alert(data.error || "Failed to save workflow");
+          if (lastLearnedWorkflowId) {
+            await fetch("/api/workflows/update", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ workflow_id: lastLearnedWorkflowId, name: name, trigger: trigger }),
+            });
           }
+          saveModal.style.display = "none";
+          const wfRes = await fetch("/api/workflows").then(r => r.json());
+          workflows = wfRes;
+          renderWorkflows(workflows);
+          searchInput.value = trigger;
+          performSearch(trigger);
         } catch (e) {
           console.error("Save demonstration error:", e);
         } finally {
@@ -965,6 +1042,13 @@
 
       // 7. Keyboard Navigation (Spotlight style)
       window.addEventListener("keydown", function (ev) {
+        if (saveModal.style.display === "flex") {
+          if (ev.key === "Escape") {
+            saveModal.style.display = "none";
+          }
+          return;
+        }
+
         const items = resultsContainer.querySelectorAll(".workflow-item");
         if (ev.key === "ArrowDown") {
           ev.preventDefault();

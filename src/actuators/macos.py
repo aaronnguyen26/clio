@@ -485,7 +485,11 @@ class MacOSActuator(BaseActuator):
         if not url:
             return False
         clean_url = url.strip()
-        if not (clean_url.startswith("http://") or clean_url.startswith("https://") or clean_url.startswith("file://")):
+        lower_url = clean_url.lower()
+        if lower_url.startswith("file://") or lower_url.startswith("javascript:") or lower_url.startswith("data:"):
+            logger.warning("Rejected disallowed URL scheme in open_url: %s", clean_url)
+            return False
+        if not (clean_url.startswith("http://") or clean_url.startswith("https://")):
             clean_url = f"https://{clean_url}"
         try:
             res = subprocess.run(["open", clean_url], check=False, capture_output=True, timeout=3.0)
@@ -604,9 +608,19 @@ class MacOSActuator(BaseActuator):
         return (bounds.size.width, bounds.size.height)
 
     def get_mouse_position(self) -> Tuple[float, float]:
-        """Returns current mouse position. Uses safe subprocess path to avoid ARM64 CGEventGetLocation SIGSEGV."""
+        """Returns current mouse position via fast native CoreGraphics event inspection."""
         try:
-            # Use lsappinfo / osascript — safe, GIL-releasing subprocess
+            cg = self.native.cg
+            cf = self.native.cf
+            ev = cg.CGEventCreate(None)
+            if ev:
+                pt = cg.CGEventGetLocation(ev)
+                cf.CFRelease(ev)
+                return (float(pt.x), float(pt.y))
+        except Exception:
+            pass
+        try:
+            # Fallback to osascript if native CoreGraphics inspection fails
             result = subprocess.run(
                 ["osascript", "-e",
                  "tell application \"System Events\" to get the position of the mouse"],

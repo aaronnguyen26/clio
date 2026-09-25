@@ -165,9 +165,196 @@ class TestClioServerEndpoints:
             assert data["success"] is True
             assert data["workflow_id"] == "wf_notes_weekly_todo"
 
+    def test_post_chat_greeting(self, test_server: ClioServer) -> None:
+        """POST /api/chat handles greetings via companion dialogue."""
+        url = f"http://{test_server.host}:{test_server.port}/api/chat"
+        req = Request(
+            url,
+            data=json.dumps({"message": "Hello Clio!"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=3.0) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert "Autonomous Desktop Companion" in data["reply"] or "Hey" in data["reply"]
+            assert data["state"] == "idle"
+
+    def test_post_chat_executes_workflow(self, test_server: ClioServer) -> None:
+        """POST /api/chat recognizes direct trigger and starts workflow."""
+        url = f"http://{test_server.host}:{test_server.port}/api/chat"
+        req = Request(
+            url,
+            data=json.dumps({"message": "write my weekly to-do list"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=3.0) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["state"] == "executing"
+            assert data["triggered_workflow"] == "wf_notes_weekly_todo"
+            assert data["execution"]["success"] is True
+
+    def test_post_chat_empty_message_returns_400(self, test_server: ClioServer) -> None:
+        """POST /api/chat with empty body returns 400 Bad Request."""
+        url = f"http://{test_server.host}:{test_server.port}/api/chat"
+        req = Request(
+            url,
+            data=json.dumps({"message": "   "}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as exc_info:
+            urlopen(req, timeout=3.0)
+        assert exc_info.value.code == 400
+
+    def test_execute_query_prioritizes_memory_workflow_over_dynamic_intent(
+        self, test_server: ClioServer
+    ) -> None:
+        """POST /api/execute prioritizes real demonstrated workflows over dynamic intent."""
+        # Query that could also be matched by dynamic intent synthesizer
+        url = f"http://{test_server.host}:{test_server.port}/api/execute"
+        req = Request(
+            url,
+            data=json.dumps({"query": "create weekly to-do"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=3.0) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["success"] is True
+            assert data["workflow_id"] == "wf_notes_weekly_todo"
+
     def test_unknown_route_returns_404(self, test_server: ClioServer) -> None:
         """Requesting an unknown route returns HTTP 404."""
         url = f"http://{test_server.host}:{test_server.port}/api/non_existent"
         with pytest.raises(HTTPError) as exc_info:
             urlopen(url, timeout=3.0)
         assert exc_info.value.code == 404
+
+    def test_record_and_execute_by_anaphoric_reference(self, test_server: ClioServer) -> None:
+        """Recording an action and then telling Clio 'perform that action' executes the recorded workflow."""
+        # 1. Start recording
+        start_url = f"http://{test_server.host}:{test_server.port}/api/record/start"
+        start_req = Request(start_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+        with urlopen(start_req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["success"] is True
+
+        # Verify status says recording
+        status_url = f"http://{test_server.host}:{test_server.port}/api/record/status"
+        with urlopen(status_url, timeout=3.0) as resp:
+            st = json.loads(resp.read().decode("utf-8"))
+            assert st["is_recording"] is True
+
+        # 2. Feed simulated event
+        event_url = f"http://{test_server.host}:{test_server.port}/api/record/event"
+        ev_payload = {
+            "event_type": "click",
+            "x": 200,
+            "y": 300,
+            "button": "left",
+            "bundle_id": "com.apple.Notes",
+            "window_bounds": {"x": 100, "y": 100, "width": 800, "height": 600},
+        }
+        ev_req = Request(
+            event_url,
+            data=json.dumps(ev_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(ev_req, timeout=3.0) as resp:
+            ev_data = json.loads(resp.read().decode("utf-8"))
+            assert ev_data["success"] is True
+
+        # 3. Stop recording
+        stop_url = f"http://{test_server.host}:{test_server.port}/api/record/stop"
+        stop_payload = {
+            "name": "Test Recorded Note",
+            "trigger": "record test note",
+            "description": "A recorded note task",
+        }
+        stop_req = Request(
+            stop_url,
+            data=json.dumps(stop_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(stop_req, timeout=3.0) as resp:
+            stop_data = json.loads(resp.read().decode("utf-8"))
+            assert stop_data["success"] is True
+            recorded_id = stop_data["workflow_id"]
+            assert recorded_id is not None
+
+        # Verify status is not recording anymore, and last_recorded_workflow_id is set
+        with urlopen(status_url, timeout=3.0) as resp:
+            st = json.loads(resp.read().decode("utf-8"))
+            assert st["is_recording"] is False
+            assert st["last_recorded_workflow_id"] == recorded_id
+
+        # 4. Tell Clio: "perform that action" via /api/execute
+        exec_url = f"http://{test_server.host}:{test_server.port}/api/execute"
+        exec_req = Request(
+            exec_url,
+            data=json.dumps({"query": "perform that action"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(exec_req, timeout=3.0) as resp:
+            exec_data = json.loads(resp.read().decode("utf-8"))
+            assert exec_data["success"] is True
+            assert exec_data["workflow_id"] == recorded_id
+
+    def test_record_and_chat_anaphoric_trigger(self, test_server: ClioServer) -> None:
+        """Telling Clio via chat 'do that action' executes the recorded workflow."""
+        test_server.start_recording()
+        test_server.feed_recording_event({
+            "event_type": "click",
+            "x": 150,
+            "y": 250,
+            "button": "left",
+            "bundle_id": "com.apple.Notes",
+        })
+        stop_res = test_server.stop_recording(name="Click Something", trigger="click something")
+        recorded_id = stop_res["workflow_id"]
+
+        chat_url = f"http://{test_server.host}:{test_server.port}/api/chat"
+        chat_req = Request(
+            chat_url,
+            data=json.dumps({"message": "do that action"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(chat_req, timeout=3.0) as resp:
+            chat_data = json.loads(resp.read().decode("utf-8"))
+            assert chat_data["state"] == "executing"
+            assert chat_data["triggered_workflow"] == recorded_id
+            assert chat_data["execution"]["success"] is True
+
+    def test_workflow_update_endpoint(self, test_server: ClioServer) -> None:
+        """POST /api/workflows/update safely modifies workflow metadata in memory."""
+        update_url = f"http://{test_server.host}:{test_server.port}/api/workflows/update"
+        payload = {
+            "workflow_id": "wf_notes_weekly_todo",
+            "name": "Updated To-Do Workflow",
+            "triggers": {"canonical": "run updated todo", "aliases": ["my todo"]},
+            "description": "Updated description",
+        }
+        req = Request(
+            update_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["success"] is True
+            assert data["name"] == "Updated To-Do Workflow"
+
+        # Verify in memory
+        wf = test_server.memory.get_workflow("wf_notes_weekly_todo")
+        assert wf is not None
+        assert wf.name == "Updated To-Do Workflow"
+        assert wf.triggers["canonical"] == "run updated todo"

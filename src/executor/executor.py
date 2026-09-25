@@ -37,6 +37,7 @@ import datetime
 import logging
 import math
 import sys
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
@@ -163,6 +164,13 @@ class AutonomousWorkflowExecutor:
         self.default_backoff_factor = default_backoff_factor
         self.zero_delay = zero_delay
         self.background_mode = background_mode
+        self._cancel_requested = threading.Event()
+
+    def cancel(self) -> None:
+        """Signals running workflow execution to halt immediately."""
+        self._cancel_requested.set()
+        if self.virtual_cursor is not None and hasattr(self.virtual_cursor, "_cancel_event"):
+            self.virtual_cursor._cancel_event.set()
 
     # =========================================================================
     # Main Workflow Execution Entry Point
@@ -237,11 +245,17 @@ class AutonomousWorkflowExecutor:
             )
         )
 
+        self._cancel_requested.clear()
+        if self.virtual_cursor is not None and hasattr(self.virtual_cursor, "_cancel_event"):
+            self.virtual_cursor._cancel_event.clear()
+
         try:
             # Enforce failsafe check before starting any steps
             self.actuator.check_failsafe()
 
             for idx, step in enumerate(steps, 1):
+                if self._cancel_requested.is_set():
+                    raise ActuatorError("Workflow execution cancelled by user request.")
                 # Execute step with retry/recovery logic
                 step_record = self._execute_step_with_retries(
                     step=step,
@@ -596,6 +610,10 @@ class AutonomousWorkflowExecutor:
         """Detects if (x, y) corresponds to an application icon in the macOS Dock via Accessibility."""
         if sys.platform != "darwin":
             return None
+        import threading
+        if threading.current_thread() is not threading.main_thread():
+            # AXUIElementCopyElementAtPosition causes SIGSEGV on macOS worker threads
+            return None
         try:
             import ctypes
             from ctypes import c_void_p, c_float, byref, c_int, c_char_p, c_bool
@@ -615,8 +633,12 @@ class AutonomousWorkflowExecutor:
             cf.CFRelease.argtypes = [c_void_p]
 
             sys_elem = hiservices.AXUIElementCreateSystemWide()
+            if not sys_elem:
+                return None
             elem = c_void_p()
-            if hiservices.AXUIElementCopyElementAtPosition(sys_elem, c_float(x), c_float(y), byref(elem)) != 0 or not elem.value:
+            rc = hiservices.AXUIElementCopyElementAtPosition(sys_elem, c_float(x), c_float(y), byref(elem))
+            cf.CFRelease(sys_elem)
+            if rc != 0 or not elem.value:
                 return None
 
             cf_role = cf.CFStringCreateWithCString(None, b"AXRole", 0x08000100)
@@ -1197,28 +1219,18 @@ class AutonomousWorkflowExecutor:
         target = getattr(step, "target", {}) or {}
         step_coords = getattr(step, "coordinates", None)
 
-        # 0. Check step.target for screen_x / screen_y or x / y or norm_x / norm_y
+        # 0. Check step.target for norm_x / norm_y (prioritize resolution independence), then screen_x / screen_y or x / y
         if isinstance(target, dict):
+            if "norm_x" in target and "norm_y" in target:
+                return self._project_norm_to_screen(float(target["norm_x"]), float(target["norm_y"]), step, spec)
             if "screen_x" in target and "screen_y" in target:
                 return float(target["screen_x"]), float(target["screen_y"])
             if "x" in target and "y" in target:
                 return float(target["x"]), float(target["y"])
-            if "norm_x" in target and "norm_y" in target:
-                return self._project_norm_to_screen(float(target["norm_x"]), float(target["norm_y"]), step, spec)
 
-        # 1. Direct explicit (x, y) coordinates in payload
-        if "x" in payload and "y" in payload:
-            return float(payload["x"]), float(payload["y"])
-        if "screen_x" in payload and "screen_y" in payload:
-            return float(payload["screen_x"]), float(payload["screen_y"])
-
-        # 2. Coordinates embedded in payload dict: payload["coordinates"]
+        # 1. Coordinates embedded in payload dict: payload["coordinates"]
         raw_coords = payload.get("coordinates")
         if isinstance(raw_coords, dict):
-            if "x" in raw_coords and "y" in raw_coords:
-                return float(raw_coords["x"]), float(raw_coords["y"])
-            if "abs_x" in raw_coords and "abs_y" in raw_coords:
-                return float(raw_coords["abs_x"]), float(raw_coords["abs_y"])
             if "norm_x" in raw_coords and "norm_y" in raw_coords:
                 return self._project_norm_to_screen(
                     float(raw_coords["norm_x"]),
@@ -1226,11 +1238,13 @@ class AutonomousWorkflowExecutor:
                     step,
                     spec,
                 )
+            if "x" in raw_coords and "y" in raw_coords:
+                return float(raw_coords["x"]), float(raw_coords["y"])
+            if "abs_x" in raw_coords and "abs_y" in raw_coords:
+                return float(raw_coords["abs_x"]), float(raw_coords["abs_y"])
 
-        # 3. TargetCoordinates instance on step: step.coordinates
+        # 2. TargetCoordinates instance on step: step.coordinates
         if step_coords is not None:
-            if hasattr(step_coords, "abs_x") and step_coords.abs_x is not None and step_coords.abs_y is not None:
-                return float(step_coords.abs_x), float(step_coords.abs_y)
             if hasattr(step_coords, "norm_x") and step_coords.norm_x is not None and step_coords.norm_y is not None:
                 return self._project_norm_to_screen(
                     float(step_coords.norm_x),
@@ -1238,8 +1252,10 @@ class AutonomousWorkflowExecutor:
                     step,
                     spec,
                 )
+            if hasattr(step_coords, "abs_x") and step_coords.abs_x is not None and step_coords.abs_y is not None:
+                return float(step_coords.abs_x), float(step_coords.abs_y)
 
-        # 4. Check norm_x and norm_y directly in payload
+        # 3. Check norm_x and norm_y directly in payload
         if "norm_x" in payload and "norm_y" in payload:
             return self._project_norm_to_screen(
                 float(payload["norm_x"]),
@@ -1247,6 +1263,12 @@ class AutonomousWorkflowExecutor:
                 step,
                 spec,
             )
+
+        # 4. Direct explicit (x, y) coordinates in payload
+        if "x" in payload and "y" in payload:
+            return float(payload["x"]), float(payload["y"])
+        if "screen_x" in payload and "screen_y" in payload:
+            return float(payload["screen_x"]), float(payload["screen_y"])
 
         return None
 
@@ -1271,7 +1293,15 @@ class AutonomousWorkflowExecutor:
             sx, sy = self.coordinate_adapter.to_screen_coordinates(norm_x, norm_y, target_win)
             return float(sx), float(sy)
 
-        # Fallback to primary screen size
+        # Fallback 1: if explicit recorded screen_x and screen_y are present in target or payload, use them!
+        target = getattr(step, "target", {}) or {}
+        payload = getattr(step, "payload", {}) or {}
+        if isinstance(target, dict) and "screen_x" in target and "screen_y" in target:
+            return float(target["screen_x"]), float(target["screen_y"])
+        if isinstance(payload, dict) and "screen_x" in payload and "screen_y" in payload:
+            return float(payload["screen_x"]), float(payload["screen_y"])
+
+        # Fallback 2: scale across primary screen size
         sw, sh = self.actuator.get_screen_size()
         clamped_x = max(0.0, min(1.0, norm_x))
         clamped_y = max(0.0, min(1.0, norm_y))

@@ -8,6 +8,7 @@ dialogue state machine, and commentary into a cohesive interactive session.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.actuators.base import BaseActuator
@@ -22,6 +23,22 @@ from src.memory.engine import TaskMemoryEngine
 from src.memory.models import WorkflowSpec
 
 logger = logging.getLogger(__name__)
+
+
+def extract_runtime_params(utterance: str) -> Dict[str, Any]:
+    """Extracts named parameter slots from user utterances."""
+    params: Dict[str, Any] = {}
+    title_m = re.search(r'\b(?:titled|title)\s+["\']?([^"\']+)["\']?', utterance, re.IGNORECASE)
+    if title_m:
+        params["title"] = title_m.group(1).strip()
+        params["doc_title"] = title_m.group(1).strip()
+    name_m = re.search(r'\bnamed\s+["\']?([^"\']+)["\']?', utterance, re.IGNORECASE)
+    if name_m:
+        params["name"] = name_m.group(1).strip()
+    recipient_m = re.search(r'\bto\s+([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)', utterance, re.IGNORECASE)
+    if recipient_m:
+        params["recipient"] = recipient_m.group(1).strip()
+    return params
 
 
 class CompanionSession:
@@ -80,14 +97,20 @@ class CompanionSession:
         reply, state = self.dialogue.handle_user_message(message)
 
         if state == DialogueState.EXECUTING:
-            # If dialogue matched an immediate workflow, execute it
-            cleaned = message.strip()
-            matches = self.dialogue.retrieval.query(cleaned)
-            if matches and matches[0].confidence >= 0.5:
-                wf_obj = self.memory.get_workflow(matches[0].workflow_id)
+            runtime_params = extract_runtime_params(message)
+            wf_match = getattr(self.dialogue, "last_matched_workflow", None)
+            wf_id = getattr(wf_match, "workflow_id", None) if wf_match else None
+            if not wf_id:
+                cleaned = message.strip()
+                matches = self.dialogue.retrieval.query(cleaned)
+                if matches and matches[0].confidence >= 0.5:
+                    wf_id = matches[0].workflow_id
+
+            if wf_id:
+                wf_obj = self.memory.get_workflow(wf_id)
                 if wf_obj:
                     spec = wf_obj if isinstance(wf_obj, WorkflowSpec) else WorkflowSpec.from_dict(wf_obj)
-                    result: ExecutionResult = self.executor.execute_workflow(spec)
+                    result: ExecutionResult = self.executor.execute_workflow(spec, runtime_params=runtime_params)
                     if result.success:
                         self.dialogue.state = DialogueState.COMPLETED
                         return f"{reply}\n\nTask '{spec.name}' completed successfully in {result.elapsed_seconds:.2f}s! 🎉"
