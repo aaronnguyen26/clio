@@ -957,8 +957,7 @@ final class ClioViewModel: ObservableObject {
 
     var isMemoryCommand: Bool {
         let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return trimmed == "/memory" || trimmed == "/memories" || trimmed == "/mem" ||
-               trimmed.hasPrefix("/memory ") || trimmed.hasPrefix("/memories ") || trimmed.hasPrefix("/mem ")
+        return trimmed == "/memory" || trimmed.hasPrefix("/memory ")
     }
 
     var memoryWorkflows: [WorkflowItem] {
@@ -966,10 +965,6 @@ final class ClioViewModel: ObservableObject {
         var searchFilter = ""
         if trimmed.hasPrefix("/memory ") {
             searchFilter = String(trimmed.dropFirst(8)).trimmingCharacters(in: .whitespaces)
-        } else if trimmed.hasPrefix("/memories ") {
-            searchFilter = String(trimmed.dropFirst(10)).trimmingCharacters(in: .whitespaces)
-        } else if trimmed.hasPrefix("/mem ") {
-            searchFilter = String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
         }
 
         let sourceList = !allSavedWorkflows.isEmpty ? allSavedWorkflows : workflows
@@ -1146,16 +1141,7 @@ final class ClioViewModel: ObservableObject {
     }
 
     func search(text: String) async {
-        let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
-        if trimmed == "/memory" || trimmed == "/memories" || trimmed == "/mem" ||
-           trimmed.hasPrefix("/memory ") || trimmed.hasPrefix("/memories ") || trimmed.hasPrefix("/mem ") {
-            if allSavedWorkflows.isEmpty {
-                await fetchWorkflows()
-            }
-            self.selectedIndex = 0
-            return
-        }
-        if trimmed == "/" {
+        if isMemoryCommand {
             if allSavedWorkflows.isEmpty {
                 await fetchWorkflows()
             }
@@ -1274,13 +1260,6 @@ final class ClioViewModel: ObservableObject {
             return
         }
 
-        // Command suggestions: typing "/" expands to "/memory"
-        if trimmed == "/" {
-            self.query = "/memory"
-            Task { await fetchWorkflows() }
-            return
-        }
-
         // Memory Space Selection
         if isMemoryCommand {
             let list = memoryWorkflows
@@ -1320,6 +1299,27 @@ final class ClioViewModel: ObservableObject {
     }
 
     func deleteWorkflow(id: String) {
+        // Remove associated recording directory from disk on client side if cached
+        let targetWf = (allSavedWorkflows + workflows).first(where: { $0.id == id })
+        if let videoPath = targetWf?.video_path, !videoPath.isEmpty {
+            let videoURL = URL(fileURLWithPath: videoPath)
+            let sessionDir = videoURL.deletingLastPathComponent()
+            if sessionDir.lastPathComponent != "recordings" && sessionDir.path.contains("/recordings/") {
+                try? FileManager.default.removeItem(at: sessionDir)
+            }
+        }
+
+        // Optimistically remove from state so UI updates immediately
+        self.allSavedWorkflows.removeAll(where: { $0.id == id })
+        self.workflows.removeAll(where: { $0.id == id })
+        if self.inspectWorkflow?.id == id {
+            self.inspectWorkflow = nil
+        }
+        let count = self.isMemoryCommand ? self.memoryWorkflows.count : self.workflows.count
+        if self.selectedIndex >= count {
+            self.selectedIndex = max(0, count - 1)
+        }
+
         guard let url = URL(string: "/api/workflows/delete", relativeTo: baseURL) else { return }
         var req = makeAuthorizedRequest(url: url, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1327,13 +1327,6 @@ final class ClioViewModel: ObservableObject {
         Task {
             _ = try? await URLSession.shared.data(for: req)
             await fetchWorkflows()
-            if self.inspectWorkflow?.id == id {
-                self.inspectWorkflow = nil
-            }
-            let count = self.isMemoryCommand ? self.memoryWorkflows.count : self.workflows.count
-            if self.selectedIndex >= count {
-                self.selectedIndex = max(0, count - 1)
-            }
         }
     }
 
@@ -1952,9 +1945,6 @@ struct ClioBarView: View {
             let rows = min(count, 5)
             return 58 + 36 + CGFloat(rows * 48) + 34
         }
-        if vm.query.trimmingCharacters(in: .whitespaces) == "/" {
-            return 58 + 58
-        }
         let trimmed = vm.query.trimmingCharacters(in: .whitespaces)
         if !trimmed.isEmpty && !vm.workflows.isEmpty {
             let rowCount = min(vm.workflows.count, 4)
@@ -2001,7 +1991,7 @@ struct ClioBarView: View {
                 }
 
                 // Command Search Input
-                TextField(vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything (or type '/memory')...", text: $vm.query)
+                TextField(vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything...", text: $vm.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, weight: .regular))
                     .foregroundColor(ObsidianTheme.platinum)
@@ -2012,35 +2002,6 @@ struct ClioBarView: View {
                     .onChange(of: vm.query) { newQuery in
                         Task { await vm.search(text: newQuery) }
                     }
-
-                // Memory Space Quick Button
-                Button(action: {
-                    if vm.isMemoryCommand {
-                        vm.query = ""
-                        vm.inspectWorkflow = nil
-                    } else {
-                        vm.query = "/memory"
-                        vm.inspectWorkflow = nil
-                        Task { await vm.fetchWorkflows() }
-                    }
-                }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "brain.head.profile")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("MEMORY")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    }
-                    .foregroundColor(vm.isMemoryCommand ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(vm.isMemoryCommand ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                    .overlay(
-                        Capsule().stroke(vm.isMemoryCommand ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
-                    )
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .help("Browse all saved actions in Memory Space (/memory)")
 
                 // Dictation Microphone Button
                 Button(action: { vm.toggleDictation() }) {
@@ -2111,8 +2072,6 @@ struct ClioBarView: View {
                 inspectedWorkflowView(inspected)
             } else if vm.isMemoryCommand {
                 memorySpaceView
-            } else if vm.query.trimmingCharacters(in: .whitespaces) == "/" {
-                slashCommandSuggestionsView
             } else if !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty {
                 searchResultsView
             }
@@ -2354,57 +2313,6 @@ struct ClioBarView: View {
         .background(ObsidianTheme.cardGlass)
     }
 
-    @ViewBuilder
-    private var slashCommandSuggestionsView: some View {
-        Divider().background(ObsidianTheme.borderSubtle)
-        VStack(spacing: 2) {
-            Button(action: {
-                vm.query = "/memory"
-                Task { await vm.fetchWorkflows() }
-            }) {
-                HStack(spacing: 10) {
-                    Image(systemName: "brain.head.profile")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(ObsidianTheme.platinum)
-                        .frame(width: 24, height: 24)
-                        .background(ObsidianTheme.surfaceElevated)
-                        .clipShape(Circle())
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text("/memory")
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                .foregroundColor(ObsidianTheme.platinum)
-                            Text("COMMAND")
-                                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                .foregroundColor(ObsidianTheme.slate)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(ObsidianTheme.surfaceElevated)
-                                .cornerRadius(3)
-                        }
-                        Text("Browse memory space containing all saved actions & dissected steps")
-                            .font(.system(size: 11))
-                            .foregroundColor(ObsidianTheme.slate)
-                    }
-
-                    Spacer()
-
-                    Text("⏎ Select")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.slate)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(ObsidianTheme.surfaceElevated)
-                .cornerRadius(6)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(ObsidianTheme.cardGlass)
-    }
 
     @ViewBuilder
     private var memorySpaceView: some View {
@@ -2688,6 +2596,26 @@ struct ClioBarView: View {
                 }
                 .buttonStyle(.plain)
 
+                // Delete Action Button
+                Button(action: {
+                    vm.deleteWorkflow(id: inspected.id)
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 9))
+                        Text("Delete Action")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(Color.red.opacity(0.85))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.red.opacity(0.3), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("Delete this action and associated recording")
+
                 Spacer()
 
                 Button(action: {
@@ -2729,6 +2657,9 @@ struct ClioBarView: View {
                     onSelect: {
                         vm.selectedIndex = idx
                         vm.inspectWorkflowDetails(wf)
+                    },
+                    onDelete: {
+                        vm.deleteWorkflow(id: wf.id)
                     }
                 )
             }
@@ -2744,6 +2675,7 @@ struct SearchResultRowView: View {
     let isSelected: Bool
     let onPreview: () -> Void
     let onSelect: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -2786,6 +2718,18 @@ struct SearchResultRowView: View {
             Text("\(wf.displaySteps) steps")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(ObsidianTheme.slate)
+
+            // Explicit Delete Button
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                    .foregroundColor(ObsidianTheme.slateDark)
+                    .frame(width: 20, height: 20)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+            }
+            .buttonStyle(.plain)
+            .help("Delete action and associated recording")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
@@ -2863,6 +2807,18 @@ struct MemorySpaceRowView: View {
                 .padding(.vertical, 2)
                 .background(ObsidianTheme.surfaceElevated)
                 .cornerRadius(4)
+
+            // Explicit Delete Button
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                    .foregroundColor(ObsidianTheme.slateDark)
+                    .frame(width: 22, height: 22)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+            }
+            .buttonStyle(.plain)
+            .help("Delete action and associated recording")
 
             // Inspect arrow
             Image(systemName: "chevron.right")

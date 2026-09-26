@@ -737,18 +737,75 @@ class ClioServer:
         return list(deduped.values())
 
     def delete_workflow(self, workflow_id: str) -> Dict[str, Any]:
-        """Deletes a saved workflow from memory and notifies subscribers."""
+        """Deletes a saved workflow from memory, removes its recording folder from disk, and notifies subscribers."""
         if not workflow_id:
             return {"success": False, "error": "No workflow_id provided."}
+
+        # 1. Inspect workflow to find associated recording subfolders before removing from memory
+        dirs_to_clean = set()
+        wf = self.memory.get_workflow(workflow_id)
+        if wf:
+            env = getattr(wf, "environment", {}) or {}
+            if env.get("recording_dir"):
+                dirs_to_clean.add(Path(env["recording_dir"]))
+            if env.get("video_path"):
+                dirs_to_clean.add(Path(env["video_path"]).parent)
+            rec_q = env.get("recording_quality", {}) or {}
+            session_id = rec_q.get("session_id")
+            if session_id:
+                dirs_to_clean.add(self.demonstration_capture._recordings_base_dir / session_id)
+                dirs_to_clean.add(Path.home() / ".clio" / "recordings" / session_id)
+            for frame in env.get("captured_frames", []):
+                f_path = frame.get("path")
+                if f_path:
+                    dirs_to_clean.add(Path(f_path).parent.parent)
+
+        if workflow_id.startswith("wf_rec_"):
+            raw_hash = workflow_id.replace("wf_rec_", "")
+            dirs_to_clean.add(self.demonstration_capture._recordings_base_dir / raw_hash)
+            dirs_to_clean.add(Path.home() / ".clio" / "recordings" / raw_hash)
+
+        # Also inspect recording directories for metadata referencing this workflow
+        try:
+            base_rec = self.demonstration_capture._recordings_base_dir
+            if base_rec.exists():
+                for sub in base_rec.iterdir():
+                    if sub.is_dir() and sub.name not in (".", "..", "frames"):
+                        meta_file = sub / "metadata.json"
+                        if meta_file.exists():
+                            try:
+                                with open(meta_file, "r") as mf:
+                                    m_data = json.load(mf)
+                                    if m_data.get("workflow_id") == workflow_id or m_data.get("session_id") == workflow_id.replace("wf_rec_", ""):
+                                        dirs_to_clean.add(sub)
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.warning("Error scanning recordings base directory: %s", e)
+
+        # 2. Safely remove matching recording directories from disk
+        deleted_dirs = []
+        for d in dirs_to_clean:
+            try:
+                # Security validation: must be a subfolder inside recordings, never recordings itself
+                if d.exists() and d.is_dir() and "recordings" in d.parts and d.name != "recordings":
+                    shutil.rmtree(d, ignore_errors=True)
+                    deleted_dirs.append(str(d))
+                    logger.info("Deleted recording subfolder: %s", d)
+            except Exception as e:
+                logger.error("Failed to delete recording directory %s: %s", d, e)
+
+        # 3. Remove workflow from database
         success = self.memory.delete_workflow(workflow_id, soft=False)
         if success:
             self._broadcast_sse({
                 "type": "workflow_deleted",
                 "workflow_id": workflow_id,
+                "deleted_directories": deleted_dirs,
                 "timestamp": time.time(),
             })
-            logger.info("Successfully deleted workflow: %s", workflow_id)
-        return {"success": success, "workflow_id": workflow_id}
+            logger.info("Successfully deleted workflow: %s (cleaned %d folders)", workflow_id, len(deleted_dirs))
+        return {"success": success, "workflow_id": workflow_id, "deleted_directories": deleted_dirs}
 
     def execute_workflow_async(
         self,
