@@ -952,6 +952,75 @@ final class ClioViewModel: ObservableObject {
     // Workflow Steps Inspection (show steps in order before taking action)
     @Published var inspectWorkflow: WorkflowItem? = nil
 
+    // All saved workflows in persistent memory (preserved across search queries)
+    @Published var allSavedWorkflows: [WorkflowItem] = []
+
+    var isMemoryCommand: Bool {
+        let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return trimmed == "/memory" || trimmed == "/memories" || trimmed == "/mem" ||
+               trimmed.hasPrefix("/memory ") || trimmed.hasPrefix("/memories ") || trimmed.hasPrefix("/mem ")
+    }
+
+    var memoryWorkflows: [WorkflowItem] {
+        let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        var searchFilter = ""
+        if trimmed.hasPrefix("/memory ") {
+            searchFilter = String(trimmed.dropFirst(8)).trimmingCharacters(in: .whitespaces)
+        } else if trimmed.hasPrefix("/memories ") {
+            searchFilter = String(trimmed.dropFirst(10)).trimmingCharacters(in: .whitespaces)
+        } else if trimmed.hasPrefix("/mem ") {
+            searchFilter = String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+        }
+
+        let sourceList = !allSavedWorkflows.isEmpty ? allSavedWorkflows : workflows
+        if searchFilter.isEmpty {
+            return sourceList
+        }
+        return sourceList.filter {
+            $0.displayName.localizedCaseInsensitiveContains(searchFilter) ||
+            ($0.canonical_trigger?.localizedCaseInsensitiveContains(searchFilter) ?? false) ||
+            ($0.description?.localizedCaseInsensitiveContains(searchFilter) ?? false)
+        }
+    }
+
+    var currentInspectedIndex: Int? {
+        guard let current = inspectWorkflow else { return nil }
+        let list = isMemoryCommand ? memoryWorkflows : workflows
+        return list.firstIndex(where: { $0.id == current.id })
+    }
+
+    func inspectPreviousWorkflow() {
+        let list = isMemoryCommand ? memoryWorkflows : workflows
+        guard let idx = currentInspectedIndex, idx > 0 else { return }
+        inspectWorkflowDetails(list[idx - 1])
+    }
+
+    func inspectNextWorkflow() {
+        let list = isMemoryCommand ? memoryWorkflows : workflows
+        guard let idx = currentInspectedIndex, idx < list.count - 1 else { return }
+        inspectWorkflowDetails(list[idx + 1])
+    }
+
+    func selectNextWorkflow() {
+        if inspectWorkflow != nil {
+            inspectNextWorkflow()
+            return
+        }
+        let count = isMemoryCommand ? memoryWorkflows.count : workflows.count
+        guard count > 0 else { return }
+        selectedIndex = min(selectedIndex + 1, count - 1)
+    }
+
+    func selectPreviousWorkflow() {
+        if inspectWorkflow != nil {
+            inspectPreviousWorkflow()
+            return
+        }
+        let count = isMemoryCommand ? memoryWorkflows.count : workflows.count
+        guard count > 0 else { return }
+        selectedIndex = max(selectedIndex - 1, 0)
+    }
+
     private var sseTask: Task<Void, Never>?
     private let baseURL = URL(string: "http://127.0.0.1:8765")!
     private let speechManager = SpeechDictationManager()
@@ -1043,7 +1112,9 @@ final class ClioViewModel: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 let items = try JSONDecoder().decode([WorkflowItem].self, from: data)
-                self.workflows = self.deduplicateWorkflows(items)
+                let deduped = self.deduplicateWorkflows(items)
+                self.workflows = deduped
+                self.allSavedWorkflows = deduped
                 self.isConnected = true
                 if self.selectedIndex >= self.workflows.count { self.selectedIndex = 0 }
             }
@@ -1075,6 +1146,22 @@ final class ClioViewModel: ObservableObject {
     }
 
     func search(text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
+        if trimmed == "/memory" || trimmed == "/memories" || trimmed == "/mem" ||
+           trimmed.hasPrefix("/memory ") || trimmed.hasPrefix("/memories ") || trimmed.hasPrefix("/mem ") {
+            if allSavedWorkflows.isEmpty {
+                await fetchWorkflows()
+            }
+            self.selectedIndex = 0
+            return
+        }
+        if trimmed == "/" {
+            if allSavedWorkflows.isEmpty {
+                await fetchWorkflows()
+            }
+            self.selectedIndex = 0
+            return
+        }
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
             await fetchWorkflows()
             self.inspectWorkflow = nil
@@ -1187,6 +1274,24 @@ final class ClioViewModel: ObservableObject {
             return
         }
 
+        // Command suggestions: typing "/" expands to "/memory"
+        if trimmed == "/" {
+            self.query = "/memory"
+            Task { await fetchWorkflows() }
+            return
+        }
+
+        // Memory Space Selection
+        if isMemoryCommand {
+            let list = memoryWorkflows
+            if selectedIndex >= 0 && selectedIndex < list.count {
+                inspectWorkflowDetails(list[selectedIndex])
+            } else if let first = list.first {
+                inspectWorkflowDetails(first)
+            }
+            return
+        }
+
         let normQuery = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
 
         // When the user types an action in the Clio bar, it shouldn't take any action yet;
@@ -1222,15 +1327,24 @@ final class ClioViewModel: ObservableObject {
         Task {
             _ = try? await URLSession.shared.data(for: req)
             await fetchWorkflows()
-            if self.selectedIndex >= self.workflows.count {
-                self.selectedIndex = max(0, self.workflows.count - 1)
+            if self.inspectWorkflow?.id == id {
+                self.inspectWorkflow = nil
+            }
+            let count = self.isMemoryCommand ? self.memoryWorkflows.count : self.workflows.count
+            if self.selectedIndex >= count {
+                self.selectedIndex = max(0, count - 1)
             }
         }
     }
 
     func deleteSelected() {
-        guard !workflows.isEmpty, selectedIndex >= 0, selectedIndex < workflows.count else { return }
-        let wf = workflows[selectedIndex]
+        if let inspected = inspectWorkflow {
+            deleteWorkflow(id: inspected.id)
+            return
+        }
+        let list = isMemoryCommand ? memoryWorkflows : workflows
+        guard !list.isEmpty, selectedIndex >= 0, selectedIndex < list.count else { return }
+        let wf = list[selectedIndex]
         deleteWorkflow(id: wf.id)
     }
 
@@ -1828,7 +1942,18 @@ struct ClioBarView: View {
         if let inspected = vm.inspectWorkflow {
             let count = max(1, inspected.orderedSteps.count)
             let rows = min(count, 5)
-            return 58 + 48 + CGFloat(rows * 36) + 48 + 16
+            return 58 + 48 + CGFloat(rows * 36) + 48 + 24
+        }
+        if vm.isMemoryCommand {
+            let count = vm.memoryWorkflows.count
+            if count == 0 {
+                return 58 + 140
+            }
+            let rows = min(count, 5)
+            return 58 + 36 + CGFloat(rows * 48) + 34
+        }
+        if vm.query.trimmingCharacters(in: .whitespaces) == "/" {
+            return 58 + 58
         }
         let trimmed = vm.query.trimmingCharacters(in: .whitespaces)
         if !trimmed.isEmpty && !vm.workflows.isEmpty {
@@ -1876,7 +2001,7 @@ struct ClioBarView: View {
                 }
 
                 // Command Search Input
-                TextField("Ask clio to do anything...", text: $vm.query)
+                TextField(vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything (or type '/memory')...", text: $vm.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, weight: .regular))
                     .foregroundColor(ObsidianTheme.platinum)
@@ -1887,6 +2012,35 @@ struct ClioBarView: View {
                     .onChange(of: vm.query) { newQuery in
                         Task { await vm.search(text: newQuery) }
                     }
+
+                // Memory Space Quick Button
+                Button(action: {
+                    if vm.isMemoryCommand {
+                        vm.query = ""
+                        vm.inspectWorkflow = nil
+                    } else {
+                        vm.query = "/memory"
+                        vm.inspectWorkflow = nil
+                        Task { await vm.fetchWorkflows() }
+                    }
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "brain.head.profile")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("MEMORY")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundColor(vm.isMemoryCommand ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(vm.isMemoryCommand ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                    .overlay(
+                        Capsule().stroke(vm.isMemoryCommand ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
+                    )
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Browse all saved actions in Memory Space (/memory)")
 
                 // Dictation Microphone Button
                 Button(action: { vm.toggleDictation() }) {
@@ -1955,6 +2109,10 @@ struct ClioBarView: View {
                 saveModalView
             } else if let inspected = vm.inspectWorkflow {
                 inspectedWorkflowView(inspected)
+            } else if vm.isMemoryCommand {
+                memorySpaceView
+            } else if vm.query.trimmingCharacters(in: .whitespaces) == "/" {
+                slashCommandSuggestionsView
             } else if !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty {
                 searchResultsView
             }
@@ -1975,6 +2133,8 @@ struct ClioBarView: View {
                 vm.discardRecording()
             } else if vm.inspectWorkflow != nil {
                 vm.dismissInspection()
+            } else if vm.isMemoryCommand {
+                vm.query = ""
             } else {
                 AppDelegate.shared?.hidePanel()
             }
@@ -1988,6 +2148,9 @@ struct ClioBarView: View {
         .onChange(of: vm.workflows.count) { _ in
             AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
         }
+        .onChange(of: vm.allSavedWorkflows.count) { _ in
+            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+        }
         .onChange(of: vm.query) { _ in
             AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
         }
@@ -1996,6 +2159,33 @@ struct ClioBarView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("FocusClioField"))) { _ in
             isFieldFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SelectNextWorkflow"))) { _ in
+            vm.selectNextWorkflow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SelectPrevWorkflow"))) { _ in
+            vm.selectPreviousWorkflow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StepNextWorkflow"))) { _ in
+            if vm.inspectWorkflow != nil {
+                vm.inspectNextWorkflow()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StepPrevWorkflow"))) { _ in
+            if vm.inspectWorkflow != nil {
+                vm.inspectPreviousWorkflow()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ClioBarEscapeKey"))) { _ in
+            if vm.showSaveModal {
+                vm.discardRecording()
+            } else if vm.inspectWorkflow != nil {
+                vm.dismissInspection()
+            } else if vm.isMemoryCommand {
+                vm.query = ""
+            } else {
+                AppDelegate.shared?.hidePanel()
+            }
         }
     }
 
@@ -2165,6 +2355,176 @@ struct ClioBarView: View {
     }
 
     @ViewBuilder
+    private var slashCommandSuggestionsView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(spacing: 2) {
+            Button(action: {
+                vm.query = "/memory"
+                Task { await vm.fetchWorkflows() }
+            }) {
+                HStack(spacing: 10) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(ObsidianTheme.platinum)
+                        .frame(width: 24, height: 24)
+                        .background(ObsidianTheme.surfaceElevated)
+                        .clipShape(Circle())
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("/memory")
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.platinum)
+                            Text("COMMAND")
+                                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.slate)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(ObsidianTheme.surfaceElevated)
+                                .cornerRadius(3)
+                        }
+                        Text("Browse memory space containing all saved actions & dissected steps")
+                            .font(.system(size: 11))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+
+                    Spacer()
+
+                    Text("⏎ Select")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(ObsidianTheme.surfaceElevated)
+                .cornerRadius(6)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
+    private var memorySpaceView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: 8) {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("MEMORY SPACE")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+
+                Spacer()
+
+                Text("\(vm.memoryWorkflows.count) SAVED ACTIONS")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+
+                Button(action: {
+                    vm.query = ""
+                }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(ObsidianTheme.slate)
+                        .frame(width: 18, height: 18)
+                        .background(ObsidianTheme.surfaceElevated)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Exit Memory Space (Esc)")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.3))
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.5))
+
+            // Workflow List or Empty State
+            if vm.memoryWorkflows.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "sparkles.rectangle.stack")
+                        .font(.system(size: 24))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                        .padding(.top, 16)
+                    Text("Memory Space is Empty")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(ObsidianTheme.platinumDim)
+                    Text("Demonstrate and record actions with the RECORD button above to teach Clio your workflows.")
+                        .font(.system(size: 11))
+                        .foregroundColor(ObsidianTheme.slate)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 30)
+                        .padding(.bottom, 16)
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                ScrollView(.vertical, showsIndicators: vm.memoryWorkflows.count > 5) {
+                    VStack(spacing: 2) {
+                        ForEach(Array(vm.memoryWorkflows.enumerated()), id: \.element.id) { idx, wf in
+                            MemorySpaceRowView(
+                                index: idx,
+                                wf: wf,
+                                isSelected: idx == vm.selectedIndex,
+                                onPreview: { vm.previewExistingWorkflowRecording(wf) },
+                                onSelect: {
+                                    vm.selectedIndex = idx
+                                    vm.inspectWorkflowDetails(wf)
+                                },
+                                onDelete: {
+                                    vm.deleteWorkflow(id: wf.id)
+                                }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                }
+                .frame(maxHeight: 240)
+            }
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.5))
+
+            // Footer
+            HStack {
+                Text("Click any action to inspect steps • ⏎ to view • ⌫ back")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                Spacer()
+                Button(action: {
+                    vm.toggleRecording()
+                }) {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(ObsidianTheme.platinum)
+                            .frame(width: 5, height: 5)
+                        Text("+ Record New")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundColor(ObsidianTheme.platinum)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+        }
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
     private func inspectedWorkflowView(_ inspected: WorkflowItem) -> some View {
         Divider().background(ObsidianTheme.borderSubtle)
         VStack(alignment: .leading, spacing: 8) {
@@ -2185,6 +2545,42 @@ struct ClioBarView: View {
                 }
 
                 Spacer()
+
+                if let idx = vm.currentInspectedIndex {
+                    let total = vm.isMemoryCommand ? vm.memoryWorkflows.count : vm.workflows.count
+                    if total > 1 {
+                        HStack(spacing: 5) {
+                            Button(action: { vm.inspectPreviousWorkflow() }) {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(idx > 0 ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
+                                    .frame(width: 20, height: 20)
+                                    .background(ObsidianTheme.surfaceElevated)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(idx == 0)
+                            .help("Previous action in memory (Left Arrow)")
+
+                            Text("\(idx + 1) of \(total)")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.slate)
+
+                            Button(action: { vm.inspectNextWorkflow() }) {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(idx < total - 1 ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
+                                    .frame(width: 20, height: 20)
+                                    .background(ObsidianTheme.surfaceElevated)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(idx >= total - 1)
+                            .help("Next action in memory (Right Arrow)")
+                        }
+                        .padding(.horizontal, 4)
+                    }
+                }
 
                 if let vPath = inspected.video_path, !vPath.isEmpty {
                     Button(action: {
@@ -2275,7 +2671,9 @@ struct ClioBarView: View {
                     vm.dismissInspection()
                 }) {
                     HStack(spacing: 4) {
-                        Text("Back")
+                        Image(systemName: "arrow.left")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(vm.isMemoryCommand ? "Memory Space" : "Back")
                             .font(.system(size: 11, weight: .medium))
                         Text("Esc")
                             .font(.system(size: 9, design: .monospaced))
@@ -2400,6 +2798,88 @@ struct SearchResultRowView: View {
     }
 }
 
+struct MemorySpaceRowView: View {
+    let index: Int
+    let wf: WorkflowItem
+    let isSelected: Bool
+    let onPreview: () -> Void
+    let onSelect: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            // Index Number Pill
+            Text("#\(index + 1)")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(isSelected ? ObsidianTheme.surface : ObsidianTheme.platinumDim)
+                .frame(width: 26, height: 22)
+                .background(isSelected ? ObsidianTheme.platinum : ObsidianTheme.zinc)
+                .cornerRadius(4)
+
+            // Title & Trigger
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(wf.displayName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
+                        .lineLimit(1)
+                }
+
+                if let trig = wf.canonical_trigger, !trig.isEmpty {
+                    Text("trigger: \"\(trig)\"")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            // Video Badge (if screen recording exists)
+            if let vPath = wf.video_path, !vPath.isEmpty {
+                Button(action: onPreview) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 10))
+                        Text("VIDEO")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundColor(ObsidianTheme.platinum)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("View demonstration video")
+            }
+
+            // Step count badge
+            Text("\(wf.displaySteps) steps")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundColor(ObsidianTheme.slate)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(ObsidianTheme.surfaceElevated)
+                .cornerRadius(4)
+
+            // Inspect arrow
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(isSelected ? ObsidianTheme.surfaceElevated : Color.clear)
+        .cornerRadius(8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onSelect()
+        }
+    }
+}
+
 // MARK: - AppKit Window Setup
 
 final class SpotlightPanel: NSPanel {
@@ -2431,7 +2911,7 @@ final class SpotlightPanel: NSPanel {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         // Esc key (53)
         if event.keyCode == 53 {
-            AppDelegate.shared?.hidePanel()
+            NotificationCenter.default.post(name: NSNotification.Name("ClioBarEscapeKey"), object: nil)
             return true
         }
         // Cmd + W
@@ -2442,6 +2922,26 @@ final class SpotlightPanel: NSPanel {
         // Cmd + Backspace (51) to delete selected workflow
         if event.modifierFlags.contains(.command) && event.keyCode == 51 {
             NotificationCenter.default.post(name: NSNotification.Name("DeleteSelectedWorkflow"), object: nil)
+            return true
+        }
+        // Down Arrow (125)
+        if event.keyCode == 125 {
+            NotificationCenter.default.post(name: NSNotification.Name("SelectNextWorkflow"), object: nil)
+            return true
+        }
+        // Up Arrow (126)
+        if event.keyCode == 126 {
+            NotificationCenter.default.post(name: NSNotification.Name("SelectPrevWorkflow"), object: nil)
+            return true
+        }
+        // Left Arrow (123) with Cmd or Option
+        if event.keyCode == 123 && (event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option)) {
+            NotificationCenter.default.post(name: NSNotification.Name("StepPrevWorkflow"), object: nil)
+            return true
+        }
+        // Right Arrow (124) with Cmd or Option
+        if event.keyCode == 124 && (event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option)) {
+            NotificationCenter.default.post(name: NSNotification.Name("StepNextWorkflow"), object: nil)
             return true
         }
         return super.performKeyEquivalent(with: event)
