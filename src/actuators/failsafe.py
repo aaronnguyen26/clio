@@ -77,6 +77,7 @@ class _NativeCoreGraphicsBindings:
             self.cg.CGEventGetLocation.argtypes = [c_void_p]
             self.cg.CGEventGetLocation.restype = CGPoint
             self.cf.CFRelease.argtypes = [c_void_p]
+            self.cf.CFRelease.restype = None
 
             # Display geometry
             self.cg.CGMainDisplayID.restype = c_uint32
@@ -91,6 +92,7 @@ class _NativeCoreGraphicsBindings:
             self.cg.CGEventCreateMouseEvent.restype = c_void_p
             self.cg.CGEventSetFlags.argtypes = [c_void_p, c_uint64]
             self.cg.CGEventPost.argtypes = [c_uint32, c_void_p]
+            self.cg.CGEventPost.restype = None
 
             self.available = True
         except Exception as e:

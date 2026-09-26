@@ -433,6 +433,9 @@ class MacOSActuator(BaseActuator):
     def launch_app(self, app_name_or_bundle: str, timeout: float = 5.0, background: bool = False) -> bool:
         """Launch an app by name or bundle ID. Uses subprocess exclusively to avoid GIL deadlock."""
         self.check_failsafe()
+        if not app_name_or_bundle or app_name_or_bundle.startswith("-") or any(c in app_name_or_bundle for c in "\r\n\x00"):
+            logger.warning("Rejected invalid app name or bundle identifier: %s", app_name_or_bundle)
+            return False
 
         target_lower = app_name_or_bundle.lower()
         short_target = target_lower.split(".")[-1] if "." in target_lower else target_lower
@@ -473,6 +476,9 @@ class MacOSActuator(BaseActuator):
     def focus_app(self, app_name_or_bundle: str) -> bool:
         """Bring app to front via NSRunningApplication, fallback to launch_app."""
         self.check_failsafe()
+        if not app_name_or_bundle or app_name_or_bundle.startswith("-") or any(c in app_name_or_bundle for c in "\r\n\x00"):
+            logger.warning("Rejected invalid app name or bundle identifier in focus_app: %s", app_name_or_bundle)
+            return False
 
         target_lower = app_name_or_bundle.lower()
         short_target = target_lower.split(".")[-1] if "." in target_lower else target_lower
@@ -507,14 +513,19 @@ class MacOSActuator(BaseActuator):
         if not url:
             return False
         clean_url = url.strip()
-        lower_url = clean_url.lower()
-        if lower_url.startswith("file://") or lower_url.startswith("javascript:") or lower_url.startswith("data:"):
+        if not clean_url or clean_url.startswith("-") or any(c in clean_url for c in "\r\n\x00"):
+            logger.warning("Rejected invalid or option-prefixed URL in open_url: %s", clean_url)
+            return False
+        from urllib.parse import urlparse
+        parsed = urlparse(clean_url)
+        if not parsed.scheme:
+            clean_url = f"https://{clean_url}"
+            parsed = urlparse(clean_url)
+        if parsed.scheme.lower() not in ("http", "https"):
             logger.warning("Rejected disallowed URL scheme in open_url: %s", clean_url)
             return False
-        if not (clean_url.startswith("http://") or clean_url.startswith("https://")):
-            clean_url = f"https://{clean_url}"
         try:
-            res = subprocess.run(["open", clean_url], check=False, capture_output=True, timeout=3.0)
+            res = subprocess.run(["open", "--", clean_url], check=False, capture_output=True, timeout=3.0)
             return res.returncode == 0
         except Exception as e:
             logger.warning("Failed to open URL %s: %s", clean_url, e)

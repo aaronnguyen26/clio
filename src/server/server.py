@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import secrets
 import shutil
 import sys
 import threading
@@ -42,6 +43,30 @@ logger = logging.getLogger(__name__)
 class ClioServer:
     """Manages the backend HTTP server, SSE event distribution, and workflow executor for Clio HUD."""
 
+    @staticmethod
+    def _get_or_create_session_token() -> str:
+        """Loads or creates a cryptographically secure 256-bit session token in ~/.clio/session_token with 0600 permissions."""
+        token_dir = Path.home() / ".clio"
+        token_file = token_dir / "session_token"
+        try:
+            token_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                os.chmod(token_dir, 0o700)
+            except Exception:
+                pass
+            if token_file.exists():
+                token = token_file.read_text(encoding="utf-8").strip()
+                if len(token) >= 32:
+                    return token
+            new_token = secrets.token_hex(32)
+            fd = os.open(str(token_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(new_token + "\n")
+            return new_token
+        except Exception as e:
+            logger.warning("Could not persist session token to %s: %s", token_file, e)
+            return secrets.token_hex(32)
+
     def __init__(
         self,
         host: str = "127.0.0.1",
@@ -56,8 +81,8 @@ class ClioServer:
         self.host = host
         self.port = port
         self.zero_delay = zero_delay
-        self.auth_token = auth_token
         self.require_auth = require_auth or (auth_token is not None)
+        self.auth_token = auth_token or (self._get_or_create_session_token() if self.require_auth else None)
 
         # Core subsystems
         self.bus = ExecutionEventBus()
@@ -394,28 +419,43 @@ class ClioServer:
         """Discards an unsaved screen recording and immediately cleans up session files from disk."""
         data = data or {}
         deleted_paths: List[str] = []
+        allowed_bases = [
+            self.demonstration_capture._recordings_base_dir.resolve(),
+            (Path.home() / ".clio" / "recordings").resolve(),
+        ]
+
+        def _is_safe_deletion_target(target: Path) -> bool:
+            try:
+                res = target.resolve()
+                for b in allowed_bases:
+                    if res != b and b in res.parents:
+                        return True
+                return False
+            except Exception:
+                return False
 
         # 1. Check video_path
         v_path_str = data.get("video_path")
-        if v_path_str:
+        if v_path_str and isinstance(v_path_str, str):
             vp = Path(v_path_str)
             session_folder = vp.parent if vp.is_file() or vp.suffix else vp
-            if session_folder.exists() and "recordings" in session_folder.parts:
+            if _is_safe_deletion_target(session_folder) and session_folder.exists():
                 shutil.rmtree(session_folder, ignore_errors=True)
                 deleted_paths.append(str(session_folder))
 
-        # 2. Check session_id
+        # 2. Check session_id (strict slug validation)
         session_id = data.get("session_id")
-        if session_id:
-            cand = self.demonstration_capture._recordings_base_dir / session_id
-            if cand.exists():
-                shutil.rmtree(cand, ignore_errors=True)
-                deleted_paths.append(str(cand))
+        if session_id and isinstance(session_id, str):
+            if re.match(r"^[a-zA-Z0-9_\-]+$", session_id):
+                cand = (self.demonstration_capture._recordings_base_dir / session_id).resolve()
+                if _is_safe_deletion_target(cand) and cand.exists():
+                    shutil.rmtree(cand, ignore_errors=True)
+                    deleted_paths.append(str(cand))
 
-        # 3. Clean up active demonstration capture session_dir if not saved
+        # 3. Clean up active demonstration capture session_dir if safe
         if hasattr(self.demonstration_capture, "_session_dir"):
             active_sdir = self.demonstration_capture._session_dir
-            if active_sdir and active_sdir.exists():
+            if active_sdir and _is_safe_deletion_target(active_sdir) and active_sdir.exists():
                 shutil.rmtree(active_sdir, ignore_errors=True)
                 deleted_paths.append(str(active_sdir))
 
@@ -885,9 +925,17 @@ class ClioServer:
             def _validate_host(self) -> bool:
                 host_header = self.headers.get("Host", "")
                 if not host_header:
-                    return True
-                host_name = host_header.split(":")[0].strip().lower()
-                if host_name not in ("127.0.0.1", "localhost", "testserver"):
+                    self.send_response(HTTPStatus.BAD_REQUEST)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(b'{"error": "Missing Host header (DNS rebinding protection)"}')
+                    return False
+                host_part = host_header.strip().lower()
+                if host_part.startswith("[") and "]" in host_part:
+                    host_name = host_part.split("]")[0][1:]
+                else:
+                    host_name = host_part.split(":")[0].strip()
+                if host_name not in ("127.0.0.1", "localhost", "::1", "[::1]", "testserver"):
                     self.send_response(HTTPStatus.BAD_REQUEST)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.end_headers()
@@ -895,10 +943,30 @@ class ClioServer:
                     return False
                 return True
 
+            def _check_cross_origin(self) -> bool:
+                sec_fetch_site = self.headers.get("Sec-Fetch-Site", "").lower()
+                if sec_fetch_site == "cross-site":
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "Forbidden cross-site request rejected"})
+                    return False
+                req_origin = self.headers.get("Origin")
+                if req_origin and not self._get_allowed_origin():
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "Forbidden cross-origin request rejected"})
+                    return False
+                referer = self.headers.get("Referer")
+                if referer:
+                    ref_parsed = urlparse(referer)
+                    ref_host = (ref_parsed.hostname or "").lower()
+                    if ref_host not in ("127.0.0.1", "localhost", "::1", "testserver"):
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "Forbidden cross-origin referer rejected"})
+                        return False
+                return True
+
             def _check_auth(self) -> bool:
                 if not server_instance.require_auth and not server_instance.auth_token:
                     return True
                 expected = server_instance.auth_token
+                if not expected:
+                    return True
                 auth_header = self.headers.get("Authorization", "")
                 clio_token = self.headers.get("X-Clio-Token", "")
                 token = ""
@@ -906,7 +974,7 @@ class ClioServer:
                     token = auth_header[7:].strip()
                 elif clio_token:
                     token = clio_token.strip()
-                if not token or token != expected:
+                if not token or not secrets.compare_digest(token, expected):
                     self.send_response(HTTPStatus.UNAUTHORIZED)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.end_headers()
@@ -1040,12 +1108,16 @@ class ClioServer:
                     rep = None
                     if hasattr(server_instance.demonstration_capture, "quality_report") and server_instance.demonstration_capture.quality_report:
                         rep = server_instance.demonstration_capture.quality_report.to_dict()
-                    elif q:
+                    elif q and re.match(r"^[a-zA-Z0-9_\-]+$", q):
                         from src.memory.recording_evaluator import RecordingQualityEvaluator
-                        cand = server_instance.demonstration_capture._recordings_base_dir / q
-                        if not cand.exists():
-                            cand = Path.home() / ".clio" / "recordings" / q
-                        if cand.exists():
+                        base_dir = server_instance.demonstration_capture._recordings_base_dir.resolve()
+                        cand = (base_dir / q).resolve()
+                        is_valid = cand.exists() and (cand == base_dir or base_dir in cand.parents)
+                        if not is_valid:
+                            home_base = (Path.home() / ".clio" / "recordings").resolve()
+                            cand = (home_base / q).resolve()
+                            is_valid = cand.exists() and (cand == home_base or home_base in cand.parents)
+                        if is_valid:
                             rep = RecordingQualityEvaluator.evaluate_session(cand).to_dict()
                         else:
                             wf = server_instance.memory.get_workflow(q)
@@ -1069,9 +1141,7 @@ class ClioServer:
             def do_POST(self) -> None:
                 if not self._validate_host():
                     return
-                req_origin = self.headers.get("Origin")
-                if req_origin and not self._get_allowed_origin():
-                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "Forbidden cross-origin POST rejected"})
+                if not self._check_cross_origin():
                     return
                 if not self._check_auth():
                     return
@@ -1080,6 +1150,10 @@ class ClioServer:
                 path = parsed.path
 
                 content_len = int(self.headers.get("Content-Length", 0))
+                content_type = self.headers.get("Content-Type", "").lower()
+                if content_len > 0 and not content_type.startswith("application/json"):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Content-Type must be application/json"})
+                    return
                 body_bytes = self.rfile.read(content_len) if content_len > 0 else b"{}"
                 try:
                     body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -1230,9 +1304,7 @@ class ClioServer:
             def do_DELETE(self) -> None:
                 if not self._validate_host():
                     return
-                req_origin = self.headers.get("Origin")
-                if req_origin and not self._get_allowed_origin():
-                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "Forbidden cross-origin DELETE rejected"})
+                if not self._check_cross_origin():
                     return
                 if not self._check_auth():
                     return
@@ -1263,14 +1335,20 @@ class ClioServer:
                         for p in pids:
                             if p != my_pid:
                                 try:
-                                    os.kill(p, signal.SIGTERM)
+                                    cmd_res = subprocess.run(["ps", "-p", str(p), "-o", "command="], capture_output=True, text=True, check=False)
+                                    cmd_line = cmd_res.stdout.lower()
+                                    if any(term in cmd_line for term in ("clio", "python", "server.py", "main.py")):
+                                        os.kill(p, signal.SIGTERM)
                                 except ProcessLookupError:
                                     pass
                         time.sleep(0.3)
                         for p in pids:
                             if p != my_pid:
                                 try:
-                                    os.kill(p, signal.SIGKILL)
+                                    cmd_res = subprocess.run(["ps", "-p", str(p), "-o", "command="], capture_output=True, text=True, check=False)
+                                    cmd_line = cmd_res.stdout.lower()
+                                    if any(term in cmd_line for term in ("clio", "python", "server.py", "main.py")):
+                                        os.kill(p, signal.SIGKILL)
                                 except ProcessLookupError:
                                     pass
                 except Exception as ex:
@@ -1290,6 +1368,7 @@ class ClioServer:
 
     def stop(self) -> None:
         """Shuts down the HTTP server and stops all active resources."""
+        self.cancel_execution()
         if self._httpd:
             self._httpd.shutdown()
             self._httpd.server_close()

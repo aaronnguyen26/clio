@@ -55,6 +55,58 @@ class CompanionDialogueEngine:
         ).strip()
         cleaned_intent = re.sub(r"^please\s+", "", cleaned_intent, flags=re.IGNORECASE).strip()
 
+        # Clarifying state follow-up handling
+        if self.state == DialogueState.CLARIFYING:
+            text_lower = text.lower()
+            candidates = getattr(self, "clarifying_candidates", []) or []
+            if any(neg in text_lower for neg in ("no", "neither", "none", "cancel", "stop", "nevermind")):
+                self.state = DialogueState.IDLE
+                self.clarifying_candidates = []
+                self.pending_workflow = None
+                return "Cancelled! What would you like to do instead?", self.state
+
+            chosen = None
+            if ("1" in text_lower or "first" in text_lower) and len(candidates) >= 1:
+                chosen = candidates[0]
+            elif ("2" in text_lower or "second" in text_lower) and len(candidates) >= 2:
+                chosen = candidates[1]
+            elif ("3" in text_lower or "third" in text_lower) and len(candidates) >= 3:
+                chosen = candidates[2]
+            elif any(affirm in text_lower for affirm in ("yes", "y", "sure", "proceed", "do it", "ok", "yep", "go ahead")) and candidates:
+                chosen = candidates[0]
+            else:
+                for c in candidates:
+                    c_name = getattr(c, "workflow_name", getattr(c, "name", "")).lower()
+                    if c_name and (c_name in text_lower or text_lower in c_name):
+                        chosen = c
+                        break
+
+            if chosen:
+                self.state = DialogueState.EXECUTING
+                self.last_matched_workflow = chosen
+                self.clarifying_candidates = []
+                self.pending_workflow = None
+                chosen_name = getattr(chosen, "workflow_name", getattr(chosen, "name", "task"))
+                return f"Got it! Starting '{chosen_name}' now! 🚀", self.state
+
+        # Confirmation handling
+        if self.state == DialogueState.CONFIRMING:
+            text_lower = text.lower()
+            if any(affirm in text_lower for affirm in ("yes", "y", "sure", "proceed", "do it", "ok", "yep", "go ahead")):
+                self.state = DialogueState.EXECUTING
+                wf = self.pending_workflow
+                self.last_matched_workflow = wf
+                self.pending_workflow = None
+                wf_name = getattr(wf, "workflow_name", getattr(wf, "name", "task"))
+                return (
+                    f"Got it! Executing '{wf_name}' now.",
+                    self.state,
+                )
+            else:
+                self.state = DialogueState.IDLE
+                self.pending_workflow = None
+                return "Cancelled! What would you like to do instead?", self.state
+
         # Pure Greetings (no subsequent action intent)
         if not cleaned_intent and any(
             w in text.lower() for w in ["hello", "hi", "hey", "who are you"]
@@ -116,58 +168,6 @@ class CompanionDialogueEngine:
                 )
             items = ", ".join(f"'{w['name']}'" for w in workflows)
             return f"Here are the workflows I remember: {items}.", self.state
-
-        # Clarifying state follow-up handling
-        if self.state == DialogueState.CLARIFYING:
-            text_lower = text.lower()
-            candidates = getattr(self, "clarifying_candidates", []) or []
-            if any(neg in text_lower for neg in ("no", "neither", "none", "cancel", "stop", "nevermind")):
-                self.state = DialogueState.IDLE
-                self.clarifying_candidates = []
-                self.pending_workflow = None
-                return "Cancelled! What would you like to do instead?", self.state
-
-            chosen = None
-            if ("1" in text_lower or "first" in text_lower) and len(candidates) >= 1:
-                chosen = candidates[0]
-            elif ("2" in text_lower or "second" in text_lower) and len(candidates) >= 2:
-                chosen = candidates[1]
-            elif ("3" in text_lower or "third" in text_lower) and len(candidates) >= 3:
-                chosen = candidates[2]
-            elif any(affirm in text_lower for affirm in ("yes", "y", "sure", "proceed", "do it", "ok", "yep", "go ahead")) and candidates:
-                chosen = candidates[0]
-            else:
-                for c in candidates:
-                    c_name = getattr(c, "workflow_name", getattr(c, "name", "")).lower()
-                    if c_name and (c_name in text_lower or text_lower in c_name):
-                        chosen = c
-                        break
-
-            if chosen:
-                self.state = DialogueState.EXECUTING
-                self.last_matched_workflow = chosen
-                self.clarifying_candidates = []
-                self.pending_workflow = None
-                chosen_name = getattr(chosen, "workflow_name", getattr(chosen, "name", "task"))
-                return f"Got it! Starting '{chosen_name}' now! 🚀", self.state
-
-        # Confirmation handling
-        if self.state == DialogueState.CONFIRMING:
-            text_lower = text.lower()
-            if any(affirm in text_lower for affirm in ("yes", "y", "sure", "proceed", "do it", "ok", "yep", "go ahead")):
-                self.state = DialogueState.EXECUTING
-                wf = self.pending_workflow
-                self.last_matched_workflow = wf
-                self.pending_workflow = None
-                wf_name = getattr(wf, "workflow_name", getattr(wf, "name", "task"))
-                return (
-                    f"Got it! Executing '{wf_name}' now.",
-                    self.state,
-                )
-            else:
-                self.state = DialogueState.IDLE
-                self.pending_workflow = None
-                return "Cancelled! What would you like to do instead?", self.state
 
         # Intent search on both original text and cleaned intent
         matches: List[MatchResult] = self.retrieval.query(

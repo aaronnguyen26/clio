@@ -147,16 +147,17 @@ class BenchmarkCompletionVerifier:
     @staticmethod
     def verify_r6_background_invariants(actuator: BaseActuator) -> bool:
         """Verifies Requirement R6 / R7: purely headless or mock execution with zero physical desktop intrusion."""
-        if isinstance(actuator, MockActuator):
-            for action in actuator.history:
+        history = getattr(actuator, "history", None)
+        if history is not None:
+            for action in history:
                 # Disallow physical warping or global HID taps
-                if action.action_type in ("warp_mouse", "global_hid_tap"):
+                act_type = getattr(action, "action_type", "")
+                if act_type in ("warp_mouse", "global_hid_tap"):
                     return False
                 # Verify background flags for application launches
-                if action.action_type == "launch_app":
-                    params = action.parameters
+                if act_type == "launch_app":
+                    params = getattr(action, "parameters", {}) or {}
                     is_bg = params.get("background", False) or "-g" in params.get("args", []) or bool(params.get("bundle_id"))
                     if not is_bg:
                         return False
-            return True
         return True

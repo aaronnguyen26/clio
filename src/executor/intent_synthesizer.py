@@ -227,6 +227,11 @@ class DynamicIntentSynthesizer:
                         target_url = dest_url
                         break
 
+        if target_url:
+            parsed = urllib.parse.urlparse(target_url)
+            if parsed.scheme.lower() not in ("http", "https") or target_url.startswith("-") or any(c in target_url for c in "\r\n\x00"):
+                target_url = ""
+
         spec_id = f"dynamic_tab_{uuid.uuid4().hex[:8]}"
         steps: List[WorkflowStep] = []
 

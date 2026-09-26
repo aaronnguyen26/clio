@@ -1254,9 +1254,9 @@ class VirtualCursor:
 
     def _record_event(self, event: VirtualCursorEvent, save_to_history: bool = True) -> None:
         """Records event to history and notifies subscribed listeners (non-blocking, off-lock)."""
-        if save_to_history:
-            self._history.append(event)
         with self._lock:
+            if save_to_history:
+                self._history.append(event)
             listeners = list(self._listeners)
         if listeners:
             for listener in listeners:

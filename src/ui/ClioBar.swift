@@ -41,6 +41,14 @@ final class ServerLauncher {
     func isServerReachable() async -> Bool {
         guard let url = URL(string: "http://127.0.0.1:8765/api/status") else { return false }
         var request = URLRequest(url: url)
+        let tokenFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".clio/session_token")
+        if let data = try? Data(contentsOf: tokenFile),
+           let token = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            request.setValue(token, forHTTPHeaderField: "X-Clio-Token")
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue("ClioBar", forHTTPHeaderField: "X-Clio-Client")
         request.timeoutInterval = 1.2
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
@@ -948,6 +956,28 @@ final class ClioViewModel: ObservableObject {
     private let baseURL = URL(string: "http://127.0.0.1:8765")!
     private let speechManager = SpeechDictationManager()
 
+    private var sessionToken: String {
+        let tokenFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".clio/session_token")
+        if let data = try? Data(contentsOf: tokenFile),
+           let token = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            return token
+        }
+        return ""
+    }
+
+    func makeAuthorizedRequest(url: URL, method: String = "GET") -> URLRequest {
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        let token = sessionToken
+        if !token.isEmpty {
+            req.setValue(token, forHTTPHeaderField: "X-Clio-Token")
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        req.setValue("ClioBar", forHTTPHeaderField: "X-Clio-Client")
+        return req
+    }
+
     init() {
         Task {
             await ServerLauncher.shared.ensureServerRunning()
@@ -1009,7 +1039,8 @@ final class ClioViewModel: ObservableObject {
     func fetchWorkflows() async {
         guard let url = URL(string: "/api/workflows", relativeTo: baseURL) else { return }
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let req = makeAuthorizedRequest(url: url)
+            let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 let items = try JSONDecoder().decode([WorkflowItem].self, from: data)
                 self.workflows = self.deduplicateWorkflows(items)
@@ -1025,7 +1056,8 @@ final class ClioViewModel: ObservableObject {
     func fetchStatus() async {
         guard let url = URL(string: "/api/status", relativeTo: baseURL) else { return }
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let req = makeAuthorizedRequest(url: url)
+            let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 let st = try JSONDecoder().decode(ClioStatus.self, from: data)
                 self.isExecuting = (st.status == "executing")
@@ -1051,7 +1083,8 @@ final class ClioViewModel: ObservableObject {
         guard let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let url = URL(string: "/api/search?q=\(encoded)", relativeTo: baseURL) else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let req = makeAuthorizedRequest(url: url)
+            let (data, _) = try await URLSession.shared.data(for: req)
             let items = try JSONDecoder().decode([WorkflowItem].self, from: data)
             self.workflows = self.deduplicateWorkflows(items)
             self.selectedIndex = 0
@@ -1090,7 +1123,8 @@ final class ClioViewModel: ObservableObject {
             guard let url = URL(string: "/api/workflows/\(wf.id)", relativeTo: baseURL) else { return }
             Task {
                 do {
-                    let (data, response) = try await URLSession.shared.data(from: url)
+                    let req = makeAuthorizedRequest(url: url)
+                    let (data, response) = try await URLSession.shared.data(for: req)
                     if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                         let fullItem = try JSONDecoder().decode(WorkflowItem.self, from: data)
                         await MainActor.run {
@@ -1182,8 +1216,7 @@ final class ClioViewModel: ObservableObject {
 
     func deleteWorkflow(id: String) {
         guard let url = URL(string: "/api/workflows/delete", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        var req = makeAuthorizedRequest(url: url, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["workflow_id": id])
         Task {
@@ -1255,8 +1288,7 @@ final class ClioViewModel: ObservableObject {
 
         // Notify Python backend immediately so event capture session is active from t=0
         if let startUrl = URL(string: "/api/record/start", relativeTo: self.baseURL) {
-            var startReq = URLRequest(url: startUrl)
-            startReq.httpMethod = "POST"
+            var startReq = makeAuthorizedRequest(url: startUrl, method: "POST")
             startReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
             startReq.httpBody = try? JSONSerialization.data(withJSONObject: [:])
             Task {
@@ -1287,8 +1319,7 @@ final class ClioViewModel: ObservableObject {
 
             // Update Python backend with the pre-allocated swift_video_path
             guard let url = URL(string: "/api/record/start", relativeTo: self.baseURL) else { return }
-            var req = URLRequest(url: url)
-            req.httpMethod = "POST"
+            var req = makeAuthorizedRequest(url: url, method: "POST")
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             let body: [String: Any] = ["swift_video_path": videoURL.path]
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -1313,8 +1344,7 @@ final class ClioViewModel: ObservableObject {
             let videoPath = videoURL?.path ?? ""
 
             guard let url = URL(string: "/api/record/stop", relativeTo: self.baseURL) else { return }
-            var req = URLRequest(url: url)
-            req.httpMethod = "POST"
+            var req = makeAuthorizedRequest(url: url, method: "POST")
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             var body: [String: Any] = [
                 "name": "My Demonstrated Action",
@@ -1405,8 +1435,7 @@ final class ClioViewModel: ObservableObject {
 
         // Notify backend to discard and clean up disk
         guard let url = URL(string: "/api/record/discard", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        var req = makeAuthorizedRequest(url: url, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = [:]
         if let wfId = wfId {
@@ -1574,8 +1603,7 @@ final class ClioViewModel: ObservableObject {
 
         // Asynchronously post to backend
         guard let url = URL(string: "/api/record/feed", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        var req = makeAuthorizedRequest(url: url, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         Task {
@@ -1596,8 +1624,7 @@ final class ClioViewModel: ObservableObject {
         }
 
         guard let url = URL(string: "/api/workflows/update", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        var req = makeAuthorizedRequest(url: url, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let trimmedName = recordedName.trimmingCharacters(in: .whitespaces)
         let trimmedTrigger = recordedTrigger.trimmingCharacters(in: .whitespaces)
@@ -1636,8 +1663,7 @@ final class ClioViewModel: ObservableObject {
         self.currentStepText = ""
         self.currentTaskName = ""
         guard let url = URL(string: "/api/execute", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        var req = makeAuthorizedRequest(url: url, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
             "workflow_id": id,
@@ -1662,8 +1688,7 @@ final class ClioViewModel: ObservableObject {
         self.currentStepText = ""
         self.currentTaskName = ""
         guard let url = URL(string: "/api/execute", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        var req = makeAuthorizedRequest(url: url, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
             "query": q,
@@ -1687,8 +1712,7 @@ final class ClioViewModel: ObservableObject {
 
     func cancelTask() {
         guard let url = URL(string: "/api/cancel", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        var req = makeAuthorizedRequest(url: url, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = "{}".data(using: .utf8)
         Task {
@@ -1704,8 +1728,7 @@ final class ClioViewModel: ObservableObject {
         currentTone = nextTone.capitalized
 
         guard let url = URL(string: "/api/tone", relativeTo: baseURL) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        var req = makeAuthorizedRequest(url: url, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["tone": nextTone])
         Task {
@@ -1718,7 +1741,8 @@ final class ClioViewModel: ObservableObject {
         sseTask = Task {
             guard let url = URL(string: "/api/stream", relativeTo: baseURL) else { return }
             do {
-                let (stream, _) = try await URLSession.shared.bytes(from: url)
+                let req = makeAuthorizedRequest(url: url)
+                let (stream, _) = try await URLSession.shared.bytes(for: req)
                 for try await line in stream.lines {
                     if Task.isCancelled { break }
                     if line.hasPrefix("data: ") {

@@ -72,9 +72,16 @@ def get_frontmost_app_info() -> Tuple[Optional[str], Optional[int]]:
     if sys.platform != "darwin":
         return None, None
     try:
+        front_res = subprocess.check_output(
+            ["lsappinfo", "front"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=1.0,
+        ).strip()
+        if not front_res:
+            return None, None
         out = subprocess.check_output(
-            "lsappinfo info -bundleid $(lsappinfo front)",
-            shell=True,
+            ["lsappinfo", "info", "-bundleid", front_res],
             text=True,
             stderr=subprocess.DEVNULL,
             timeout=1.0,
@@ -318,7 +325,11 @@ class LiveDemonstrationCapture:
         else:
             project_root = Path(__file__).resolve().parent.parent.parent
             self._recordings_base_dir = project_root / "recordings"
-        self._recordings_base_dir.mkdir(parents=True, exist_ok=True)
+        self._recordings_base_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(self._recordings_base_dir, 0o700)
+        except Exception:
+            pass
         self.prune_orphaned_recordings(self._recordings_base_dir)
 
         self._is_recording = False
@@ -450,9 +461,13 @@ class LiveDemonstrationCapture:
             self._video_path = Path(path)
             self._session_dir = self._video_path.parent
             self._session_id = self._session_dir.name
-            self._frames_dir = self._session_dir / "frames"
-            self._session_dir.mkdir(parents=True, exist_ok=True)
-            self._frames_dir.mkdir(parents=True, exist_ok=True)
+            self._session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self._frames_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                os.chmod(self._session_dir, 0o700)
+                os.chmod(self._frames_dir, 0o700)
+            except Exception:
+                pass
         logger.info("Swift video path registered: %s", path)
 
 
@@ -1080,8 +1095,13 @@ class LiveDemonstrationCapture:
                 self._video_path = self._session_dir / "recording.mov"
 
             self._frames_dir = self._session_dir / "frames"
-            self._session_dir.mkdir(parents=True, exist_ok=True)
-            self._frames_dir.mkdir(parents=True, exist_ok=True)
+            self._session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self._frames_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                os.chmod(self._session_dir, 0o700)
+                os.chmod(self._frames_dir, 0o700)
+            except Exception:
+                pass
             self._start_time = time.time()
             self._is_recording = True
             b_id, _ = get_frontmost_app_info()
