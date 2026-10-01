@@ -52,15 +52,19 @@ class CompanionSession:
         tone: str = "vibrant",
         throttle_ms: float = 800.0,
         zero_delay: bool = False,
+        use_virtual_cursor: Optional[bool] = None,
     ) -> None:
         self.bus = bus or ExecutionEventBus()
         self.memory = memory or TaskMemoryEngine()
         self.actuator = actuator or get_actuator(mode=ActuatorMode.MOCK)
 
+        is_macos = getattr(self.actuator, "mode", None) in ("macos", ActuatorMode.MACOS)
+        vc_active = is_macos if use_virtual_cursor is None else use_virtual_cursor
+
         self.virtual_cursor = VirtualCursor(
             initial_x=0.0,
             initial_y=0.0,
-            mock=getattr(self.actuator, "mode", None) != "macos",
+            mock=not is_macos,
         )
 
         self.executor = AutonomousWorkflowExecutor(
@@ -69,6 +73,7 @@ class CompanionSession:
             memory_engine=self.memory,
             virtual_cursor=self.virtual_cursor,
             zero_delay=zero_delay,
+            use_virtual_cursor=vc_active,
         )
 
         self.dialogue = CompanionDialogueEngine(
@@ -106,17 +111,22 @@ class CompanionSession:
                 if matches and matches[0].confidence >= 0.5:
                     wf_id = matches[0].workflow_id
 
-            if wf_id:
+            spec = None
+            if wf_match and getattr(wf_match, "spec", None):
+                spec = wf_match.spec
+            elif wf_id:
                 wf_obj = self.memory.get_workflow(wf_id)
                 if wf_obj:
                     spec = wf_obj if isinstance(wf_obj, WorkflowSpec) else WorkflowSpec.from_dict(wf_obj)
-                    result: ExecutionResult = self.executor.execute_workflow(spec, runtime_params=runtime_params)
-                    if result.success:
-                        self.dialogue.state = DialogueState.COMPLETED
-                        return f"{reply}\n\nTask '{spec.name}' completed successfully in {result.elapsed_seconds:.2f}s! 🎉"
-                    else:
-                        self.dialogue.state = DialogueState.IDLE
-                        return f"{reply}\n\nTask '{spec.name}' failed: {result.error_message}."
+
+            if spec:
+                result: ExecutionResult = self.executor.execute_workflow(spec, runtime_params=runtime_params)
+                if result.success:
+                    self.dialogue.state = DialogueState.COMPLETED
+                    return f"{reply}\n\nTask '{spec.name}' completed successfully in {result.elapsed_seconds:.2f}s! 🎉"
+                else:
+                    self.dialogue.state = DialogueState.IDLE
+                    return f"{reply}\n\nTask '{spec.name}' failed: {result.error_message}."
 
         return reply
 

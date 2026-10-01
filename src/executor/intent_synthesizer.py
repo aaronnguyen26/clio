@@ -160,6 +160,21 @@ class SystemAppRegistry:
 class DynamicIntentSynthesizer:
     """Parses natural language queries and builds on-the-fly WorkflowSpecs."""
 
+    SEARCH_ENGINES = {
+        "google": "https://www.google.com/search?q={query}",
+        "youtube": "https://www.youtube.com/results?search_query={query}",
+        "yt": "https://www.youtube.com/results?search_query={query}",
+        "github": "https://github.com/search?q={query}",
+        "gh": "https://github.com/search?q={query}",
+        "reddit": "https://www.reddit.com/search/?q={query}",
+        "wikipedia": "https://en.wikipedia.org/wiki/Special:Search?search={query}",
+        "wiki": "https://en.wikipedia.org/wiki/Special:Search?search={query}",
+        "duckduckgo": "https://duckduckgo.com/?q={query}",
+        "ddg": "https://duckduckgo.com/?q={query}",
+        "bing": "https://www.bing.com/search?q={query}",
+        "amazon": "https://www.amazon.com/s?k={query}",
+    }
+
     WEB_DESTINATIONS = {
         "yt": "https://www.youtube.com",
         "youtube": "https://www.youtube.com",
@@ -177,6 +192,186 @@ class DynamicIntentSynthesizer:
         "claude": "https://claude.ai",
         "perplexity": "https://www.perplexity.ai",
     }
+
+    @classmethod
+    def is_search_intent(cls, query: str) -> bool:
+        """Determines if query represents searching Google, YouTube, GitHub, or the web."""
+        q = re.sub(r"\s+", " ", query.strip().lower())
+        if re.search(r"^(?:search|google|look\s+up|find)\s+", q):
+            return True
+        if re.search(r"^(?:search\s+(?:the\s+)?(?:web|website|internet|online))\b", q):
+            return True
+        if re.search(r"\b(?:on\s+(?:google|youtube|github|reddit|wikipedia|the\s+web))\s*$", q):
+            return True
+        return False
+
+    @classmethod
+    def synthesize_search_workflow(cls, query: str) -> WorkflowSpec:
+        """Builds a WorkflowSpec to search Google, YouTube, GitHub, or the web."""
+        q = re.sub(r"\s+", " ", query.strip())
+        q_lower = q.lower()
+
+        # Identify target search engine
+        engine = "google"
+        for eng in ("youtube", "yt", "github", "gh", "reddit", "wikipedia", "wiki", "duckduckgo", "ddg", "bing", "amazon"):
+            if eng in q_lower.split() or f"on {eng}" in q_lower or f"in {eng}" in q_lower:
+                engine = eng
+                break
+
+        # Clean search terms
+        clean_terms = q
+        clean_terms = re.sub(r"^(?:please\s+)?(?:can\s+you\s+)?(?:search|look\s+up|find|google)\s+(?:the\s+web\s+|website\s+|online\s+)?(?:for\s+)?", "", clean_terms, flags=re.IGNORECASE)
+        clean_terms = re.sub(r"^(?:google|youtube|github|reddit|wikipedia)\s+(?:for\s+)?", "", clean_terms, flags=re.IGNORECASE)
+        clean_terms = re.sub(r"\s+(?:on|in|using)\s+(?:google|youtube|github|reddit|wikipedia|the\s+web|safari|chrome)$", "", clean_terms, flags=re.IGNORECASE).strip()
+        clean_terms = clean_terms.strip("'\"")
+
+        if not clean_terms:
+            clean_terms = "Clio"
+
+        url_template = cls.SEARCH_ENGINES.get(engine, cls.SEARCH_ENGINES["google"])
+        encoded_query = urllib.parse.quote_plus(clean_terms)
+        target_url = url_template.format(query=encoded_query)
+
+        spec_id = f"search_{uuid.uuid4().hex[:8]}"
+        steps: List[WorkflowStep] = [
+            WorkflowStep(
+                step_id="step_cursor_search",
+                order=1,
+                description=f"Clio prepares web search for '{clean_terms}'",
+                action=ActionType.MOVE_MOUSE,
+                coordinates=TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x=640, abs_y=80),
+                timing={"pre_delay_ms": 50, "post_delay_ms": 100},
+            ),
+            WorkflowStep(
+                step_id="step_open_search_url",
+                order=2,
+                description=f"Open search in browser: {clean_terms}",
+                action=ActionType.OPEN_URL,
+                payload={"url": target_url},
+                timing={"pre_delay_ms": 100, "post_delay_ms": 300},
+            ),
+            WorkflowStep(
+                step_id="step_confirm_search",
+                order=3,
+                description=f"Clio settles on search results for '{clean_terms}'",
+                action=ActionType.CLICK,
+                coordinates=TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x=640, abs_y=220),
+                timing={"pre_delay_ms": 150, "post_delay_ms": 50},
+            ),
+        ]
+
+        engine_title = "YouTube" if engine in ("yt", "youtube") else ("GitHub" if engine in ("gh", "github") else engine.capitalize())
+        return WorkflowSpec(
+            id=spec_id,
+            name=f"Search {engine_title}: {clean_terms}",
+            description=f"Searches {engine_title} for '{clean_terms}' and navigates directly to results.",
+            triggers={"canonical": f"search {clean_terms.lower()}", "aliases": [q_lower, f"google {clean_terms.lower()}"]},
+            target_app={"app_name": "Safari"},
+            steps=steps,
+        )
+
+    @classmethod
+    def is_write_intent(cls, query: str) -> bool:
+        """Determines if query represents writing a note, taking a note, or typing text."""
+        q = re.sub(r"\s+", " ", query.strip().lower())
+        if re.search(r"^(?:write|type|draft|note\s+down|take\s+a\s+note|take\s+note|create\s+a\s+note|record\s+note)\b", q):
+            return True
+        if re.search(r"\b(?:in\s+notes|in\s+textedit|in\s+a\s+note)\s*$", q):
+            return True
+        return False
+
+    @classmethod
+    def synthesize_writing_workflow(cls, query: str) -> WorkflowSpec:
+        """Builds a WorkflowSpec to write/type notes or text into Notes or TextEdit."""
+        q = re.sub(r"\s+", " ", query.strip())
+        q_lower = q.lower()
+
+        target_app = "Notes"
+        target_bundle = "com.apple.Notes"
+        if "textedit" in q_lower:
+            target_app = "TextEdit"
+            target_bundle = "com.apple.TextEdit"
+
+        text_to_write = q
+        m = re.search(
+            r"^(?:please\s+)?(?:can\s+you\s+)?(?:write\s+a\s+note\s+(?:saying|that\s+says)?|take\s+a\s+note\s+(?:saying|that\s+says)?|take\s+note\s+(?:of|that)?|note\s+down|create\s+a\s+note\s+(?:saying)?|write\s+in\s+notes|write|type|draft)\s*[:\-]?\s*(.+)$",
+            text_to_write,
+            re.IGNORECASE,
+        )
+        if m:
+            text_to_write = m.group(1).strip()
+
+        text_to_write = re.sub(r"\s+(?:in|into|on)\s+(?:notes|textedit|a\s+note|my\s+notes)$", "", text_to_write, flags=re.IGNORECASE).strip()
+        text_to_write = text_to_write.strip("'\"")
+
+        if not text_to_write:
+            text_to_write = "Note recorded by Clio."
+
+        spec_id = f"write_{uuid.uuid4().hex[:8]}"
+        steps: List[WorkflowStep] = [
+            WorkflowStep(
+                step_id="step_cursor_approach_write",
+                order=1,
+                description=f"Clio approaches {target_app}",
+                action=ActionType.MOVE_MOUSE,
+                coordinates=TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x=450, abs_y=350),
+                timing={"pre_delay_ms": 50, "post_delay_ms": 100},
+            ),
+            WorkflowStep(
+                step_id="step_launch_write_app",
+                order=2,
+                description=f"Open {target_app}",
+                action=ActionType.LAUNCH_APP,
+                payload={"app": target_app, "bundle_id": target_bundle},
+                target={"app_name": target_app, "bundle_id": target_bundle},
+                timing={"pre_delay_ms": 100, "post_delay_ms": 300},
+            ),
+            WorkflowStep(
+                step_id="step_focus_write_app",
+                order=3,
+                description=f"Activate {target_app} window",
+                action=ActionType.FOCUS_APP,
+                target={"app_name": target_app, "bundle_id": target_bundle},
+                timing={"pre_delay_ms": 50, "post_delay_ms": 200},
+            ),
+            WorkflowStep(
+                step_id="step_new_note_hotkey",
+                order=4,
+                description="Create new document via Cmd+N",
+                action=ActionType.PRESS_HOTKEY,
+                payload={"keys": ["cmd", "n"]},
+                target={"app_name": target_app, "bundle_id": target_bundle},
+                timing={"pre_delay_ms": 100, "post_delay_ms": 250},
+            ),
+            WorkflowStep(
+                step_id="step_click_editor",
+                order=5,
+                description=f"Clio positions cursor inside {target_app} body",
+                action=ActionType.CLICK,
+                coordinates=TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x=550, abs_y=320),
+                target={"app_name": target_app, "bundle_id": target_bundle},
+                timing={"pre_delay_ms": 100, "post_delay_ms": 100},
+            ),
+            WorkflowStep(
+                step_id="step_type_content",
+                order=6,
+                description=f"Type note content ({len(text_to_write)} characters)",
+                action=ActionType.PASTE_TEXT if len(text_to_write) > 40 else ActionType.TYPE_TEXT,
+                payload={"text": text_to_write, "interval": 0.02},
+                target={"app_name": target_app, "bundle_id": target_bundle},
+                timing={"pre_delay_ms": 50, "post_delay_ms": 200},
+            ),
+        ]
+
+        short_preview = text_to_write if len(text_to_write) <= 25 else text_to_write[:22] + "..."
+        return WorkflowSpec(
+            id=spec_id,
+            name=f"Write: {short_preview}",
+            description=f"Writes '{short_preview}' into {target_app} using Clio's virtual cursor.",
+            triggers={"canonical": f"write {short_preview.lower()}", "aliases": [q_lower]},
+            target_app={"app_name": target_app, "bundle_id": target_bundle},
+            steps=steps,
+        )
 
     @classmethod
     def is_browser_tab_intent(cls, query: str) -> bool:
@@ -388,15 +583,23 @@ class DynamicIntentSynthesizer:
         if not query or not query.strip():
             return None
 
-        # 1. Browser tab intent
+        # 1. Search intent (Google, YouTube, GitHub, Reddit, Wikipedia, web search)
+        if cls.is_search_intent(query):
+            return cls.synthesize_search_workflow(query)
+
+        # 2. Writing intent (Notes, TextEdit, text typing/drafting)
+        if cls.is_write_intent(query):
+            return cls.synthesize_writing_workflow(query)
+
+        # 3. Browser tab intent
         if cls.is_browser_tab_intent(query):
             return cls.synthesize_browser_tab_workflow(query)
 
-        # 2. App open intent
+        # 4. App open intent
         if cls.is_app_open_intent(query):
             return cls.synthesize_app_open_workflow(query)
 
-        # 3. Direct app name (e.g. user just types "Safari", "Chrome", "Notes", "Calculator")
+        # 5. Direct app name (e.g. user just types "Safari", "Chrome", "Notes", "Calculator")
         resolved = SystemAppRegistry.resolve_app(query)
         if resolved:
             return cls.synthesize_app_open_workflow(f"open {resolved['name']}")

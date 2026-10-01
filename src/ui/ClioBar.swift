@@ -69,15 +69,16 @@ final class ServerLauncher {
             return env
         }
 
-        // 2. Candidate paths (prioritize repository project folder if present)
+        // 2. Candidate paths (prioritize bundled resources and active workspace folder)
         let candidates = [
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources").path,
+            "/Users/minhnguyen/Desktop/Coding/imitate-sandbox",
             "/Users/minhnguyen/Desktop/Coding/imitate",
             Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path,
             Bundle.main.bundleURL.deletingLastPathComponent().path,
             Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().path,
             fm.currentDirectoryPath,
             Bundle.main.resourceURL?.path ?? "",
-            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources").path
         ]
 
         for path in candidates {
@@ -87,7 +88,7 @@ final class ServerLauncher {
                 return path
             }
         }
-        return "/Users/minhnguyen/Desktop/Coding/imitate"
+        return Bundle.main.bundleURL.appendingPathComponent("Contents/Resources").path
     }
 
     func resolvePythonExecutable() -> String {
@@ -306,6 +307,7 @@ struct WorkflowStepItem: Identifiable, Decodable {
         case "focus_app", "launch_app": return "app.fill"
         case "wait": return "clock"
         case "scroll": return "arrow.up.and.down"
+        case "move_mouse", "move": return "cursorarrow.motionlines"
         default: return "circle.fill"
         }
     }
@@ -320,6 +322,7 @@ struct WorkflowStepItem: Identifiable, Decodable {
         case "focus_app", "launch_app": return "FOCUS"
         case "wait": return "WAIT"
         case "scroll": return "SCROLL"
+        case "move_mouse", "move": return "MOVE"
         default: return action?.uppercased() ?? "STEP"
         }
     }
@@ -929,7 +932,7 @@ final class ClioViewModel: ObservableObject {
     @Published var isExecuting: Bool = false
     @Published var isRecording: Bool = false
     @Published var isListening: Bool = false
-    @Published var isBackgroundMode: Bool = true
+    @Published var isBackgroundMode: Bool = false
     @Published var showSaveModal: Bool = false
     @Published var previewVideoURL: URL? = nil
     @Published var previewWorkflowId: String? = nil
@@ -1071,19 +1074,70 @@ final class ClioViewModel: ObservableObject {
         for item in items {
             func cleanToken(_ str: String) -> String {
                 var s = str.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                s = s.replacingOccurrences(of: "open ", with: "")
-                     .replacingOccurrences(of: "launch ", with: "")
-                     .replacingOccurrences(of: "focus ", with: "")
-                     .replacingOccurrences(of: "tab: ", with: "")
+                s = s.replacingOccurrences(of: "https://", with: "")
+                     .replacingOccurrences(of: "http://", with: "")
                      .replacingOccurrences(of: "www.", with: "")
-                     .replacingOccurrences(of: ".com", with: "")
-                if s.contains("youtube") || s == "yt" { return "youtube" }
-                if s.contains("facebook") || s == "fb" { return "facebook" }
-                if s.contains("google") || s == "gg" { return "google" }
-                if s.contains("instagram") || s == "ig" { return "instagram" }
-                if s.contains("notes") || s == "note" { return "note" }
+                for domain in [".com", ".org", ".net", ".io", ".ai", ".co", ".app"] {
+                    s = s.replacingOccurrences(of: domain, with: "")
+                }
+                let prefixes = [
+                    "open ", "launch ", "focus ", "start ", "goto ", "view ", "tab ", "opentab ",
+                    "tab: ", "show ", "switch to ", "switch ", "run ", "play ", "the ", "open a ", "open the "
+                ]
+                var changed = true
+                while changed {
+                    changed = false
+                    for p in prefixes {
+                        if s.hasPrefix(p) {
+                            s = String(s.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
+                            changed = true
+                        }
+                    }
+                }
+                let suffixes = [" app", " application", " please", " now", " window", " tab"]
+                changed = true
+                while changed {
+                    changed = false
+                    for suf in suffixes {
+                        if s.hasSuffix(suf) {
+                            s = String(s.dropLast(suf.count)).trimmingCharacters(in: .whitespaces)
+                            changed = true
+                        }
+                    }
+                }
+                // Filter alphanumeric only
+                s = s.filter { $0.isLetter || $0.isNumber }
+
+                // Synonym / alias table
+                if s == "yt" || s.contains("youtube") { return "youtube" }
+                if s == "fb" || s.contains("facebook") { return "facebook" }
+                if s == "gg" || s.contains("google") { return "google" }
+                if s == "ig" || s.contains("instagram") { return "instagram" }
+                if s == "msg" || s.contains("message") || s == "imessage" { return "message" }
+                if s == "calc" || s.contains("calculator") { return "calculator" }
+                if s == "term" || s.contains("terminal") || s == "iterm" || s == "iterm2" { return "terminal" }
+                if s.contains("photo") { return "photo" }
+                if s.contains("note") { return "note" }
+                if s.contains("reminder") { return "reminder" }
                 if s.contains("calendar") { return "calendar" }
-                if s.contains("messages") || s == "msg" { return "messages" }
+                if s.contains("contact") { return "contact" }
+                if s.contains("setting") || s.contains("preference") { return "setting" }
+                if s == "vscode" || s == "visualstudiocode" { return "code" }
+
+                // Plural to singular normalization
+                if s.hasSuffix("ies") && s.count > 4 {
+                    s = String(s.dropLast(3)) + "y"
+                } else if s.hasSuffix("es") && s.count > 4 && !s.hasSuffix("sses") && !s.hasSuffix("uses") && !s.hasSuffix("ises") {
+                    s = String(s.dropLast(1))
+                } else if s.hasSuffix("s") && s.count > 3 && !s.hasSuffix("ss") && !s.hasSuffix("us") && !s.hasSuffix("is") && !s.hasSuffix("as") {
+                    s = String(s.dropLast(1))
+                }
+
+                if s == "photo" { return "photo" }
+                if s == "note" { return "note" }
+                if s == "message" { return "message" }
+                if s == "setting" { return "setting" }
+
                 return s
             }
             let key = cleanToken(item.displayName)
@@ -1374,6 +1428,8 @@ final class ClioViewModel: ObservableObject {
 
     private var recordingEventMonitor: Any?
     private var recordedEvents: [[String: Any]] = []
+    private var lastRecordedMovePoint: NSPoint? = nil
+    private var lastRecordedMoveTime: TimeInterval = 0
 
     func startRecording() {
         // Clean up previous unsaved preview recording from disk
@@ -1391,6 +1447,8 @@ final class ClioViewModel: ObservableObject {
         self.showSaveModal = false
         self.isRecording = true
         self.recordedEvents.removeAll()
+        self.lastRecordedMovePoint = nil
+        self.lastRecordedMoveTime = 0
         self.startEventMonitoring()
 
         // Notify Python backend immediately so event capture session is active from t=0
@@ -1573,10 +1631,32 @@ final class ClioViewModel: ObservableObject {
     private func startEventMonitoring() {
         stopEventMonitoring()
         self.recordingEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [
-            .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .leftMouseDragged, .keyDown, .scrollWheel
+            .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .leftMouseDragged, .keyDown, .scrollWheel, .mouseMoved
         ]) { [weak self] event in
+            let screenH = NSScreen.screens.first?.frame.height ?? 900
+            let eventPoint: CGPoint
+            if let cgPt = event.cgEvent?.location {
+                eventPoint = cgPt
+            } else {
+                let loc = event.locationInWindow
+                eventPoint = CGPoint(x: loc.x, y: screenH - loc.y)
+            }
+
+            if event.type == .mouseMoved {
+                let now = Date().timeIntervalSince1970
+                if let last = self?.lastRecordedMovePoint, let lastT = self?.lastRecordedMoveTime {
+                    let dx = eventPoint.x - last.x
+                    let dy = eventPoint.y - last.y
+                    // Throttle: minimum 5px displacement or 30ms interval (~33Hz max)
+                    if (dx * dx + dy * dy < 25.0) && (now - lastT < 0.030) {
+                        return
+                    }
+                }
+                self?.lastRecordedMovePoint = eventPoint
+                self?.lastRecordedMoveTime = now
+            }
             Task { @MainActor [weak self] in
-                self?.sendFeedEvent(event)
+                self?.sendFeedEvent(event, location: eventPoint)
             }
         }
     }
@@ -1588,23 +1668,20 @@ final class ClioViewModel: ObservableObject {
         }
     }
 
-    private func sendFeedEvent(_ event: NSEvent) {
-        let screenH = NSScreen.main?.frame.height ?? 900
-        let mouseLoc = NSEvent.mouseLocation
-        let x = Double(mouseLoc.x)
-        let y = Double(screenH - mouseLoc.y)
-        let quartzY = Float(y)
+    private func sendFeedEvent(_ event: NSEvent, location: CGPoint) {
+        let x = Double(location.x)
+        let y = Double(location.y)
         var targetBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
         var targetAppName = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
         var isDockItem = false
         var dockTitle = ""
         var windowBoundsDict: [String: Double]? = nil
 
-        // Only query element at mouse position for mouse events (not for keyboard typing)
-        if event.type != .keyDown {
+        // Only query element at mouse position for discrete clicks/drags (never for mouse move or keyboard typing)
+        if event.type != .keyDown && event.type != .mouseMoved {
             let sys = AXUIElementCreateSystemWide()
             var elem: AXUIElement?
-            if AXUIElementCopyElementAtPosition(sys, Float(mouseLoc.x), quartzY, &elem) == .success, let elem = elem {
+            if AXUIElementCopyElementAtPosition(sys, Float(x), Float(y), &elem) == .success, let elem = elem {
                 var pid: pid_t = 0
                 if AXUIElementGetPid(elem, &pid) == .success && pid > 0 {
                     if let app = NSRunningApplication(processIdentifier: pid) {
@@ -1674,6 +1751,8 @@ final class ClioViewModel: ObservableObject {
         } else if event.type == .rightMouseUp {
             payload["event_type"] = "mouse_up"
             payload["button"] = "right"
+        } else if event.type == .mouseMoved {
+            payload["event_type"] = "mouse_move"
         } else if event.type == .scrollWheel {
             payload["event_type"] = "scroll"
             payload["dx"] = Double(event.scrollingDeltaX)
@@ -1708,13 +1787,16 @@ final class ClioViewModel: ObservableObject {
         // Buffer locally to guarantee zero event loss
         self.recordedEvents.append(payload)
 
-        // Asynchronously post to backend
-        guard let url = URL(string: "/api/record/feed", relativeTo: baseURL) else { return }
-        var req = makeAuthorizedRequest(url: url, method: "POST")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        Task {
-            _ = try? await URLSession.shared.data(for: req)
+        // Asynchronously post discrete events to backend immediately.
+        // High-frequency mouse moves are preserved in the buffer and sent on stop to avoid socket saturation.
+        if event.type != .mouseMoved {
+            guard let url = URL(string: "/api/record/feed", relativeTo: baseURL) else { return }
+            var req = makeAuthorizedRequest(url: url, method: "POST")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            Task {
+                _ = try? await URLSession.shared.data(for: req)
+            }
         }
     }
 

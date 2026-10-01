@@ -177,6 +177,26 @@ class CompanionDialogueEngine:
             matches = self.retrieval.query(text)
 
         if not matches:
+            # Check dynamic intent synthesizer for search, write, tab, or app launch intents
+            try:
+                from src.executor.intent_synthesizer import DynamicIntentSynthesizer
+                dyn_spec = DynamicIntentSynthesizer.parse_intent(text) or (
+                    DynamicIntentSynthesizer.parse_intent(cleaned_intent) if cleaned_intent else None
+                )
+                if dyn_spec:
+                    self.state = DialogueState.EXECUTING
+                    self.last_matched_workflow = MatchResult(
+                        workflow_id=dyn_spec.id,
+                        workflow_name=dyn_spec.name,
+                        confidence=0.95,
+                        tier="tier1_dynamic_synthesizer",
+                        matched_trigger=text,
+                        spec=dyn_spec,
+                    )
+                    return f"On it! {dyn_spec.description} 🚀", self.state
+            except Exception as e:
+                logger.debug("Dynamic intent synthesis check failed in dialogue: %s", e)
+
             if any(w in text.lower() for w in ["hello", "hi", "hey"]):
                 self.state = DialogueState.IDLE
                 return "Hey! What workflow would you like to run today? 🌟", self.state

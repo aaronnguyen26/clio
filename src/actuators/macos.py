@@ -32,7 +32,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 from src.actuators.base import BaseActuator
 from src.actuators.failsafe import FailsafeWatchdog
@@ -685,8 +685,7 @@ class MacOSActuator(BaseActuator):
         cf = self.native.cf
 
         if smooth and duration > 0:
-            # Start smooth move from origin (0,0) to target — only used by actuator (non-VC) path
-            start_x, start_y = 0.0, 0.0
+            start_x, start_y = self.get_mouse_position()
             steps = max(5, int(duration * 60))
             step_delay = duration / steps
             for i in range(1, steps + 1):
@@ -718,7 +717,7 @@ class MacOSActuator(BaseActuator):
         if x is not None and y is not None:
             cur_x, cur_y = float(x), float(y)
         else:
-            cur_x, cur_y = 0.0, 0.0
+            cur_x, cur_y = self.get_mouse_position()
 
         btn_norm = normalize_mouse_button(button)
         if btn_norm == "left":
@@ -816,15 +815,21 @@ class MacOSActuator(BaseActuator):
     # -----------------------------------------------------------------------
     # FEAT-ACT-06: KeyboardAndHotkeyEngine
     # -----------------------------------------------------------------------
-    def press_hotkey(self, *keys: str) -> None:
-        if not keys:
+    def press_hotkey(self, *keys: Any) -> None:
+        flat_keys: List[str] = []
+        for k in keys:
+            if isinstance(k, (list, tuple)):
+                flat_keys.extend(str(item) for item in k)
+            elif k is not None:
+                flat_keys.append(str(k))
+        if not flat_keys:
             return
 
         mask = 0
         primary_key: Optional[str] = None
 
-        for k in keys:
-            k_lower = k.lower().strip()
+        for k_item in flat_keys:
+            k_lower = k_item.lower().strip()
             if k_lower in MODIFIER_MASKS:
                 mask |= MODIFIER_MASKS[k_lower]
             else:

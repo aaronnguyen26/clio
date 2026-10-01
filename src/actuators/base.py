@@ -87,6 +87,23 @@ class BaseActuator(ABC):
         """
         pass
 
+    def get_window_bounds(self, app_name: str) -> Optional[WindowInfo]:
+        """Returns primary on-screen window bounds for the given application, or None."""
+        windows = self.get_windows(app_name=app_name)
+        return windows[0] if windows else None
+
+    def find_accessibility_element(
+        self,
+        app_name: str,
+        ax_role: Optional[str] = None,
+        ax_title: Optional[str] = None,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Finds live on-screen element (x, y, width, height) via accessibility query.
+
+        Returns None if not supported or not found.
+        """
+        return None
+
     @abstractmethod
     def get_screen_size(self) -> Tuple[float, float]:
         """Returns (width, height) of the primary display in points/pixels."""

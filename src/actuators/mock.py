@@ -62,6 +62,7 @@ class MockActuator(BaseActuator):
         self._history: List[ActuatedAction] = []
         self._app_launch_should_fail: Set[str] = set()
         self.raise_on_action: Optional[Exception] = None
+        self.mock_ax_elements: Dict[Tuple[str, str, str], Tuple[float, float, float, float]] = {}
 
     # =========================================================================
     # Properties for attribute compatibility
@@ -309,10 +310,48 @@ class MockActuator(BaseActuator):
         if app_name is None:
             return list(self._windows)
         app_lower = app_name.lower()
+        short_app = app_lower.split(".")[-1] if "." in app_lower else app_lower
         return [
             w for w in self._windows
-            if app_lower in w.owner_name.lower() or app_lower in w.title.lower()
+            if app_lower in w.owner_name.lower() or short_app in w.owner_name.lower()
+            or app_lower in w.title.lower() or short_app in w.title.lower()
         ]
+
+    def register_mock_element(
+        self,
+        app_name: str,
+        ax_role: str,
+        ax_title: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+    ) -> None:
+        """Registers a mock accessibility element for Tri-Factor target testing."""
+        key = (app_name.lower().strip(), (ax_role or "").lower().strip(), (ax_title or "").lower().strip())
+        self.mock_ax_elements[key] = (float(x), float(y), float(width), float(height))
+
+    def find_accessibility_element(
+        self,
+        app_name: str,
+        ax_role: Optional[str] = None,
+        ax_title: Optional[str] = None,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Finds a mock accessibility element matching the given parameters."""
+        app_clean = (app_name or "").lower().strip()
+        role_clean = (ax_role or "").lower().strip()
+        title_clean = (ax_title or "").lower().strip()
+
+        # Exact match
+        if (app_clean, role_clean, title_clean) in self.mock_ax_elements:
+            return self.mock_ax_elements[(app_clean, role_clean, title_clean)]
+
+        # Fuzzy match on title or role within app
+        for (a, r, t), box in self.mock_ax_elements.items():
+            if not a or a == app_clean or a in app_clean or app_clean in a:
+                if (not role_clean or r == role_clean) and (not title_clean or t == title_clean or title_clean in t):
+                    return box
+        return None
 
     def get_screen_size(self) -> Tuple[float, float]:
         """Returns virtual screen size."""

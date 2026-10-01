@@ -111,7 +111,7 @@ class ClioServer:
             memory_engine=self.memory,
             virtual_cursor=self.virtual_cursor,
             zero_delay=zero_delay,
-            use_virtual_cursor=True,
+            use_virtual_cursor=False,
         )
 
         self.demonstration_capture = LiveDemonstrationCapture(
@@ -566,38 +566,87 @@ class ClioServer:
         }
 
     @staticmethod
-    def _normalize_workflow_key(name: str, trigger: str = "") -> str:
+    def _normalize_workflow_key(name: str, trigger: str = "", target_app: Any = None) -> str:
         """Derives a normalized semantic key for an action to guarantee zero duplicate suggestions."""
         def _clean_token(s: str) -> str:
-            s_clean = re.sub(r"[^a-z0-9]", "", (s or "").lower())
-            for prefix in ("open", "launch", "focus", "start", "goto", "view", "tab", "opentab"):
-                if s_clean.startswith(prefix) and len(s_clean) > len(prefix):
-                    s_clean = s_clean[len(prefix):]
-            if s_clean.startswith("www"):
-                s_clean = s_clean[3:]
-            if s_clean.endswith("com") and len(s_clean) > 3:
-                s_clean = s_clean[:-3]
+            if not s:
+                return ""
+            s_raw = str(s).lower().strip()
+            s_clean = re.sub(r"https?://", "", s_raw)
+            s_clean = re.sub(r"^www\.", "", s_clean)
+            s_clean = re.sub(r"\.(com|org|net|io|ai|co|app)\b.*$", "", s_clean)
 
-            if "youtube" in s_clean or s_clean == "yt":
-                return "youtube"
-            if "facebook" in s_clean or s_clean == "fb":
-                return "facebook"
-            if "google" in s_clean or s_clean == "gg":
-                return "google"
-            if "instagram" in s_clean or s_clean == "ig":
-                return "instagram"
-            if "notes" in s_clean or s_clean == "note":
-                return "note"
-            if "calendar" in s_clean:
-                return "calendar"
-            if "messages" in s_clean or s_clean == "msg":
-                return "messages"
+            # Strip command prefixes
+            prefixes = [
+                "open ", "launch ", "focus ", "start ", "goto ", "view ", "tab ", "opentab ",
+                "show ", "switch to ", "switch ", "run ", "play ", "the ", "open a ", "open the "
+            ]
+            changed = True
+            while changed:
+                changed = False
+                for p in prefixes:
+                    if s_clean.startswith(p):
+                        s_clean = s_clean[len(p):].strip()
+                        changed = True
+
+            # Strip command suffixes
+            suffixes = [" app", " application", " please", " now", " window", " tab"]
+            changed = True
+            while changed:
+                changed = False
+                for suf in suffixes:
+                    if s_clean.endswith(suf):
+                        s_clean = s_clean[:-len(suf)].strip()
+                        changed = True
+
+            s_clean = re.sub(r"[^a-z0-9]", "", s_clean)
+
+            # Canonical alias / synonym mappings
+            alias_map = {
+                "yt": "youtube", "youtube": "youtube",
+                "fb": "facebook", "facebook": "facebook",
+                "gg": "google", "google": "google",
+                "ig": "instagram", "instagram": "instagram",
+                "msg": "message", "messages": "message", "imessage": "message",
+                "calc": "calculator", "calculators": "calculator",
+                "term": "terminal", "terminal": "terminal", "terminals": "terminal", "iterm": "terminal", "iterm2": "terminal",
+                "photo": "photo", "photos": "photo",
+                "note": "note", "notes": "note",
+                "reminder": "reminder", "reminders": "reminder",
+                "calendar": "calendar", "calendars": "calendar",
+                "contact": "contact", "contacts": "contact",
+                "setting": "setting", "settings": "setting", "preference": "setting", "preferences": "setting",
+                "systemsettings": "setting", "systempreferences": "setting",
+                "vscode": "code", "visualstudiocode": "code",
+            }
+            if s_clean in alias_map:
+                return alias_map[s_clean]
+
+            # Plural to singular normalization
+            if s_clean.endswith("ies") and len(s_clean) > 4:
+                s_clean = s_clean[:-3] + "y"
+            elif s_clean.endswith("es") and len(s_clean) > 4 and not s_clean.endswith(("sses", "uses", "ises")):
+                s_clean = s_clean[:-1]
+            elif s_clean.endswith("s") and len(s_clean) > 3 and not s_clean.endswith(("ss", "us", "is", "as")):
+                s_clean = s_clean[:-1]
+
+            if s_clean in alias_map:
+                return alias_map[s_clean]
 
             return s_clean
 
         key_n = _clean_token(name)
         key_t = _clean_token(trigger)
-        return key_n or key_t or (name.strip().lower())
+        key_app = ""
+        if target_app:
+            if isinstance(target_app, dict):
+                app_b = target_app.get("bundle_id") or ""
+                app_n = target_app.get("name") or target_app.get("app_name") or ""
+                key_app = _clean_token(app_n) or _clean_token(app_b.split(".")[-1] if "." in app_b else app_b)
+            elif isinstance(target_app, str):
+                key_app = _clean_token(target_app.split(".")[-1] if "." in target_app else target_app)
+
+        return key_n or key_t or key_app or (name.strip().lower())
 
     def search_workflows(self, query: str) -> List[Dict[str, Any]]:
         """Searches remembered workflows via 4-tier NL retrieval and dynamic intent synthesis.
@@ -639,7 +688,7 @@ class ClioServer:
         # Deduplicate candidates by semantic action key (keeping highest quality/recency)
         deduped: Dict[str, Dict[str, Any]] = {}
         for item in candidates:
-            k = self._normalize_workflow_key(item["name"], item.get("canonical_trigger", ""))
+            k = self._normalize_workflow_key(item["name"], item.get("canonical_trigger", ""), item.get("target_app"))
             if k not in deduped:
                 deduped[k] = item
             else:
@@ -657,35 +706,91 @@ class ClioServer:
                 if new_score > existing_score or (new_score == existing_score and str(item.get("updated_at", "")) > str(existing.get("updated_at", ""))):
                     deduped[k] = item
 
-        results = list(deduped.values())
+        # Also collect all bundle_ids and app names already covered by recorded workflows
+        covered_app_keys = set(deduped.keys())
+        for it in deduped.values():
+            for st in it.get("steps", []):
+                tgt = st.get("target") or {}
+                if isinstance(tgt, dict):
+                    b_id = tgt.get("bundle_id", "")
+                    a_nm = tgt.get("app_name", "")
+                    if b_id:
+                        covered_app_keys.add(self._normalize_workflow_key(b_id.split(".")[-1]))
+                    if a_nm:
+                        covered_app_keys.add(self._normalize_workflow_key(a_nm))
 
         # Dynamic Intent matching for arbitrary apps and browser tabs
         from src.executor.intent_synthesizer import DynamicIntentSynthesizer
         dyn_spec = DynamicIntentSynthesizer.parse_intent(query)
         if dyn_spec:
-            dyn_key = self._normalize_workflow_key(
-                dyn_spec.name,
-                dyn_spec.triggers.get("canonical", query) if isinstance(dyn_spec.triggers, dict) else query,
+            dyn_canonical = dyn_spec.triggers.get("canonical", query) if isinstance(dyn_spec.triggers, dict) else query
+            dyn_key = self._normalize_workflow_key(dyn_spec.name, dyn_canonical, getattr(dyn_spec, "target_app", None))
+
+            # Extract dynamic aliases
+            dyn_aliases = []
+            if isinstance(dyn_spec.triggers, dict):
+                dyn_aliases = dyn_spec.triggers.get("aliases", [])
+            dyn_alias_keys = {self._normalize_workflow_key(a) for a in dyn_aliases if a}
+
+            # Check if this dynamic intent collides with ANY recorded workflow
+            collides_with_recorded = (
+                dyn_key in covered_app_keys
+                or bool(dyn_alias_keys.intersection(covered_app_keys))
             )
+
+            # Check if a workflow exists in memory for this action that wasn't already in deduped
+            if not collides_with_recorded:
+                for wf_meta in self.memory.list_workflows():
+                    full_wf = self.memory.get_workflow(wf_meta["id"])
+                    if not full_wf:
+                        continue
+                    wf_trig = full_wf.triggers.get("canonical", "") if isinstance(full_wf.triggers, dict) else ""
+                    wf_key = self._normalize_workflow_key(full_wf.name, wf_trig, full_wf.target_app)
+                    if wf_key == dyn_key or wf_key in dyn_alias_keys:
+                        # Found a recorded workflow in memory! Prefer it over dynamic intent
+                        collides_with_recorded = True
+                        if wf_key not in deduped:
+                            env = full_wf.environment if (hasattr(full_wf, "environment") and isinstance(full_wf.environment, dict)) else {}
+                            step_dicts = [s.to_dict() if hasattr(s, "to_dict") else s for s in full_wf.steps] if getattr(full_wf, "steps", None) else []
+                            v_path = env.get("video_path") or ""
+                            has_video = bool(v_path and os.path.exists(v_path))
+                            deduped[wf_key] = {
+                                "workflow_id": full_wf.id,
+                                "name": full_wf.name,
+                                "description": full_wf.description,
+                                "confidence": 0.95,
+                                "match_type": "retrieval",
+                                "canonical_trigger": wf_trig,
+                                "step_count": len(full_wf.steps),
+                                "video_path": v_path,
+                                "has_video": has_video,
+                                "recording_score": env.get("recording_score"),
+                                "recording_grade": env.get("recording_grade"),
+                                "steps": step_dicts,
+                                "updated_at": getattr(full_wf, "updated_at", ""),
+                            }
+                        break
+
             # Only add dynamic intent if NO recorded workflow exists for this action
-            if dyn_key not in deduped:
+            if not collides_with_recorded and dyn_key not in deduped:
                 with self._lock:
                     self._dynamic_specs[dyn_spec.id] = dyn_spec
                 dyn_steps = [s.to_dict() if hasattr(s, "to_dict") else s for s in dyn_spec.steps] if getattr(dyn_spec, "steps", None) else []
-                results.append({
+                deduped[dyn_key] = {
                     "workflow_id": dyn_spec.id,
                     "name": dyn_spec.name,
                     "description": dyn_spec.description,
                     "confidence": 0.75,
                     "match_type": "dynamic_intent",
-                    "canonical_trigger": dyn_spec.triggers.get("canonical", query) if isinstance(dyn_spec.triggers, dict) else query,
+                    "canonical_trigger": dyn_canonical,
                     "step_count": len(dyn_spec.steps),
                     "video_path": "",
                     "recording_score": None,
                     "recording_grade": None,
                     "steps": dyn_steps,
-                })
+                }
 
+        results = list(deduped.values())
         results.sort(
             key=lambda x: (
                 x.get("confidence", 0.0),
@@ -693,7 +798,18 @@ class ClioServer:
             ),
             reverse=True,
         )
-        return results
+
+        # Final pass: Guarantee strictly zero duplicates in results
+        final_results: List[Dict[str, Any]] = []
+        final_seen_keys: Set[str] = set()
+        for r in results:
+            rk = self._normalize_workflow_key(r.get("name", ""), r.get("canonical_trigger", ""), r.get("target_app"))
+            if rk and rk in final_seen_keys:
+                continue
+            if rk:
+                final_seen_keys.add(rk)
+            final_results.append(r)
+        return final_results
 
     def list_workflows(self) -> List[Dict[str, Any]]:
         """Lists all workflows saved in memory, deduplicated by semantic action key."""
@@ -725,7 +841,7 @@ class ClioServer:
                     "steps": step_dicts,
                     "updated_at": getattr(full_wf, "updated_at", ""),
                 }
-                k = self._normalize_workflow_key(full_wf.name, canonical)
+                k = self._normalize_workflow_key(full_wf.name, canonical, full_wf.target_app)
                 if k not in deduped:
                     deduped[k] = item
                 else:
@@ -807,11 +923,77 @@ class ClioServer:
             logger.info("Successfully deleted workflow: %s (cleaned %d folders)", workflow_id, len(deleted_dirs))
         return {"success": success, "workflow_id": workflow_id, "deleted_directories": deleted_dirs}
 
+    def get_ai_status(self) -> Dict[str, Any]:
+        """Returns the status of AI dissection providers and offline mode status."""
+        from src.ai.credentials import get_credential_manager
+        cred_mgr = get_credential_manager()
+        active_prov, _ = cred_mgr.get_active_provider()
+        providers = cred_mgr.get_configured_providers()
+        return {
+            "active_provider": active_prov,
+            "offline_mode": active_prov is None,
+            "providers": providers,
+            "supported_providers": ["gemini", "claude"],
+        }
+
+    def configure_ai(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Configures and persists API keys for multimodal AI dissection."""
+        from src.ai.credentials import get_credential_manager
+        cred_mgr = get_credential_manager()
+        provider = str(data.get("provider", "")).lower().strip()
+        api_key = str(data.get("api_key", "")).strip()
+        persist_keychain = bool(data.get("persist_keychain", True))
+        persist_config = bool(data.get("persist_config", False))
+
+        if not provider or not api_key:
+            return {"success": False, "error": "Both 'provider' and 'api_key' are required."}
+
+        success = cred_mgr.set_api_key(
+            provider=provider,
+            api_key=api_key,
+            persist_keychain=persist_keychain,
+            persist_config=persist_config,
+        )
+        return {
+            "success": success,
+            "provider": provider,
+            "message": f"Successfully configured API key for {provider}." if success else "Failed to persist API key.",
+        }
+
+    def test_ai_provider(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validates AI provider credentials."""
+        from src.ai.providers import GeminiProvider, ClaudeProvider
+        provider = str(data.get("provider", "gemini")).lower().strip()
+        api_key = data.get("api_key")
+
+        if not api_key:
+            from src.ai.credentials import get_credential_manager
+            cred_mgr = get_credential_manager()
+            api_key = cred_mgr.get_api_key(provider)
+
+        if not api_key:
+            return {"success": False, "provider": provider, "valid": False, "error": "No API key provided or found."}
+
+        if provider == "gemini":
+            prov_inst = GeminiProvider(api_key=api_key)
+        elif provider in ("claude", "anthropic"):
+            prov_inst = ClaudeProvider(api_key=api_key)
+        else:
+            return {"success": False, "provider": provider, "valid": False, "error": f"Unsupported provider: {provider}"}
+
+        is_valid = prov_inst.validate_key()
+        return {
+            "success": True,
+            "provider": provider,
+            "valid": is_valid,
+            "message": "Key is valid." if is_valid else "Key validation failed.",
+        }
+
     def execute_workflow_async(
         self,
         workflow_id: Optional[str] = None,
         query: Optional[str] = None,
-        background: bool = True,
+        background: bool = False,
     ) -> Dict[str, Any]:
         """Initiates hands-free workflow execution asynchronously."""
         with self._lock:
@@ -1192,6 +1374,11 @@ class ClioServer:
                     self._send_json(HTTPStatus.OK, {"frames": frames, "count": len(frames)})
                     return
 
+                # 6d. AI Dissection Status & Configuration
+                if path == "/api/ai/status":
+                    self._send_json(HTTPStatus.OK, server_instance.get_ai_status())
+                    return
+
                 # Unknown GET
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
@@ -1222,7 +1409,7 @@ class ClioServer:
                 if path == "/api/execute":
                     workflow_id = body.get("workflow_id")
                     query = body.get("query")
-                    background = bool(body.get("background", True))
+                    background = bool(body.get("background", False))
                     res = server_instance.execute_workflow_async(
                         workflow_id=workflow_id,
                         query=query,
@@ -1341,6 +1528,34 @@ class ClioServer:
                     if "description" in body and body["description"] is not None:
                         wf.description = str(body["description"]).strip()
                     server_instance.memory.save_workflow(wf)
+
+                    # Deduplication cleanup in database: remove any other workflows with matching semantic key
+                    try:
+                        trig_str = ""
+                        if isinstance(wf.triggers, dict):
+                            trig_str = wf.triggers.get("canonical", "")
+                        elif isinstance(wf.triggers, list) and wf.triggers:
+                            trig_str = wf.triggers[0]
+                        new_key = server_instance._normalize_workflow_key(wf.name, trig_str, wf.target_app)
+                        for existing_wf_meta in server_instance.memory.list_workflows():
+                            existing_id = existing_wf_meta["id"]
+                            if existing_id == wf.id:
+                                continue
+                            ewf = server_instance.memory.get_workflow(existing_id)
+                            if not ewf:
+                                continue
+                            ewf_trig = ""
+                            if isinstance(ewf.triggers, dict):
+                                ewf_trig = ewf.triggers.get("canonical", "")
+                            elif isinstance(ewf.triggers, list) and ewf.triggers:
+                                ewf_trig = ewf.triggers[0]
+                            existing_key = server_instance._normalize_workflow_key(ewf.name, ewf_trig, ewf.target_app)
+                            if new_key and existing_key and new_key == existing_key:
+                                logger.info("Deduplication: Removing older duplicate workflow %s in favor of %s", existing_id, wf.id)
+                                server_instance.delete_workflow(existing_id)
+                    except Exception as dedup_err:
+                        logger.warning("Error during workflow update deduplication: %s", dedup_err)
+
                     self._send_json(HTTPStatus.OK, {"success": True, "workflow_id": wf.id, "name": wf.name})
                     return
 
@@ -1353,6 +1568,20 @@ class ClioServer:
                         "timestamp": time.time(),
                     })
                     self._send_json(HTTPStatus.OK, {"success": True, "action": action})
+                    return
+
+                # 8. AI Configuration & Key Management
+                if path == "/api/ai/config":
+                    res = server_instance.configure_ai(body)
+                    status_code = HTTPStatus.OK if res.get("success") else HTTPStatus.BAD_REQUEST
+                    self._send_json(status_code, res)
+                    return
+
+                # 9. AI Connection & Key Validation Test
+                if path == "/api/ai/test":
+                    res = server_instance.test_ai_provider(body)
+                    status_code = HTTPStatus.OK if res.get("success") else HTTPStatus.BAD_REQUEST
+                    self._send_json(status_code, res)
                     return
 
                 # Unknown POST

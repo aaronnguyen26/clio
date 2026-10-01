@@ -36,6 +36,7 @@ from ctypes import (
 from dataclasses import dataclass
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -247,7 +248,16 @@ class _NativeEventTap:
         cg.CGEventGetIntegerValueField.argtypes = [c_void_p, c_uint32]
         cg.CGEventGetIntegerValueField.restype = c_int64
 
+        cg.CGEventGetDoubleValueField.argtypes = [c_void_p, c_uint32]
+        cg.CGEventGetDoubleValueField.restype = c_double
+
+        cg.CGEventKeyboardGetUnicodeString.argtypes = [c_void_p, c_uint32, POINTER(c_uint32), POINTER(c_uint16)]
+        cg.CGEventKeyboardGetUnicodeString.restype = None
+
         self.kCGKeyboardEventKeycode = 9
+        self.kCGEventScrollWheel = 22
+        self.kCGScrollWheelEventDeltaAxis1 = 99
+        self.kCGScrollWheelEventDeltaAxis2 = 100
 
         cf.CFRunLoopGetCurrent.argtypes = []
         cf.CFRunLoopGetCurrent.restype = c_void_p
@@ -307,9 +317,22 @@ class LiveDemonstrationCapture:
         memory: Optional[TaskMemoryEngine] = None,
         mock: Optional[bool] = None,
         recordings_dir: Optional[Union[str, Path]] = None,
+        ai_provider: Optional[Any] = None,
     ) -> None:
         self.memory = memory or TaskMemoryEngine()
         self.pipeline = WorkflowRecorderPipeline()
+        self.ai_provider = ai_provider
+        self.ai_dissector = None
+        if self.ai_provider is not None:
+            try:
+                from src.ai.dissector import MultimodalWorkflowDissector
+                self.ai_dissector = MultimodalWorkflowDissector(
+                    provider=self.ai_provider,
+                    recorder_pipeline=self.pipeline,
+                    auto_detect_provider=False,
+                )
+            except Exception as e:
+                logger.warning("Could not initialize optional AI dissector: %s", e)
 
         if mock is not None:
             self._mock = bool(mock)
@@ -318,10 +341,10 @@ class LiveDemonstrationCapture:
 
         if recordings_dir:
             self._recordings_base_dir = Path(recordings_dir)
+        elif "TRIO_PROJECT_DIR" in os.environ and Path(os.environ["TRIO_PROJECT_DIR"]).exists():
+            self._recordings_base_dir = Path(os.environ["TRIO_PROJECT_DIR"]) / "recordings"
         elif "CLIO_PROJECT_DIR" in os.environ and Path(os.environ["CLIO_PROJECT_DIR"]).exists():
             self._recordings_base_dir = Path(os.environ["CLIO_PROJECT_DIR"]) / "recordings"
-        elif Path("/Users/minhnguyen/Desktop/Coding/imitate").exists():
-            self._recordings_base_dir = Path("/Users/minhnguyen/Desktop/Coding/imitate/recordings")
         else:
             project_root = Path(__file__).resolve().parent.parent.parent
             self._recordings_base_dir = project_root / "recordings"
@@ -407,18 +430,23 @@ class LiveDemonstrationCapture:
             return
         try:
             import ctypes
+            from ctypes import Structure, c_double
+            class CGPoint(Structure):
+                _fields_ = [("x", c_double), ("y", c_double)]
+            class CGSize(Structure):
+                _fields_ = [("width", c_double), ("height", c_double)]
+            class CGRect(Structure):
+                _fields_ = [("origin", CGPoint), ("size", CGSize)]
+
             cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
             cg.CGMainDisplayID.restype = ctypes.c_uint32
-            cg.CGDisplayPixelsWide.argtypes = [ctypes.c_uint32]
-            cg.CGDisplayPixelsWide.restype = ctypes.c_size_t
-            cg.CGDisplayPixelsHigh.argtypes = [ctypes.c_uint32]
-            cg.CGDisplayPixelsHigh.restype = ctypes.c_size_t
+            cg.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+            cg.CGDisplayBounds.restype = CGRect
             disp = cg.CGMainDisplayID()
-            w = cg.CGDisplayPixelsWide(disp)
-            h = cg.CGDisplayPixelsHigh(disp)
-            if w > 0 and h > 0:
-                self._display_width = int(w)
-                self._display_height = int(h)
+            bounds = cg.CGDisplayBounds(disp)
+            if bounds.size.width > 0 and bounds.size.height > 0:
+                self._display_width = int(round(bounds.size.width))
+                self._display_height = int(round(bounds.size.height))
         except Exception as e:
             logger.debug("Failed detecting display geometry: %s", e)
 
@@ -693,16 +721,25 @@ class LiveDemonstrationCapture:
                     stderr=subprocess.PIPE,
                     text=True,
                 )
+                # Set stdout non-blocking so readline() respects the 3.0s timeout
+                import fcntl
+                fl = fcntl.fcntl(proc.stdout.fileno(), fcntl.F_GETFL)
+                fcntl.fcntl(proc.stdout.fileno(), fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
                 # Wait up to 3.0s for RECORDING_STARTED so stream is active before events begin
                 t_start = time.time()
                 while time.time() - t_start < 3.0:
                     if proc.poll() is not None:
                         logger.warning("clio-recorder terminated early with code %d", proc.returncode)
                         break
-                    line = proc.stdout.readline()
-                    if "RECORDING_STARTED" in line:
-                        logger.info("clio-recorder ScreenCaptureKit stream is actively recording.")
-                        break
+                    try:
+                        line = proc.stdout.readline()
+                        if line and "RECORDING_STARTED" in line:
+                            logger.info("clio-recorder ScreenCaptureKit stream is actively recording.")
+                            break
+                    except (BlockingIOError, IOError):
+                        pass
+                    time.sleep(0.05)
                 with self._lock:
                     self._video_proc = proc
             except Exception as e:
@@ -1149,6 +1186,9 @@ class LiveDemonstrationCapture:
 
             last_left = False
             last_right = False
+            last_move_x: Optional[float] = None
+            last_move_y: Optional[float] = None
+            last_move_time: float = 0.0
 
             while self._is_recording:
                 try:
@@ -1167,6 +1207,20 @@ class LiveDemonstrationCapture:
                     cur_right = bool(native.cg.CGEventSourceButtonState(0, 1))
                     now = time.time()
                     bundle = self._active_bundle_id
+
+                    # Check mouse movement (throttled ~30Hz, min 4px displacement)
+                    if last_move_x is None or math.hypot(cur_x - last_move_x, cur_y - last_move_y) >= 4.0:
+                        if now - last_move_time >= 0.033:
+                            last_move_x = cur_x
+                            last_move_y = cur_y
+                            last_move_time = now
+                            self.feed_event(RawEvent(
+                                event_type=RawEventType.MOUSE_MOVE,
+                                timestamp=now,
+                                x=cur_x,
+                                y=cur_y,
+                                bundle_id=bundle,
+                            ))
 
                     # Left button transitions
                     if cur_left and not last_left:
@@ -1325,6 +1379,19 @@ class LiveDemonstrationCapture:
                             bundle_id=event_bundle,
                             window_bounds=win_bounds,
                         ))
+                    elif ev_type in (native.kCGEventMouseMoved, 5):
+                        last_pt = getattr(self, "_last_tapped_point", None)
+                        cur_pt = (float(pt.x), float(pt.y))
+                        if last_pt is None or math.hypot(cur_pt[0] - last_pt[0], cur_pt[1] - last_pt[1]) >= 3.0:
+                            self._last_tapped_point = cur_pt
+                            self.feed_event(RawEvent(
+                                event_type=RawEventType.MOUSE_MOVE,
+                                timestamp=now,
+                                x=cur_pt[0],
+                                y=cur_pt[1],
+                                bundle_id=cur_bundle,
+                                window_bounds=win_bounds,
+                            ))
                     elif ev_type in (native.kCGEventLeftMouseDragged, 6):
                         self.feed_event(RawEvent(
                             event_type=RawEventType.MOUSE_DRAG,
@@ -1336,15 +1403,56 @@ class LiveDemonstrationCapture:
                             bundle_id=event_bundle,
                             window_bounds=win_bounds,
                         ))
+                    elif ev_type in (native.kCGEventRightMouseDragged, 7):
+                        self.feed_event(RawEvent(
+                            event_type=RawEventType.MOUSE_DRAG,
+                            timestamp=now,
+                            x=float(pt.x),
+                            y=float(pt.y),
+                            button="right",
+                            modifiers=modifiers,
+                            bundle_id=event_bundle,
+                            window_bounds=win_bounds,
+                        ))
+                    elif ev_type in (getattr(native, "kCGEventScrollWheel", 22), 22):
+                        try:
+                            dy = float(native.cg.CGEventGetDoubleValueField(event_ref, native.kCGScrollWheelEventDeltaAxis1))
+                            dx = float(native.cg.CGEventGetDoubleValueField(event_ref, native.kCGScrollWheelEventDeltaAxis2))
+                        except Exception:
+                            dy = float(native.cg.CGEventGetIntegerValueField(event_ref, getattr(native, "kCGScrollWheelEventDeltaAxis1", 99)))
+                            dx = float(native.cg.CGEventGetIntegerValueField(event_ref, getattr(native, "kCGScrollWheelEventDeltaAxis2", 100)))
+                        self.feed_event(RawEvent(
+                            event_type=RawEventType.MOUSE_SCROLL,
+                            timestamp=now,
+                            x=float(pt.x),
+                            y=float(pt.y),
+                            delta_x=dx,
+                            delta_y=dy,
+                            bundle_id=cur_bundle,
+                            window_bounds=win_bounds,
+                        ))
                     elif ev_type in (native.kCGEventKeyDown, 10):
                         keycode = int(native.cg.CGEventGetIntegerValueField(event_ref, native.kCGKeyboardEventKeycode))
-                        key_str = self.KEYCODE_MAP.get(keycode, f"k_{keycode}")
+                        unicode_char = ""
+                        try:
+                            buf = (c_uint16 * 16)()
+                            actual_len = c_uint32(0)
+                            native.cg.CGEventKeyboardGetUnicodeString(event_ref, 16, byref(actual_len), buf)
+                            if actual_len.value > 0:
+                                unicode_char = "".join([chr(buf[k]) for k in range(actual_len.value)])
+                        except Exception:
+                            pass
+
+                        from src.memory.input_tracker import MACOS_VIRTUAL_KEYCODES
+                        key_str = unicode_char if (unicode_char and unicode_char.isprintable() and len(unicode_char) == 1 and not modifiers) else MACOS_VIRTUAL_KEYCODES.get(keycode, self.KEYCODE_MAP.get(keycode, f"k_{keycode}"))
                         self.feed_event(RawEvent(
                             event_type=RawEventType.KEY_DOWN,
                             timestamp=now,
                             key=key_str,
                             modifiers=modifiers,
                             bundle_id=cur_bundle,
+                            unicode_char=unicode_char,
+                            keycode=keycode,
                         ))
                 except Exception as ex:
                     logger.debug("Error in CGEventTap callback: %s", ex)
@@ -1358,7 +1466,10 @@ class LiveDemonstrationCapture:
                 | (1 << native.kCGEventLeftMouseUp)
                 | (1 << native.kCGEventRightMouseDown)
                 | (1 << native.kCGEventRightMouseUp)
+                | (1 << native.kCGEventMouseMoved)
                 | (1 << native.kCGEventLeftMouseDragged)
+                | (1 << native.kCGEventRightMouseDragged)
+                | (1 << getattr(native, "kCGEventScrollWheel", 22))
                 | (1 << native.kCGEventKeyDown)
             )
 
@@ -1493,23 +1604,20 @@ class LiveDemonstrationCapture:
         actions_to_probe: List[Dict[str, Any]] = []
         for idx, ev in enumerate(raw_events):
             ev_type_str = ev.event_type.value if hasattr(ev.event_type, "value") else str(ev.event_type).lower()
-            if ev_type_str in ("mouse_down", "mousedown", "click"):
+            if ev_type_str in ("mouse_down", "mousedown", "click", "mouse_drag", "mousedrag"):
                 rel_t = max(0.0, ev.timestamp - self._start_time if self._start_time > 0 else 0.0)
+                act_name = "drag" if "drag" in ev_type_str else "click"
                 actions_to_probe.append({
                     "index": idx,
-                    "action": "click",
+                    "order": idx + 1,
+                    "action": act_name,
+                    "event_type": ev_type_str,
                     "x": int(ev.x),
                     "y": int(ev.y),
+                    "timestamp": round(ev.timestamp, 3),
                     "rel_time": round(rel_t, 3),
-                })
-            elif ev_type_str in ("mouse_drag", "mousedrag"):
-                rel_t = max(0.0, ev.timestamp - self._start_time if self._start_time > 0 else 0.0)
-                actions_to_probe.append({
-                    "index": idx,
-                    "action": "drag",
-                    "x": int(ev.x),
-                    "y": int(ev.y),
-                    "rel_time": round(rel_t, 3),
+                    "screen_width": self._display_width,
+                    "screen_height": self._display_height,
                 })
 
         if not actions_to_probe:
@@ -1517,8 +1625,14 @@ class LiveDemonstrationCapture:
 
         actions_file = self._session_dir / "actions.json"
         try:
+            probe_payload = {
+                "screen_width": self._display_width,
+                "screen_height": self._display_height,
+                "start_time": self._start_time,
+                "actions": actions_to_probe,
+            }
             with open(actions_file, "w", encoding="utf-8") as f:
-                json.dump(actions_to_probe, f, indent=2)
+                json.dump(probe_payload, f, indent=2)
 
             probe_res = RecordingQualityEvaluator.probe_video_file(
                 self._video_path,
@@ -1529,6 +1643,8 @@ class LiveDemonstrationCapture:
             actions_analysis = probe_res.get("actions_analysis", [])
             for item in actions_analysis:
                 item_idx = item.get("index")
+                if item_idx is None and "order" in item:
+                    item_idx = int(item["order"]) - 1
                 if item_idx is not None and 0 <= item_idx < len(raw_events):
                     target_ev = raw_events[item_idx]
                     recognized = item.get("recognized_text", "")
@@ -1544,14 +1660,18 @@ class LiveDemonstrationCapture:
                             "frame_index": len(self._captured_frames) + 1,
                             "path": pre_frame,
                             "timestamp": target_ev.timestamp - 0.15,
-                            "label": f"pre_action_{item_idx}",
+                            "label": f"action_{item_idx + 1}_pre",
+                            "action_index": item_idx,
+                            "recognized_text": recognized,
                         })
                     if post_frame and os.path.exists(post_frame):
                         self._captured_frames.append({
                             "frame_index": len(self._captured_frames) + 1,
                             "path": post_frame,
                             "timestamp": target_ev.timestamp + 0.25,
-                            "label": f"post_action_{item_idx}",
+                            "label": f"action_{item_idx + 1}_post",
+                            "action_index": item_idx,
+                            "recognized_text": recognized,
                         })
         except Exception as ex:
             logger.debug("Action video probe analysis error: %s", ex)
@@ -1584,14 +1704,30 @@ class LiveDemonstrationCapture:
                     target_bundle_id = ev.bundle_id
                     break
 
-        # Process through 4-stage pipeline
-        spec = self.pipeline.process_raw_events(
-            raw_events=raw_events,
-            name=name,
-            canonical_trigger=canonical_trigger or name.lower(),
-            description=description or f"Demonstrated task '{name}' with {len(raw_events)} events.",
-            target_bundle_id=target_bundle_id,
-        )
+        # Process through deterministic non-AI Action Dissector (or AI dissector if explicitly passed)
+        if self.ai_dissector is not None:
+            spec = self.ai_dissector.dissect(
+                raw_events=raw_events,
+                session_id=self._session_id,
+                name=name,
+                canonical_trigger=canonical_trigger or name.lower(),
+                description=description or f"Demonstrated task '{name}' with {len(raw_events)} events.",
+                target_bundle_id=target_bundle_id,
+                captured_frames=list(self._captured_frames),
+                session_dir=self._session_dir,
+            )
+        else:
+            from src.memory.input_tracker import DeterministicActionDissector
+            deterministic_dissector = DeterministicActionDissector()
+            spec, _ = deterministic_dissector.dissect_raw_events(
+                raw_events=raw_events,
+                session_id=f"wf_rec_{self._session_id}" if self._session_id else "",
+                name=name,
+                canonical_trigger=canonical_trigger or name.lower(),
+                target_bundle_id=target_bundle_id,
+            )
+            if description:
+                spec.description = description
 
         # Fallback non-AI step synthesis if no steps were extracted (guarantees non-empty dissected steps)
         if not spec.steps:
@@ -1657,6 +1793,8 @@ class LiveDemonstrationCapture:
             spec.environment["captured_frames"] = list(self._captured_frames)
             spec.environment["recording_dir"] = str(self._session_dir)
             spec.environment["video_path"] = str(self._video_path)
+            from src.memory.input_tracker import DeterministicActionDissector
+            spec.environment["ai_payload"] = DeterministicActionDissector.compile_minimal_ai_payload(spec)
 
         # Run recording quality evaluation
         try:
@@ -1710,12 +1848,58 @@ class LiveDemonstrationCapture:
             # Deduplication: Re-use existing workflow ID if an action with matching name or trigger already exists
             try:
                 def _norm(s: str) -> str:
-                    s_clean = re.sub(r"[^a-z0-9]", "", (s or "").lower())
-                    for prefix in ("open", "launch", "focus", "start", "goto"):
-                        if s_clean.startswith(prefix) and len(s_clean) > len(prefix):
-                            s_clean = s_clean[len(prefix):]
-                    synonyms = {"yt": "youtube", "fb": "facebook", "gg": "google", "ig": "instagram"}
-                    return synonyms.get(s_clean, s_clean)
+                    if not s:
+                        return ""
+                    s_raw = str(s).lower().strip()
+                    s_clean = re.sub(r"https?://", "", s_raw)
+                    s_clean = re.sub(r"^www\.", "", s_clean)
+                    s_clean = re.sub(r"\.(com|org|net|io|ai|co|app)\b.*$", "", s_clean)
+                    prefixes = [
+                        "open ", "launch ", "focus ", "start ", "goto ", "view ", "tab ", "opentab ",
+                        "show ", "switch to ", "switch ", "run ", "play ", "the ", "open a ", "open the "
+                    ]
+                    changed = True
+                    while changed:
+                        changed = False
+                        for p in prefixes:
+                            if s_clean.startswith(p):
+                                s_clean = s_clean[len(p):].strip()
+                                changed = True
+                    suffixes = [" app", " application", " please", " now", " window", " tab"]
+                    changed = True
+                    while changed:
+                        changed = False
+                        for suf in suffixes:
+                            if s_clean.endswith(suf):
+                                s_clean = s_clean[:-len(suf)].strip()
+                                changed = True
+                    s_clean = re.sub(r"[^a-z0-9]", "", s_clean)
+                    alias_map = {
+                        "yt": "youtube", "youtube": "youtube",
+                        "fb": "facebook", "facebook": "facebook",
+                        "gg": "google", "google": "google",
+                        "ig": "instagram", "instagram": "instagram",
+                        "msg": "message", "messages": "message", "imessage": "message",
+                        "calc": "calculator", "calculators": "calculator",
+                        "term": "terminal", "terminal": "terminal", "terminals": "terminal", "iterm": "terminal", "iterm2": "terminal",
+                        "photo": "photo", "photos": "photo",
+                        "note": "note", "notes": "note",
+                        "reminder": "reminder", "reminders": "reminder",
+                        "calendar": "calendar", "calendars": "calendar",
+                        "contact": "contact", "contacts": "contact",
+                        "setting": "setting", "settings": "setting", "preference": "setting", "preferences": "setting",
+                        "systemsettings": "setting", "systempreferences": "setting",
+                        "vscode": "code", "visualstudiocode": "code",
+                    }
+                    if s_clean in alias_map:
+                        return alias_map[s_clean]
+                    if s_clean.endswith("ies") and len(s_clean) > 4:
+                        s_clean = s_clean[:-3] + "y"
+                    elif s_clean.endswith("es") and len(s_clean) > 4 and not s_clean.endswith(("sses", "uses", "ises")):
+                        s_clean = s_clean[:-1]
+                    elif s_clean.endswith("s") and len(s_clean) > 3 and not s_clean.endswith(("ss", "us", "is", "as")):
+                        s_clean = s_clean[:-1]
+                    return alias_map.get(s_clean, s_clean)
 
                 spec_name_key = _norm(spec.name)
                 spec_trig_key = _norm(spec.triggers.get("canonical", "") if isinstance(spec.triggers, dict) else "")

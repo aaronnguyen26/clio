@@ -153,7 +153,11 @@ class AutonomousWorkflowExecutor:
         """
         self.actuator = actuator
         self.bus = bus if bus is not None else ExecutionEventBus()
-        self.virtual_cursor = virtual_cursor
+        if virtual_cursor is None and use_virtual_cursor:
+            is_mock = getattr(actuator, "mode", None) != "macos"
+            self.virtual_cursor = VirtualCursor(initial_x=550.0, initial_y=350.0, mock=is_mock)
+        else:
+            self.virtual_cursor = virtual_cursor
         self.poller = poller if poller is not None else WindowReadinessPoller()
         self.parameter_engine = parameter_engine if parameter_engine is not None else ParameterEngine
         self.coordinate_adapter = coordinate_adapter if coordinate_adapter is not None else CoordinateAdapter
@@ -838,20 +842,25 @@ class AutonomousWorkflowExecutor:
             )
 
             # PHYSICAL CURSOR EXECUTION:
+            # PHYSICAL CURSOR EXECUTION:
             # First, check if the app exists in the macOS Dock
             dock_info = self._find_dock_item(app_id)
             coords = self._resolve_optional_screen_coordinates(step, spec, effective_params)
 
-            if dock_info and self.virtual_cursor is not None and step_use_vc:
+            if dock_info:
                 dock_x, dock_y, dock_title = dock_info
                 logger.info(
-                    "PHYSICAL LAUNCH: Moving virtual cursor to Dock icon '%s' at (%.1f, %.1f) and clicking",
+                    "CURSOR LAUNCH: Moving cursor to Dock icon '%s' at (%.1f, %.1f) and clicking",
                     dock_title,
                     dock_x,
                     dock_y,
                 )
-                self.virtual_cursor.move_to(dock_x, dock_y, duration=0.45, smooth=True)
-                self.virtual_cursor.click(x=dock_x, y=dock_y, button="left", click_count=1)
+                if step_use_vc and self.virtual_cursor is not None:
+                    self.virtual_cursor.move_to(dock_x, dock_y, duration=0.45, smooth=True)
+                    self.virtual_cursor.click(x=dock_x, y=dock_y, button="left", click_count=1)
+                elif not background_mode:
+                    self.actuator.move_mouse(dock_x, dock_y, smooth=True, duration=0.35)
+                    self.actuator.click(x=dock_x, y=dock_y, button=MouseButton.LEFT, click_count=1)
 
                 # Launch target application (in background if background_mode is active)
                 try:
@@ -859,23 +868,27 @@ class AutonomousWorkflowExecutor:
                 except TypeError:
                     self.actuator.launch_app(app_id, timeout=timeout_s)
 
-            elif coords is not None and self.virtual_cursor is not None and step_use_vc:
+            elif coords is not None:
                 # App was recorded at specific screen coordinates (e.g. Dock or Desktop icon)
                 sx, sy = coords
                 logger.info(
-                    "PHYSICAL LAUNCH: Moving virtual cursor to recorded coordinates (%.1f, %.1f) and clicking to launch",
+                    "CURSOR LAUNCH: Moving cursor to recorded coordinates (%.1f, %.1f) and clicking to launch",
                     sx,
                     sy,
                 )
-                self.virtual_cursor.move_to(sx, sy, duration=0.45, smooth=True)
-                self.virtual_cursor.click(x=sx, y=sy, button="left", click_count=1)
+                if step_use_vc and self.virtual_cursor is not None:
+                    self.virtual_cursor.move_to(sx, sy, duration=0.45, smooth=True)
+                    self.virtual_cursor.click(x=sx, y=sy, button="left", click_count=1)
+                elif not background_mode:
+                    self.actuator.move_mouse(sx, sy, smooth=True, duration=0.35)
+                    self.actuator.click(x=sx, y=sy, button=MouseButton.LEFT, click_count=1)
                 try:
                     self.actuator.launch_app(app_id, timeout=timeout_s, background=background_mode)
                 except TypeError:
                     self.actuator.launch_app(app_id, timeout=timeout_s)
 
             else:
-                # App not in Dock: use Spotlight only if NOT in background mode
+                # App not in Dock: use Spotlight only if NOT in background mode and VC is used
                 if not background_mode and self.virtual_cursor is not None and step_use_vc:
                     try:
                         self.actuator.press_hotkey("cmd", "space")
@@ -907,11 +920,8 @@ class AutonomousWorkflowExecutor:
                 )
             )
 
-            # If virtual cursor is used, configure target window/pid and glide into it
-            if step_use_vc and self.virtual_cursor is not None:
-                if hasattr(self.virtual_cursor, "set_target_bundle_id"):
-                    self.virtual_cursor.set_target_bundle_id(app_id)
-                
+            # Move cursor smoothly into the launched window
+            if not background_mode:
                 win = None
                 for _ in range(15):
                     windows = self.actuator.get_windows(app_id)
@@ -921,11 +931,16 @@ class AutonomousWorkflowExecutor:
                     time.sleep(0.1)
 
                 if win:
-                    if hasattr(self.virtual_cursor, "set_target_window"):
-                        self.virtual_cursor.set_target_window(win)
                     target_x = max(100.0, win.x + min(250.0, win.width / 2))
                     target_y = max(80.0, win.y + min(120.0, win.height / 3))
-                    self.virtual_cursor.move_to(target_x, target_y, duration=0.35, smooth=True)
+                    if step_use_vc and self.virtual_cursor is not None:
+                        if hasattr(self.virtual_cursor, "set_target_bundle_id"):
+                            self.virtual_cursor.set_target_bundle_id(app_id)
+                        if hasattr(self.virtual_cursor, "set_target_window"):
+                            self.virtual_cursor.set_target_window(win)
+                        self.virtual_cursor.move_to(target_x, target_y, duration=0.35, smooth=True)
+                    else:
+                        self.actuator.move_mouse(target_x, target_y, smooth=True, duration=0.30)
 
         # ---------------------------------------------------------------------
         # 2. ACTIVATE_APP / FOCUS_APP
@@ -939,17 +954,32 @@ class AutonomousWorkflowExecutor:
                 raise ApplicationLaunchError(f"No application bundle_id or name specified in step {step.step_id}")
             if not background_mode:
                 self.actuator.focus_app(app_id)
-            if self.virtual_cursor is not None:
-                if hasattr(self.virtual_cursor, "set_target_bundle_id"):
-                    self.virtual_cursor.set_target_bundle_id(app_id)
-                windows = self.actuator.get_windows(app_id)
-                if windows:
-                    win = windows[0]
+
+            # Target specific window if multi-window context exists (Intra-App Window Switching)
+            target_win_bounds = target.get("window_bounds") or payload.get("window_bounds")
+            windows = self.actuator.get_windows(app_id)
+            target_win = None
+            if windows:
+                if target_win_bounds:
+                    for w in windows:
+                        if abs(w.x - target_win_bounds.get("x", 0)) < 120 and abs(w.y - target_win_bounds.get("y", 0)) < 120:
+                            target_win = w
+                            break
+                if not target_win:
+                    target_win = windows[0]
+
+            if target_win and not background_mode:
+                target_x = max(100.0, target_win.x + min(250.0, target_win.width / 2))
+                target_y = max(60.0, target_win.y + min(25.0, target_win.height / 10))
+                if step_use_vc and self.virtual_cursor is not None:
+                    if hasattr(self.virtual_cursor, "set_target_bundle_id"):
+                        self.virtual_cursor.set_target_bundle_id(app_id)
                     if hasattr(self.virtual_cursor, "set_target_window"):
-                        self.virtual_cursor.set_target_window(win)
-                    target_x = max(100.0, win.x + min(250.0, win.width / 2))
-                    target_y = max(80.0, win.y + min(120.0, win.height / 3))
+                        self.virtual_cursor.set_target_window(target_win)
                     self.virtual_cursor.move_to(target_x, target_y, duration=0.3, smooth=True)
+                else:
+                    self.actuator.move_mouse(target_x, target_y, smooth=True, duration=0.25)
+                    self.actuator.click(target_x, target_y, button=MouseButton.LEFT, click_count=1)
 
         # ---------------------------------------------------------------------
         # 3. MOVE / MOVE_MOUSE
@@ -963,6 +993,10 @@ class AutonomousWorkflowExecutor:
                 self.virtual_cursor.move_to(sx, sy, duration=duration, smooth=smooth)
             else:
                 self.actuator.move_mouse(sx, sy, smooth=smooth, duration=duration)
+
+            dwell_s = float(payload.get("dwell_s", 0.0))
+            if dwell_s > 0:
+                self._interruptible_sleep(dwell_s)
 
         # ---------------------------------------------------------------------
         # 4. CLICK
@@ -982,14 +1016,21 @@ class AutonomousWorkflowExecutor:
                 else:
                     sx, sy = 400.0, 300.0
 
-            # Check if this click targets an item in the macOS Dock
+            # 1. Check if this click targets an item in the macOS Dock
             dock_app = self._detect_dock_app_at(sx, sy)
+            if not dock_app and (target.get("launch_method") == "dock" or target.get("bundle_id") == "com.apple.dock"):
+                dock_app = target.get("app_name") or payload.get("app")
+
             if dock_app:
-                logger.info("Click at (%s, %s) identified as Dock icon for '%s' — launching app", sx, sy, dock_app)
+                dock_item = self._find_dock_item(dock_app)
+                if dock_item:
+                    sx, sy, _ = dock_item
+                logger.info("Click at (%.1f, %.1f) identified as Dock icon for '%s' — launching app", sx, sy, dock_app)
                 if step_use_vc and self.virtual_cursor is not None:
                     self.virtual_cursor.move_to(sx, sy, duration=0.35, smooth=True)
                     self.virtual_cursor.click(x=sx, y=sy, button=btn, click_count=click_count)
                 else:
+                    self.actuator.move_mouse(sx, sy, smooth=True, duration=0.30)
                     self.actuator.click(x=sx, y=sy, button=MouseButton(btn), click_count=click_count)
 
                 # Launch clicked application (honoring background_mode)
@@ -1005,14 +1046,17 @@ class AutonomousWorkflowExecutor:
                     if windows:
                         win = windows[0]
                         self.virtual_cursor.move_to(win.x + win.width / 2, win.y + win.height / 3, duration=0.35, smooth=True)
-            elif step_use_vc and self.virtual_cursor is not None:
+                return
+
+            # 2. Standard Click (Virtual Cursor vs Physical Cursor)
+            if step_use_vc and self.virtual_cursor is not None:
                 target_bundle = target.get("bundle_id") or payload.get("bundle_id")
                 if target_bundle and hasattr(self.virtual_cursor, "set_target_bundle_id"):
                     self.virtual_cursor.set_target_bundle_id(target_bundle)
                 self.virtual_cursor.move_to(sx, sy, duration=0.25, smooth=True)
                 self.virtual_cursor.click(x=sx, y=sy, button=btn, click_count=click_count)
             else:
-                # Fallback: direct hardware actuator click
+                self.actuator.move_mouse(sx, sy, smooth=True, duration=0.20)
                 self.actuator.click(x=sx, y=sy, button=MouseButton(btn), click_count=click_count)
 
         # ---------------------------------------------------------------------
@@ -1025,17 +1069,13 @@ class AutonomousWorkflowExecutor:
             if coords is not None:
                 sx, sy = coords
             else:
-                win = getattr(self.virtual_cursor, "target_window", None) if self.virtual_cursor else None
-                if win:
-                    sx = max(50.0, win.x + 200.0)
-                    sy = max(50.0, win.y + 150.0)
-                else:
-                    sx, sy = 400.0, 300.0
+                sx, sy = 400.0, 300.0
 
             if step_use_vc and self.virtual_cursor is not None:
                 self.virtual_cursor.move_to(sx, sy, duration=0.25, smooth=True)
                 self.virtual_cursor.click(x=sx, y=sy, button=btn, click_count=2)
             else:
+                self.actuator.move_mouse(sx, sy, smooth=True, duration=0.20)
                 self.actuator.click(x=sx, y=sy, button=MouseButton(btn), click_count=2)
 
         # ---------------------------------------------------------------------
@@ -1046,17 +1086,13 @@ class AutonomousWorkflowExecutor:
             if coords is not None:
                 sx, sy = coords
             else:
-                win = getattr(self.virtual_cursor, "target_window", None) if self.virtual_cursor else None
-                if win:
-                    sx = max(50.0, win.x + 200.0)
-                    sy = max(50.0, win.y + 150.0)
-                else:
-                    sx, sy = 400.0, 300.0
+                sx, sy = 400.0, 300.0
 
             if step_use_vc and self.virtual_cursor is not None:
                 self.virtual_cursor.move_to(sx, sy, duration=0.25, smooth=True)
                 self.virtual_cursor.click(x=sx, y=sy, button="right", click_count=1)
             else:
+                self.actuator.move_mouse(sx, sy, smooth=True, duration=0.20)
                 self.actuator.click(x=sx, y=sy, button=MouseButton.RIGHT, click_count=1)
 
         # ---------------------------------------------------------------------
@@ -1071,10 +1107,29 @@ class AutonomousWorkflowExecutor:
                 sx, sy = float(start_coords[0]), float(start_coords[1])
                 ex, ey = float(end_coords[0]), float(end_coords[1])
             else:
-                sx = float(payload.get("start_x", 0.0))
-                sy = float(payload.get("start_y", 0.0))
-                ex = float(payload.get("end_x", sx))
-                ey = float(payload.get("end_y", sy))
+                sx = float(payload.get("start_x", 0.0) or target.get("start_x", 0.0))
+                sy = float(payload.get("start_y", 0.0) or target.get("start_y", 0.0))
+                ex = float(payload.get("end_x", sx) or target.get("screen_x", sx))
+                ey = float(payload.get("end_y", sy) or target.get("screen_y", sy))
+
+            # Adapt start and end drag coordinates if target window moved or resized
+            rec_wb = (
+                target.get("window_bounds") if isinstance(target, dict)
+                else (payload.get("window_bounds") if isinstance(payload, dict) else None)
+            )
+            if rec_wb and isinstance(rec_wb, dict):
+                app_name = self._resolve_target_app(step, spec)
+                if app_name:
+                    windows = self.actuator.get_windows(app_name)
+                    if windows:
+                        matching_win = self._find_best_matching_window(windows, rec_wb)
+                        if matching_win:
+                            sx, sy = self._adapt_coordinates_to_window(
+                                sx, sy, rec_wb, matching_win, {"norm_x": target.get("start_norm_x"), "norm_y": target.get("start_norm_y")}
+                            )
+                            ex, ey = self._adapt_coordinates_to_window(
+                                ex, ey, rec_wb, matching_win, {"norm_x": target.get("norm_x"), "norm_y": target.get("norm_y")}
+                            )
 
             if step_use_vc and self.virtual_cursor is not None:
                 self.virtual_cursor.move_to(sx, sy)
@@ -1261,16 +1316,80 @@ class AutonomousWorkflowExecutor:
         target = getattr(step, "target", {}) or {}
         step_coords = getattr(step, "coordinates", None)
 
-        # 0. Check step.target for norm_x / norm_y (prioritize resolution independence), then screen_x / screen_y or x / y
+        # 0. Check for explicit recorded screen coordinates (100% pixel-perfect fidelity)
+        recorded_sx: Optional[float] = None
+        recorded_sy: Optional[float] = None
+        if isinstance(target, dict):
+            if "screen_x" in target and "screen_y" in target:
+                recorded_sx, recorded_sy = float(target["screen_x"]), float(target["screen_y"])
+            elif "x" in target and "y" in target:
+                recorded_sx, recorded_sy = float(target["x"]), float(target["y"])
+        if recorded_sx is None and isinstance(payload, dict):
+            if "screen_x" in payload and "screen_y" in payload:
+                recorded_sx, recorded_sy = float(payload["screen_x"]), float(payload["screen_y"])
+            elif "x" in payload and "y" in payload:
+                recorded_sx, recorded_sy = float(payload["x"]), float(payload["y"])
+        if recorded_sx is None and step_coords is not None:
+            if hasattr(step_coords, "abs_x") and step_coords.abs_x is not None and step_coords.abs_y is not None:
+                recorded_sx, recorded_sy = float(step_coords.abs_x), float(step_coords.abs_y)
+
+        if recorded_sx is not None and recorded_sy is not None:
+            # If window bounds were recorded, check if the target window has moved or resized
+            rec_wb = (
+                target.get("window_bounds") if isinstance(target, dict)
+                else (payload.get("window_bounds") if isinstance(payload, dict) else None)
+            )
+            if rec_wb and isinstance(rec_wb, dict):
+                app_name = self._resolve_target_app(step, spec)
+                if app_name:
+                    windows = self.actuator.get_windows(app_name)
+                    if windows:
+                        matching_win = self._find_best_matching_window(windows, rec_wb)
+                        if matching_win:
+                            return self._adapt_coordinates_to_window(
+                                recorded_sx, recorded_sy, rec_wb, matching_win, target if isinstance(target, dict) else {}
+                            )
+            # Window is in the same position or action is screen-level (Dock, desktop, etc.): exact coordinate match
+            return recorded_sx, recorded_sy
+
+        # 1. Tri-Factor Target Anchor Resolution
+        tri_factor = target.get("tri_factor_anchor") if isinstance(target, dict) else None
+        if tri_factor and isinstance(tri_factor, dict):
+            # Factor 1: Accessibility Query (AXRole + AXTitle + bundle_id)
+            f1 = tri_factor.get("factor_1_ax", {})
+            ax_role = f1.get("ax_role")
+            ax_title = f1.get("ax_title")
+            ax_bundle = f1.get("bundle_id") or self._resolve_target_app(step, spec)
+            if ax_bundle and (ax_role or ax_title):
+                ax_elem = self._query_accessibility_element(ax_bundle, ax_role, ax_title)
+                if ax_elem is not None:
+                    ax_x, ax_y, ax_w, ax_h = ax_elem
+                    logger.info("Tri-Factor Anchor: Resolved Factor 1 (AX Query) for '%s' ('%s') at (%.1f, %.1f)", ax_title, ax_role, ax_x + ax_w / 2.0, ax_y + ax_h / 2.0)
+                    return ax_x + ax_w / 2.0, ax_y + ax_h / 2.0
+
+            # Factor 2: Window-Relative Ratio (norm_x, norm_y)
+            f2 = tri_factor.get("factor_2_ratio", {})
+            f2_nx = f2.get("norm_x")
+            f2_ny = f2.get("norm_y")
+            if f2_nx is not None and f2_ny is not None:
+                logger.info("Tri-Factor Anchor: Resolved Factor 2 (Window Ratio) norm=(%.4f, %.4f)", float(f2_nx), float(f2_ny))
+                return self._project_norm_to_screen(float(f2_nx), float(f2_ny), step, spec)
+
+            # Factor 3: Clean Visual Crop
+            f3 = tri_factor.get("factor_3_visual", {})
+            crop_path = f3.get("crop_path")
+            if crop_path and os.path.exists(crop_path):
+                matched = self._match_visual_crop(crop_path, step, spec)
+                if matched is not None:
+                    logger.info("Tri-Factor Anchor: Resolved Factor 3 (Visual Crop) at (%.1f, %.1f)", matched[0], matched[1])
+                    return matched
+
+        # 2. Check step.target for norm_x / norm_y
         if isinstance(target, dict):
             if "norm_x" in target and "norm_y" in target:
                 return self._project_norm_to_screen(float(target["norm_x"]), float(target["norm_y"]), step, spec)
-            if "screen_x" in target and "screen_y" in target:
-                return float(target["screen_x"]), float(target["screen_y"])
-            if "x" in target and "y" in target:
-                return float(target["x"]), float(target["y"])
 
-        # 1. Coordinates embedded in payload dict: payload["coordinates"]
+        # 3. Coordinates embedded in payload dict: payload["coordinates"]
         raw_coords = payload.get("coordinates")
         if isinstance(raw_coords, dict):
             if "norm_x" in raw_coords and "norm_y" in raw_coords:
@@ -1285,7 +1404,7 @@ class AutonomousWorkflowExecutor:
             if "abs_x" in raw_coords and "abs_y" in raw_coords:
                 return float(raw_coords["abs_x"]), float(raw_coords["abs_y"])
 
-        # 2. TargetCoordinates instance on step: step.coordinates
+        # 4. TargetCoordinates instance on step: step.coordinates
         if step_coords is not None:
             if hasattr(step_coords, "norm_x") and step_coords.norm_x is not None and step_coords.norm_y is not None:
                 return self._project_norm_to_screen(
@@ -1294,10 +1413,8 @@ class AutonomousWorkflowExecutor:
                     step,
                     spec,
                 )
-            if hasattr(step_coords, "abs_x") and step_coords.abs_x is not None and step_coords.abs_y is not None:
-                return float(step_coords.abs_x), float(step_coords.abs_y)
 
-        # 3. Check norm_x and norm_y directly in payload
+        # 5. Check norm_x and norm_y directly in payload
         if "norm_x" in payload and "norm_y" in payload:
             return self._project_norm_to_screen(
                 float(payload["norm_x"]),
@@ -1306,13 +1423,122 @@ class AutonomousWorkflowExecutor:
                 spec,
             )
 
-        # 4. Direct explicit (x, y) coordinates in payload
-        if "x" in payload and "y" in payload:
-            return float(payload["x"]), float(payload["y"])
-        if "screen_x" in payload and "screen_y" in payload:
-            return float(payload["screen_x"]), float(payload["screen_y"])
-
         return None
+
+    def _find_best_matching_window(
+        self,
+        windows: List[WindowInfo],
+        rec_wb: Dict[str, Any],
+    ) -> Optional[WindowInfo]:
+        """Finds the window in `windows` that best corresponds to `rec_wb`.
+
+        Prevents false positive window shifts from popups, menus, inspectors, or unrelated windows.
+        """
+        if not windows or not isinstance(rec_wb, dict):
+            return None
+
+        rec_x = float(rec_wb.get("x", 0))
+        rec_y = float(rec_wb.get("y", 0))
+        rec_w = float(rec_wb.get("width", 0))
+        rec_h = float(rec_wb.get("height", 0))
+
+        if rec_w <= 10 or rec_h <= 10:
+            return None
+
+        # 1. Exact or near-identical position check: window has not moved
+        for w in windows:
+            if (
+                abs(w.x - rec_x) <= 15
+                and abs(w.y - rec_y) <= 15
+                and abs(w.width - rec_w) <= 25
+                and abs(w.height - rec_h) <= 25
+            ):
+                return w
+
+        # 2. Window moved: find a candidate with compatible geometry
+        best_candidate: Optional[WindowInfo] = None
+        best_score = float("inf")
+
+        for w in windows:
+            # Reject windows that are vastly different in size (e.g. 150px popup vs 1400px window)
+            w_diff = abs(w.width - rec_w)
+            h_diff = abs(w.height - rec_h)
+            max_w_allowed = max(150.0, 0.40 * rec_w)
+            max_h_allowed = max(150.0, 0.40 * rec_h)
+
+            if w_diff > max_w_allowed or h_diff > max_h_allowed:
+                continue
+
+            pos_diff = abs(w.x - rec_x) + abs(w.y - rec_y)
+            size_diff = w_diff + h_diff
+            score = (size_diff * 2.0) + pos_diff
+
+            if score < best_score:
+                best_score = score
+                best_candidate = w
+
+        return best_candidate
+
+    def _adapt_coordinates_to_window(
+        self,
+        recorded_sx: float,
+        recorded_sy: float,
+        rec_wb: Dict[str, Any],
+        best_win: WindowInfo,
+        target: Dict[str, Any],
+    ) -> Tuple[float, float]:
+        """Adapts recorded screen coordinates when the target window has moved or resized."""
+        rec_x = float(rec_wb.get("x", 0))
+        rec_y = float(rec_wb.get("y", 0))
+        rec_w = float(rec_wb.get("width", 0))
+        rec_h = float(rec_wb.get("height", 0))
+
+        dx = best_win.x - rec_x
+        dy = best_win.y - rec_y
+        dw = abs(best_win.width - rec_w)
+        dh = abs(best_win.height - rec_h)
+
+        # If window barely moved or resized (< 5px), keep exact recorded coordinates
+        if abs(dx) <= 5 and abs(dy) <= 5 and dw <= 8 and dh <= 8:
+            return recorded_sx, recorded_sy
+
+        # If window only moved without significant resize, translate exact pixel offset
+        if dw <= 20 and dh <= 20:
+            return round(recorded_sx + dx, 1), round(recorded_sy + dy, 1)
+
+        # Window was resized: handle fixed macOS window regions vs scaling content
+        rel_x = recorded_sx - rec_x
+        rel_y = recorded_sy - rec_y
+
+        # Top toolbar / title bar (fixed height ~65px)
+        if rel_y < 65:
+            new_y = best_win.y + rel_y
+        # Bottom status bar (fixed height ~30px)
+        elif rel_y > rec_h - 30:
+            new_y = best_win.y + best_win.height - (rec_h - rel_y)
+        else:
+            # Scaled vertically within content area
+            norm_y = target.get("norm_y") if isinstance(target, dict) else None
+            if norm_y is not None:
+                new_y = best_win.y + (float(norm_y) * best_win.height)
+            else:
+                new_y = best_win.y + (rel_y / max(1.0, rec_h)) * best_win.height
+
+        # Left sidebar (fixed width ~200px)
+        if rel_x < 200:
+            new_x = best_win.x + rel_x
+        # Right inspector rail (fixed width ~200px)
+        elif rel_x > rec_w - 200:
+            new_x = best_win.x + best_win.width - (rec_w - rel_x)
+        else:
+            # Scaled horizontally within content area
+            norm_x = target.get("norm_x") if isinstance(target, dict) else None
+            if norm_x is not None:
+                new_x = best_win.x + (float(norm_x) * best_win.width)
+            else:
+                new_x = best_win.x + (rel_x / max(1.0, rec_w)) * best_win.width
+
+        return round(new_x, 1), round(new_y, 1)
 
     def _project_norm_to_screen(
         self,
@@ -1322,32 +1548,178 @@ class AutonomousWorkflowExecutor:
         spec: WorkflowSpec,
     ) -> Tuple[float, float]:
         """Projects normalized (norm_x, norm_y) to absolute screen coordinates using target window or screen."""
+        target = getattr(step, "target", {}) or {}
+        payload = getattr(step, "payload", {}) or {}
+
+        # Fallback 0: if explicit recorded screen_x and screen_y are present in target or payload, use them!
+        if isinstance(target, dict) and "screen_x" in target and "screen_y" in target:
+            return float(target["screen_x"]), float(target["screen_y"])
+        if isinstance(payload, dict) and "screen_x" in payload and "screen_y" in payload:
+            return float(payload["screen_x"]), float(payload["screen_y"])
+
         app_name = self._resolve_target_app(step, spec)
         target_win: Optional[WindowInfo] = None
 
         if app_name:
             windows = self.actuator.get_windows(app_name)
             if windows:
-                target_win = windows[0]
+                rec_wb = (
+                    target.get("window_bounds") if isinstance(target, dict)
+                    else (payload.get("window_bounds") if isinstance(payload, dict) else None)
+                )
+                if rec_wb and isinstance(rec_wb, dict):
+                    target_win = self._find_best_matching_window(windows, rec_wb)
+                if target_win is None:
+                    target_win = windows[0]
 
         if target_win is not None:
             # Use CoordinateAdapter projection against window geometry
             sx, sy = self.coordinate_adapter.to_screen_coordinates(norm_x, norm_y, target_win)
             return float(sx), float(sy)
 
-        # Fallback 1: if explicit recorded screen_x and screen_y are present in target or payload, use them!
-        target = getattr(step, "target", {}) or {}
-        payload = getattr(step, "payload", {}) or {}
-        if isinstance(target, dict) and "screen_x" in target and "screen_y" in target:
-            return float(target["screen_x"]), float(target["screen_y"])
-        if isinstance(payload, dict) and "screen_x" in payload and "screen_y" in payload:
-            return float(payload["screen_x"]), float(payload["screen_y"])
-
         # Fallback 2: scale across primary screen size
         sw, sh = self.actuator.get_screen_size()
         clamped_x = max(0.0, min(1.0, norm_x))
         clamped_y = max(0.0, min(1.0, norm_y))
-        return float(math.floor(clamped_x * sw)), float(math.floor(clamped_y * sh))
+        return float(round(clamped_x * sw)), float(round(clamped_y * sh))
+
+    def _query_accessibility_element(
+        self,
+        app_name_or_bundle: str,
+        ax_role: Optional[str] = None,
+        ax_title: Optional[str] = None,
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Queries on-screen accessibility element using actuator support or Darwin Accessibility."""
+        # 1. Check if actuator has find_accessibility_element implemented (e.g. MockActuator)
+        if hasattr(self.actuator, "find_accessibility_element"):
+            elem = self.actuator.find_accessibility_element(app_name_or_bundle, ax_role, ax_title)
+            if elem is not None:
+                return elem
+
+        # 2. Live macOS accessibility query via ctypes if on Darwin
+        if sys.platform == "darwin" and threading.current_thread() is threading.main_thread():
+            try:
+                import ctypes
+                import subprocess
+                from ctypes import c_void_p, c_int, c_char_p, c_bool, byref, c_double, Structure
+
+                class CGPoint(Structure):
+                    _fields_ = [("x", c_double), ("y", c_double)]
+
+                class CGSize(Structure):
+                    _fields_ = [("width", c_double), ("height", c_double)]
+
+                hiservices = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+                cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+
+                hiservices.AXUIElementCreateApplication.argtypes = [c_int]
+                hiservices.AXUIElementCreateApplication.restype = c_void_p
+                hiservices.AXUIElementCopyAttributeValue.argtypes = [c_void_p, c_void_p, ctypes.POINTER(c_void_p)]
+                hiservices.AXUIElementCopyAttributeValue.restype = c_int
+                hiservices.AXValueGetValue.argtypes = [c_void_p, c_int, c_void_p]
+                hiservices.AXValueGetValue.restype = c_bool
+
+                cf.CFStringCreateWithCString.argtypes = [c_void_p, c_char_p, c_int]
+                cf.CFStringCreateWithCString.restype = c_void_p
+                cf.CFStringGetCString.argtypes = [c_void_p, c_char_p, c_int, c_int]
+                cf.CFStringGetCString.restype = c_bool
+                cf.CFArrayGetCount.argtypes = [c_void_p]
+                cf.CFArrayGetCount.restype = c_int
+                cf.CFArrayGetValueAtIndex.argtypes = [c_void_p, c_int]
+                cf.CFArrayGetValueAtIndex.restype = c_void_p
+                cf.CFRelease.argtypes = [c_void_p]
+
+                # Resolve PID
+                pids_out = subprocess.check_output(["pgrep", "-f", app_name_or_bundle]).decode().strip().splitlines()
+                if not pids_out:
+                    return None
+                pid = int(pids_out[0].strip())
+                app_elem = hiservices.AXUIElementCreateApplication(pid)
+                if not app_elem:
+                    return None
+
+                cf_windows = cf.CFStringCreateWithCString(None, b"AXWindows", 0x08000100)
+                cf_children = cf.CFStringCreateWithCString(None, b"AXChildren", 0x08000100)
+                cf_title = cf.CFStringCreateWithCString(None, b"AXTitle", 0x08000100)
+                cf_role = cf.CFStringCreateWithCString(None, b"AXRole", 0x08000100)
+                cf_pos = cf.CFStringCreateWithCString(None, b"AXPosition", 0x08000100)
+                cf_size = cf.CFStringCreateWithCString(None, b"AXSize", 0x08000100)
+
+                target_title_clean = (ax_title or "").lower().strip()
+                target_role_clean = (ax_role or "").lower().strip()
+
+                def _inspect_node(node: Any, depth: int = 0) -> Optional[Tuple[float, float, float, float]]:
+                    if depth > 4:
+                        return None
+                    t_val = c_void_p()
+                    t_str = ""
+                    if hiservices.AXUIElementCopyAttributeValue(node, cf_title, byref(t_val)) == 0 and t_val.value:
+                        buf = ctypes.create_string_buffer(256)
+                        if cf.CFStringGetCString(t_val, buf, 256, 0x08000100):
+                            t_str = buf.value.decode("utf-8").lower().strip()
+                        cf.CFRelease(t_val)
+
+                    r_val = c_void_p()
+                    r_str = ""
+                    if hiservices.AXUIElementCopyAttributeValue(node, cf_role, byref(r_val)) == 0 and r_val.value:
+                        buf2 = ctypes.create_string_buffer(256)
+                        if cf.CFStringGetCString(r_val, buf2, 256, 0x08000100):
+                            r_str = buf2.value.decode("utf-8").lower().strip()
+                        cf.CFRelease(r_val)
+
+                    matches_title = (not target_title_clean) or (target_title_clean == t_str) or (target_title_clean in t_str)
+                    matches_role = (not target_role_clean) or (target_role_clean == r_str)
+                    if matches_title and matches_role and (t_str or r_str):
+                        pos_v = c_void_p()
+                        pt = CGPoint()
+                        if hiservices.AXUIElementCopyAttributeValue(node, cf_pos, byref(pos_v)) == 0 and pos_v.value:
+                            hiservices.AXValueGetValue(pos_v, 1, byref(pt))
+                            cf.CFRelease(pos_v)
+
+                        sz_v = c_void_p()
+                        sz = CGSize()
+                        if hiservices.AXUIElementCopyAttributeValue(node, cf_size, byref(sz_v)) == 0 and sz_v.value:
+                            hiservices.AXValueGetValue(sz_v, 2, byref(sz))
+                            cf.CFRelease(sz_v)
+
+                        if sz.width > 0 and sz.height > 0:
+                            return (pt.x, pt.y, sz.width, sz.height)
+
+                    # Recurse children
+                    c_val = c_void_p()
+                    if hiservices.AXUIElementCopyAttributeValue(node, cf_children, byref(c_val)) == 0 and c_val.value:
+                        cnt = cf.CFArrayGetCount(c_val)
+                        res = None
+                        for k in range(cnt):
+                            child = cf.CFArrayGetValueAtIndex(c_val, k)
+                            res = _inspect_node(child, depth + 1)
+                            if res:
+                                break
+                        cf.CFRelease(c_val)
+                        return res
+                    return None
+
+                result = _inspect_node(app_elem)
+                cf.CFRelease(cf_windows)
+                cf.CFRelease(cf_children)
+                cf.CFRelease(cf_title)
+                cf.CFRelease(cf_role)
+                cf.CFRelease(cf_pos)
+                cf.CFRelease(cf_size)
+                cf.CFRelease(app_elem)
+                return result
+            except Exception as e:
+                logger.debug("Live AX query error: %s", e)
+        return None
+
+    def _match_visual_crop(
+        self,
+        crop_path: str,
+        step: WorkflowStep,
+        spec: WorkflowSpec,
+    ) -> Optional[Tuple[float, float]]:
+        """Optional Factor 3 visual template matching fallback."""
+        return None
 
     # =========================================================================
     # Helpers & Interruptible Delays

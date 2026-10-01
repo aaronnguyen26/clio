@@ -39,6 +39,8 @@ class RawEventType(str, Enum):
     MOUSE_DOWN = "mouse_down"
     MOUSE_UP = "mouse_up"
     MOUSE_DRAG = "mouse_drag"
+    MOUSE_SCROLL = "mouse_scroll"
+    MOUSE_DWELL = "mouse_dwell"
     CLICK = "click"
     KEY_DOWN = "key_down"
     KEY_UP = "key_up"
@@ -71,6 +73,11 @@ class RawEvent:
     dock_item_title: str = ""
     recognized_text: str = ""
     visual_delta: float = 0.0
+    delta_x: float = 0.0
+    delta_y: float = 0.0
+    unicode_char: str = ""
+    dwell_time: float = 0.0
+    keycode: int = 0
 
 
 # Alias for backward-compatibility with test suites
@@ -629,6 +636,7 @@ class EventCoalescingStage:
                     ev_type in ("key_char", "keychar")
                     or len(ev.key) == 1
                     or key_clean == "space"
+                    or (len(ev.key) > 1 and not has_cmd_ctrl and not is_nav_or_special)
                 )
                 if is_printable:
                     char = " " if key_clean == "space" else ev.key
@@ -641,6 +649,28 @@ class EventCoalescingStage:
 
             # Non-typing event encountered: flush any accumulated typing
             self._flush_typing(typing_buffer, typing_start_t, typing_last_t, steps, step_timestamps, current_active_bundle)
+
+            # 2.5. Mouse Scroll Wheel
+            if ev_type in ("mouse_scroll", "scroll", "scroll_wheel"):
+                dx = getattr(ev, "delta_x", 0.0)
+                dy = getattr(ev, "delta_y", 0.0)
+                step_idx = len(steps) + 1
+                target_dict: Dict[str, Any] = {"screen_x": int(ev.x), "screen_y": int(ev.y)}
+                if ev.bundle_id or current_active_bundle:
+                    target_dict["bundle_id"] = ev.bundle_id or current_active_bundle
+                steps.append(
+                    WorkflowStep(
+                        step_id=f"step_{step_idx}",
+                        order=step_idx,
+                        description=f"Scroll ({int(dy)} vertical)" if dy != 0 else "Scroll",
+                        action=ActionType.SCROLL,
+                        payload={"delta_x": dx, "delta_y": dy},
+                        target=target_dict,
+                    )
+                )
+                step_timestamps.append((ev.timestamp, ev.timestamp + 0.05))
+                i += 1
+                continue
 
             # 3. Direct CLICK or Mouse Down (+ optional Mouse Up)
             if ev_type in ("click", "mouse_down", "mousedown"):
@@ -758,7 +788,21 @@ class EventCoalescingStage:
                 else:
                     click_end_t = click_start_t + 0.05
 
-                target_dict = {"screen_x": int(click_x), "screen_y": int(click_y)}
+                target_dict = {
+                    "screen_x": int(click_x),
+                    "screen_y": int(click_y),
+                    "x": int(click_x),
+                    "y": int(click_y),
+                }
+                if getattr(ev, "ax_title", None):
+                    target_dict["ax_title"] = ev.ax_title
+                if getattr(ev, "ax_role", None):
+                    target_dict["ax_role"] = ev.ax_role
+                if getattr(ev, "recognized_text", None):
+                    target_dict["recognized_text"] = ev.recognized_text
+                if getattr(ev, "visual_delta", 0.0) > 0.0:
+                    target_dict["visual_delta"] = float(ev.visual_delta)
+
                 if ev.bundle_id and ev.bundle_id not in clio_bundles:
                     target_dict["bundle_id"] = ev.bundle_id
                     target_dict["app_name"] = ev.bundle_id.split(".")[-1]
@@ -771,6 +815,12 @@ class EventCoalescingStage:
                     norm_y = (click_y - ev.window_bounds.y) / ev.window_bounds.height
                     target_dict["norm_x"] = round(max(0.0, min(1.0, norm_x)), 4)
                     target_dict["norm_y"] = round(max(0.0, min(1.0, norm_y)), 4)
+                    target_dict["window_bounds"] = {
+                        "x": ev.window_bounds.x,
+                        "y": ev.window_bounds.y,
+                        "width": ev.window_bounds.width,
+                        "height": ev.window_bounds.height,
+                    }
 
                 # Check if this qualifies as double-click (2) or triple-click (3)
                 is_coalesced = False
@@ -842,6 +892,14 @@ class EventCoalescingStage:
                         x=click_x,
                         y=click_y,
                     )
+                    payload_dict = {
+                        "button": button,
+                        "click_count": 1,
+                        "x": int(click_x),
+                        "y": int(click_y),
+                        "screen_x": int(click_x),
+                        "screen_y": int(click_y),
+                    }
                     steps.append(
                         WorkflowStep(
                             step_id=f"step_{step_idx}",
@@ -849,7 +907,14 @@ class EventCoalescingStage:
                             description=click_desc,
                             action=ActionType.CLICK,
                             target=target_dict,
-                            payload={"button": button, "click_count": 1},
+                            payload=payload_dict,
+                            coordinates=TargetCoordinates(
+                                mode=CoordMode.WINDOW_RELATIVE_RATIO if "norm_x" in target_dict else CoordMode.SCREEN_ABSOLUTE,
+                                norm_x=target_dict.get("norm_x"),
+                                norm_y=target_dict.get("norm_y"),
+                                abs_x=int(click_x),
+                                abs_y=int(click_y),
+                            ),
                         )
                     )
                     step_timestamps.append((click_start_t, click_end_t))
