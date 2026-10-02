@@ -802,9 +802,13 @@ class LiveDemonstrationCapture:
             return bin_rec
 
         # Also check inside app bundle if running packaged
-        app_rec = Path("/Users/minhnguyen/Desktop/Clio.app/Contents/MacOS/clio-recorder")
-        if app_rec.exists() and os.access(app_rec, os.X_OK):
-            return app_rec
+        candidate_rec_paths = [
+            Path.home() / "Desktop" / "Clio.app" / "Contents" / "MacOS" / "clio-recorder",
+            Path("/Applications/Clio.app/Contents/MacOS/clio-recorder"),
+        ]
+        for app_rec in candidate_rec_paths:
+            if app_rec.exists() and os.access(app_rec, os.X_OK):
+                return app_rec
 
         swift_src = project_root / "tools" / "clio-recorder.swift"
         if swift_src.exists() and sys.platform == "darwin":
@@ -834,9 +838,13 @@ class LiveDemonstrationCapture:
             return bin_synth
 
         # Also check inside app bundle if running packaged
-        app_synth = Path("/Users/minhnguyen/Desktop/Clio.app/Contents/MacOS/clio-synthesizer")
-        if app_synth.exists() and os.access(app_synth, os.X_OK):
-            return app_synth
+        candidate_synth_paths = [
+            Path.home() / "Desktop" / "Clio.app" / "Contents" / "MacOS" / "clio-synthesizer",
+            Path("/Applications/Clio.app/Contents/MacOS/clio-synthesizer"),
+        ]
+        for app_synth in candidate_synth_paths:
+            if app_synth.exists() and os.access(app_synth, os.X_OK):
+                return app_synth
 
         swift_src = project_root / "tools" / "clio-synthesizer.swift"
         if swift_src.exists() and sys.platform == "darwin":

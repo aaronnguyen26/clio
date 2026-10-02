@@ -126,15 +126,6 @@ The bar responds to standard user dismissal commands:
 
 ---
 
-## 📖 Documentation
-
-Comprehensive technical specifications and architecture guides are available in the **[docs/](docs/README.md)** directory:
-- **[System Architecture](docs/architecture/system_architecture.md)**: Capture pipelines, coordinate normalization, virtual cursor, and system diagrams.
-- **[AI Dissection Pipeline](docs/architecture/ai_dissection_pipeline.md)**: Multimodal AI workflow dissection (v3), Darwin accessibility ground-truth, and provider integrations.
-- **[Test Infrastructure Specification](docs/testing/test_infrastructure.md)**: 4-tier test architecture, verification methodology, and runner commands.
-
----
-
 ## 📄 License
 
 MIT License. Designed and built with ❤️ on macOS.

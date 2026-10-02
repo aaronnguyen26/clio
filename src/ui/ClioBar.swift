@@ -72,8 +72,6 @@ final class ServerLauncher {
         // 2. Candidate paths (prioritize bundled resources and active workspace folder)
         let candidates = [
             Bundle.main.bundleURL.appendingPathComponent("Contents/Resources").path,
-            "/Users/minhnguyen/Desktop/Coding/imitate-sandbox",
-            "/Users/minhnguyen/Desktop/Coding/imitate",
             Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path,
             Bundle.main.bundleURL.deletingLastPathComponent().path,
             Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().path,

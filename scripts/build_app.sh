@@ -30,7 +30,7 @@ fi
 echo "==> Packaging Clio.app in clean staging directory..."
 STAGE_DIR="/tmp/Clio_build_staging"
 APP_BUNDLE="${STAGE_DIR}/Clio.app"
-DESKTOP_BUNDLE="/Users/minhnguyen/Desktop/Clio.app"
+DESKTOP_BUNDLE="${CLIO_DESKTOP_BUNDLE:-$HOME/Desktop/Clio.app}"
 
 rm -rf "${STAGE_DIR}" Clio.app
 mkdir -p "${STAGE_DIR}"
@@ -78,8 +78,9 @@ codesign -d -r- "${APP_BUNDLE}"
 
 # Packaging dist/Clio-macOS.zip directly from clean staging
 echo "==> Packaging dist/Clio-macOS.zip..."
-mkdir -p dist
-(cd "${STAGE_DIR}" && zip -r -FS "/Users/minhnguyen/Desktop/Coding/imitate/dist/Clio-macOS.zip" "Clio.app")
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mkdir -p "${REPO_ROOT}/dist"
+(cd "${STAGE_DIR}" && zip -r -FS "${REPO_ROOT}/dist/Clio-macOS.zip" "Clio.app")
 
 # Deploy to Desktop
 echo "==> Deploying to Desktop..."
@@ -97,4 +98,4 @@ fi
 # Clean staging
 rm -rf "${STAGE_DIR}" Clio.app
 
-echo "==> Build complete! Only /Users/minhnguyen/Desktop/Clio.app is kept and verified."
+echo "==> Build complete! Only ${DESKTOP_BUNDLE} is kept and verified."

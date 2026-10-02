@@ -8,7 +8,13 @@ export PYTHONDONTWRITEBYTECODE=1
 
 PORT=8765
 BASE_URL="http://127.0.0.1:${PORT}"
-APP_PATH="/Users/minhnguyen/Desktop/Clio.app"
+if [ -d "$HOME/Desktop/Clio.app" ]; then
+    APP_PATH="$HOME/Desktop/Clio.app"
+elif [ -d "/Applications/Clio.app" ]; then
+    APP_PATH="/Applications/Clio.app"
+else
+    APP_PATH="${CLIO_APP_PATH:-$HOME/Desktop/Clio.app}"
+fi
 
 is_backend_running() {
     curl -s --max-time 0.3 "${BASE_URL}/api/status" > /dev/null 2>&1

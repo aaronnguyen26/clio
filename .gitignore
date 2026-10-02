@@ -28,6 +28,7 @@ docs/
 .pytest_cache/
 .coverage
 htmlcov/
+GEMINI.md
 
 # macOS & Editor
 .DS_Store

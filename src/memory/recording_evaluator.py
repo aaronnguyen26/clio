@@ -111,9 +111,13 @@ class RecordingQualityEvaluator:
         bin_probe = project_root / "bin" / "clio-probe"
         if bin_probe.exists() and os.access(bin_probe, os.X_OK):
             return bin_probe
-        app_probe = Path("/Users/minhnguyen/Desktop/Clio.app/Contents/MacOS/clio-probe")
-        if app_probe.exists() and os.access(app_probe, os.X_OK):
-            return app_probe
+        candidate_probe_paths = [
+            Path.home() / "Desktop" / "Clio.app" / "Contents" / "MacOS" / "clio-probe",
+            Path("/Applications/Clio.app/Contents/MacOS/clio-probe"),
+        ]
+        for app_probe in candidate_probe_paths:
+            if app_probe.exists() and os.access(app_probe, os.X_OK):
+                return app_probe
         return None
 
     @classmethod
