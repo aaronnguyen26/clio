@@ -12,6 +12,8 @@ ENV/
 # Build artifacts & temp
 bin/clio-bar
 bin/clio-probe
+bin/clio-recorder
+bin/clio-synthesizer
 dist/
 main
 extract/
@@ -22,11 +24,7 @@ Clio.app/
 # Testing & Development Internals (excluded from public app repo)
 tests/
 run_tests.py
-pytest.ini
-TEST_INFRA.md
-AUDIT_REPORT.md
-architecture.md
-ai_dissection_architecture.md
+docs/
 .pytest_cache/
 .coverage
 htmlcov/

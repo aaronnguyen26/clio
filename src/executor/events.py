@@ -41,6 +41,7 @@ class EventType(str, Enum):
     # Compatibility / Stalled Step Events
     TASK_STALLED = "task_stalled"
     RECOVERY_ATTEMPT = "recovery_attempt"
+    STATUS_UPDATE = "status_update"
 
 
 @dataclass
@@ -430,3 +431,8 @@ class ExecutionEventBus:
             self._wildcard_subscribers.clear()
             self._history.clear()
             self._errors.clear()
+
+
+# Ergonomic shorthand alias
+ExecutionBus = ExecutionEventBus
+

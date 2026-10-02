@@ -36,6 +36,9 @@ from src.memory.capture import LiveDemonstrationCapture
 from src.memory.engine import TaskMemoryEngine
 from src.memory.models import WorkflowSpec
 from src.memory.retrieval import NLRetrievalEngine
+from src.walkthrough.models import WalkthroughMode, WalkthroughPlan
+from src.walkthrough.router import HybridWalkthroughRouter
+from src.walkthrough.tutor import WalkthroughStatus, WalkthroughTutor
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +133,13 @@ class ClioServer:
             throttle_ms=400.0,
         )
 
+        self.walkthrough_router = HybridWalkthroughRouter()
+        self.walkthrough_tutor = WalkthroughTutor(
+            virtual_cursor=self.virtual_cursor,
+            bus=self.bus,
+            mock=is_mock,
+        )
+
         # State tracking
         self._lock = threading.RLock()
         self._is_executing = False
@@ -210,6 +220,19 @@ class ClioServer:
             self._broadcast_sse(data)
 
         self.virtual_cursor.add_listener(_on_cursor_event)
+
+        # 4. Walkthrough Tutor Telemetry
+        def _on_walkthrough_event(data: Dict[str, Any]) -> None:
+            self._broadcast_sse(data)
+            status = str(data.get("status", "")).upper()
+            if status in ("COMPLETED", "CANCELLED"):
+                self._broadcast_sse({
+                    "type": "ui",
+                    "action": "show",
+                    "timestamp": time.time(),
+                })
+
+        self.walkthrough_tutor.add_listener(_on_walkthrough_event)
 
     def _broadcast_sse(self, data: Dict[str, Any]) -> None:
         """Pushes a message dict to all active SSE queues using ring-buffer drop-oldest behavior."""
@@ -1023,6 +1046,23 @@ class ClioServer:
                         self._is_executing = False
                     return {"success": False, "error": f"Workflow '{workflow_id}' not found."}
             elif query:
+                # Walkthrough Intent Detection
+                walkthrough_pattern = r"^(?:please\s+)?(?:teach|show|guide|walk)\s+(?:me\s+)?(?:how\s+to\s+|through\s+)?|^(?:how\s+(?:do|can)\s+i\s+)|^tutorial\s+on\s+"
+                if re.search(walkthrough_pattern, query.strip(), re.IGNORECASE):
+                    with self._lock:
+                        self._is_executing = False
+                    plan, tier = self.walkthrough_router.resolve_plan(query)
+                    self.walkthrough_tutor.load_plan(plan)
+                    self.walkthrough_tutor.start()
+                    return {
+                        "success": True,
+                        "task_id": plan.walkthrough_id,
+                        "mode": "walkthrough",
+                        "tier": tier,
+                        "plan": plan.to_dict(),
+                        "message": f"Starting walkthrough: {plan.goal}",
+                    }
+
                 # Anaphoric reference resolution ("perform that action", "do that action", "run that", etc.)
                 cleaned_q = re.sub(r"^(hey|hello|hi)(\s+clio)?[,!]?\s*", "", query, flags=re.IGNORECASE).strip()
                 cleaned_q = re.sub(r"^please\s+", "", cleaned_q, flags=re.IGNORECASE).strip()
@@ -1379,6 +1419,11 @@ class ClioServer:
                     self._send_json(HTTPStatus.OK, server_instance.get_ai_status())
                     return
 
+                # 6e. Walkthrough Status
+                if path == "/api/walkthrough/status":
+                    self._send_json(HTTPStatus.OK, server_instance.walkthrough_tutor.get_telemetry())
+                    return
+
                 # Unknown GET
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
@@ -1417,6 +1462,61 @@ class ClioServer:
                     )
                     status_code = HTTPStatus.OK if res.get("success") else HTTPStatus.BAD_REQUEST
                     self._send_json(status_code, res)
+                    return
+
+                # 1w. Walkthrough Endpoints
+                if path == "/api/walkthrough/start":
+                    query = (body.get("query") or body.get("goal") or "").strip()
+                    mode_str = body.get("mode", "guided_demo")
+                    mode = WalkthroughMode.INTERACTIVE_TUTOR if mode_str == "interactive" else WalkthroughMode.GUIDED_DEMO
+                    context = body.get("context") if isinstance(body.get("context"), dict) else None
+                    plan, tier = server_instance.walkthrough_router.resolve_plan(query, mode=mode, context=context)
+                    server_instance.walkthrough_tutor.load_plan(plan)
+                    server_instance.walkthrough_tutor.start()
+                    self._send_json(HTTPStatus.OK, {
+                        "success": True,
+                        "tier": tier,
+                        "plan": plan.to_dict(),
+                        "telemetry": server_instance.walkthrough_tutor.get_telemetry(),
+                    })
+                    return
+
+                if path == "/api/walkthrough/action":
+                    action = (body.get("action") or "").lower().strip()
+                    tutor = server_instance.walkthrough_tutor
+                    if action == "next":
+                        success = tutor.step_forward()
+                    elif action in ("prev", "previous", "back"):
+                        success = tutor.step_backward()
+                    elif action == "pause":
+                        tutor.pause()
+                        success = True
+                    elif action == "resume":
+                        tutor.resume()
+                        success = True
+                    elif action == "retry":
+                        tutor.retry_step()
+                        success = True
+                    elif action in ("user_action", "click", "complete_step"):
+                        success = tutor.simulate_user_action()
+                    else:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"Unknown action: {action}"})
+                        return
+
+                    self._send_json(HTTPStatus.OK, {
+                        "success": success,
+                        "status": tutor.status.value,
+                        "telemetry": tutor.get_telemetry(),
+                    })
+                    return
+
+                if path == "/api/walkthrough/stop":
+                    server_instance.walkthrough_tutor.stop()
+                    self._send_json(HTTPStatus.OK, {
+                        "success": True,
+                        "status": server_instance.walkthrough_tutor.status.value,
+                        "telemetry": server_instance.walkthrough_tutor.get_telemetry(),
+                    })
                     return
 
                 # 1b. Companion Chat & Natural Language Turn (Bug #1 fix)

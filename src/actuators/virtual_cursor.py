@@ -56,6 +56,7 @@ class VirtualCursorState(str, Enum):
     HOVERING = "HOVERING"
     CLICKING = "CLICKING"
     DRAGGING = "DRAGGING"
+    PULSING = "PULSING"
 
 
 # =============================================================================
@@ -863,6 +864,41 @@ class VirtualCursor:
             if not self._mock and duration > 0:
                 time.sleep(duration)
 
+            self._state = VirtualCursorState.IDLE
+
+    def wiggle_at(self, x: float, y: float, amplitude: float = 8.0, oscillations: int = 2) -> None:
+        """Subtle attention-grabbing cursor wiggle at target coordinates."""
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise InputSynthesisError(f"Invalid non-finite wiggle coordinates: ({x}, {y})")
+
+        self.move_to(x, y, duration=0.1, smooth=True)
+        for i in range(oscillations * 2):
+            dx = amplitude if (i % 2 == 0) else -amplitude
+            self.move_to(x + dx, y, duration=0.08, smooth=True)
+        self.move_to(x, y, duration=0.08, smooth=True)
+
+    def pulse_at(self, x: float, y: float, duration: float = 0.4) -> None:
+        """Emits a pulsing beacon event at target element location."""
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise InputSynthesisError(f"Invalid non-finite pulse coordinates: ({x}, {y})")
+
+        if (self._vx != x) or (self._vy != y):
+            self.move_to(x, y, duration=0.1, smooth=True)
+
+        with self._lock:
+            self._state = VirtualCursorState.PULSING
+            pulse_event = VirtualCursorEvent(
+                event_type="pulse",
+                x=self._vx,
+                y=self._vy,
+                duration=duration,
+                state=self._state,
+                target_pid=self.target_pid,
+                target_window_id=self.target_window_id,
+            )
+            self._record_event(pulse_event)
+            if not self._mock and duration > 0:
+                time.sleep(duration)
             self._state = VirtualCursorState.IDLE
 
     def scroll(self, dx: int = 0, dy: int = 0) -> None:

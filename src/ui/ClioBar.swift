@@ -794,11 +794,11 @@ struct MacCursorArrowShape: Shape {
 struct VirtualCursorView: View {
     @ObservedObject var manager: VirtualCursorOverlayManager
 
-    // Custom distinct vibrant color for Clio's physical cursor: Electric Violet/Amethyst
+    // Authentic Obsidian Monochrome Cursor Arrow
     private let arrowGradient = LinearGradient(
         colors: [
-            Color(red: 0.72, green: 0.38, blue: 1.0),   // #B861FF
-            Color(red: 0.48, green: 0.20, blue: 0.96)    // #7B33F5
+            Color(red: 0.18, green: 0.19, blue: 0.22),
+            Color(red: 0.06, green: 0.06, blue: 0.08)
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
@@ -809,16 +809,16 @@ struct VirtualCursorView: View {
             // Click wave ripple from arrow tip
             if manager.isClicking {
                 Circle()
-                    .stroke(Color(red: 0.75, green: 0.40, blue: 1.0).opacity(0.85), lineWidth: 2)
+                    .stroke(Color.white.opacity(0.85), lineWidth: 2)
                     .frame(width: 32, height: 32)
                     .scaleEffect(1.5)
                     .position(x: 2, y: 2)
                     .animation(.easeOut(duration: 0.25), value: manager.isClicking)
             }
 
-            // Authentic Mac Pointer Arrow in Electric Purple Accent
+            // Authentic Mac Pointer Arrow in Obsidian Black
             ZStack {
-                // Black drop shadow/outline for crisp contrast on any background
+                // Drop shadow/outer outline for crisp contrast on any background
                 MacCursorArrowShape()
                     .stroke(Color.black, lineWidth: 2.5)
                     .frame(width: 17, height: 25)
@@ -828,9 +828,9 @@ struct VirtualCursorView: View {
                     .frame(width: 17, height: 25)
                     .overlay(
                         MacCursorArrowShape()
-                            .stroke(Color.white.opacity(0.4), lineWidth: 0.8)
+                            .stroke(Color.white.opacity(0.85), lineWidth: 0.9)
                     )
-                    .shadow(color: Color(red: 0.65, green: 0.30, blue: 1.0).opacity(0.6), radius: 4, x: 0, y: 1)
+                    .shadow(color: Color.black.opacity(0.65), radius: 4, x: 0, y: 1)
             }
             .scaleEffect(manager.isClicking ? 0.90 : 1.0)
             .animation(.easeInOut(duration: 0.1), value: manager.isClicking)
@@ -839,7 +839,7 @@ struct VirtualCursorView: View {
             // "Clio" Name Badge beside the pointer arrow
             HStack(spacing: 3) {
                 Circle()
-                    .fill(Color(red: 0.75, green: 0.40, blue: 1.0))
+                    .fill(Color.white)
                     .frame(width: 4, height: 4)
                 Text("Clio")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
@@ -849,10 +849,10 @@ struct VirtualCursorView: View {
             .padding(.vertical, 2.5)
             .background(
                 Capsule()
-                    .fill(Color(red: 0.08, green: 0.08, blue: 0.12).opacity(0.92))
+                    .fill(Color(red: 0.08, green: 0.08, blue: 0.10).opacity(0.95))
                     .overlay(
                         Capsule()
-                            .stroke(Color(red: 0.75, green: 0.40, blue: 1.0).opacity(0.8), lineWidth: 1)
+                            .stroke(Color.white.opacity(0.3), lineWidth: 1)
                     )
             )
             .shadow(color: Color.black.opacity(0.4), radius: 4, x: 0, y: 2)
@@ -897,6 +897,10 @@ final class VirtualCursorOverlayManager: ObservableObject {
     }
 
     func updatePosition(x: CGFloat, y: CGFloat, state: String) {
+        if x < 0 || y < 0 {
+            hide()
+            return
+        }
         guard let screen = NSScreen.main else { return }
         let screenH = screen.frame.height
         // In macOS coordinates: tip of arrow is at (2, 2) in panel
@@ -922,6 +926,209 @@ final class VirtualCursorOverlayManager: ObservableObject {
     }
 }
 
+// MARK: - Walkthrough Tutorial Card & Spotlight Overlay
+
+struct WalkthroughStepSummary: Identifiable, Equatable {
+    let id: Int
+    let stepIndex: Int
+    let title: String
+    let instruction: String
+}
+
+struct WalkthroughCalloutCardView: View {
+    @ObservedObject var manager: WalkthroughOverlayManager
+
+    var body: some View {
+        VStack(spacing: 5) {
+            // Header Row: Micro cap icon + "CLIO TUTOR", step badge, Spacer, dismiss 'x'
+            HStack(spacing: 6) {
+                HStack(spacing: 4) {
+                    Image(systemName: "graduationcap.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text("CLIO TUTOR")
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                }
+
+                Text(manager.stepBadge)
+                    .font(.system(size: 7.5, weight: .semibold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum.opacity(0.8))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(Capsule().fill(Color.white.opacity(0.08)))
+                    .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.7))
+
+                Spacer()
+
+                Button(action: { manager.stopWalkthrough() }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .help("Stop Walkthrough")
+            }
+
+            // Body instruction (compact, 1-2 lines)
+            Text(manager.instruction)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundColor(.white)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 0)
+
+            // Ultra-thin 2px progress bar
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.12))
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.7), Color.white],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(4, geo.size.width * CGFloat(manager.currentStepIndex) / CGFloat(max(1, manager.totalSteps))))
+                }
+            }
+            .frame(height: 2)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(width: 310, height: 72)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(red: 0.08, green: 0.08, blue: 0.10).opacity(0.96))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(0.16), lineWidth: 1)
+                )
+        )
+        .shadow(color: Color.black.opacity(0.5), radius: 12, x: 0, y: 4)
+    }
+}
+
+@MainActor
+final class WalkthroughOverlayManager: ObservableObject {
+    static let shared = WalkthroughOverlayManager()
+    private var window: NSPanel?
+
+    @Published var isVisible: Bool = false
+    @Published var goal: String = ""
+    @Published var stepBadge: String = "STEP 1 OF 3"
+    @Published var instruction: String = ""
+    @Published var explanation: String = ""
+    @Published var steps: [WalkthroughStepSummary] = []
+    @Published var currentStepIndex: Int = 1
+    @Published var totalSteps: Int = 1
+    @Published var autoAdvance: Bool = true
+
+    init() {
+        setupOverlay()
+    }
+
+    private func setupOverlay() {
+        let panel = NSPanel(
+            contentRect: NSRect(x: -600, y: -600, width: 310, height: 72),
+            styleMask: [.nonactivatingPanel, .borderless],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.isMovableByWindowBackground = false
+        panel.isMovable = false
+
+        let view = WalkthroughCalloutCardView(manager: self)
+        panel.contentView = NSHostingView(rootView: view)
+        panel.orderOut(nil)
+        self.window = panel
+    }
+
+    func update(data: [String: Any]) {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let screenRect = screen.visibleFrame
+
+        let curIdx = data["current_step_index"] as? Int ?? 1
+        let total = data["total_steps"] as? Int ?? 1
+        self.currentStepIndex = curIdx
+        self.totalSteps = total
+        self.stepBadge = "STEP \(curIdx) OF \(total)"
+        self.autoAdvance = data["auto_advance"] as? Bool ?? true
+        if let g = data["goal"] as? String, !g.isEmpty {
+            self.goal = g
+        }
+
+        if let step = data["step"] as? [String: Any] {
+            self.instruction = step["instruction"] as? String ?? ""
+            self.explanation = step["explanation"] as? String ?? ""
+        }
+
+        if let rawSteps = data["steps"] as? [[String: Any]] {
+            self.steps = rawSteps.compactMap { dict in
+                let idx = dict["step_index"] as? Int ?? 0
+                let title = dict["title"] as? String ?? "Step \(idx)"
+                let inst = dict["instruction"] as? String ?? ""
+                return WalkthroughStepSummary(id: idx, stepIndex: idx, title: title, instruction: inst)
+            }
+        }
+
+        let status = (data["status"] as? String ?? "").uppercased()
+
+        if status == "COMPLETED" || status == "CANCELLED" || status == "IDLE" {
+            hide()
+            VirtualCursorOverlayManager.shared.hide()
+            AppDelegate.shared?.showPanel()
+            return
+        }
+
+        let cardW: CGFloat = 310
+        let cardH: CGFloat = 72
+        let padding: CGFloat = 20
+
+        // Stationed firmly on the bottom-right corner of the screen
+        let targetX = screenRect.origin.x + screenRect.width - cardW - padding
+        let targetY = screenRect.origin.y + padding
+
+        window?.setFrame(NSRect(x: targetX, y: targetY, width: cardW, height: cardH), display: true)
+        if window?.isVisible == false {
+            window?.orderFront(nil)
+        }
+        self.isVisible = true
+    }
+
+    func hide() {
+        window?.orderOut(nil)
+        window?.setFrameOrigin(NSPoint(x: -600, y: -600))
+        self.isVisible = false
+    }
+
+    func stopWalkthrough() {
+        guard let url = URL(string: "http://127.0.0.1:8765/api/walkthrough/stop") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [:])
+        Task {
+            _ = try? await URLSession.shared.data(for: req)
+            await MainActor.run {
+                self.hide()
+                VirtualCursorOverlayManager.shared.hide()
+                AppDelegate.shared?.showPanel()
+            }
+        }
+    }
+}
+
 // MARK: - View Model
 
 @MainActor
@@ -932,6 +1139,7 @@ final class ClioViewModel: ObservableObject {
     @Published var isExecuting: Bool = false
     @Published var isRecording: Bool = false
     @Published var isListening: Bool = false
+    @Published var isWalkthroughMode: Bool = false
     @Published var isBackgroundMode: Bool = false
     @Published var showSaveModal: Bool = false
     @Published var previewVideoURL: URL? = nil
@@ -1195,6 +1403,12 @@ final class ClioViewModel: ObservableObject {
     }
 
     func search(text: String) async {
+        if isWalkthroughMode {
+            self.workflows = []
+            self.inspectWorkflow = nil
+            self.selectedIndex = 0
+            return
+        }
         if isMemoryCommand {
             if allSavedWorkflows.isEmpty {
                 await fetchWorkflows()
@@ -1212,6 +1426,11 @@ final class ClioViewModel: ObservableObject {
         do {
             let req = makeAuthorizedRequest(url: url)
             let (data, _) = try await URLSession.shared.data(for: req)
+            if self.isWalkthroughMode {
+                self.workflows = []
+                self.inspectWorkflow = nil
+                return
+            }
             let items = try JSONDecoder().decode([WorkflowItem].self, from: data)
             self.workflows = self.deduplicateWorkflows(items)
             self.selectedIndex = 0
@@ -1222,6 +1441,10 @@ final class ClioViewModel: ObservableObject {
     }
 
     func checkAndInspectQuery(_ text: String) {
+        if isWalkthroughMode {
+            self.inspectWorkflow = nil
+            return
+        }
         let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
         guard !trimmed.isEmpty else {
             self.inspectWorkflow = nil
@@ -1244,6 +1467,10 @@ final class ClioViewModel: ObservableObject {
     }
 
     func inspectWorkflowDetails(_ wf: WorkflowItem) {
+        if isWalkthroughMode {
+            self.inspectWorkflow = nil
+            return
+        }
         self.inspectWorkflow = wf
         // If steps are not yet populated, fetch from server
         if wf.steps == nil || wf.steps!.isEmpty {
@@ -1279,6 +1506,47 @@ final class ClioViewModel: ObservableObject {
         self.inspectWorkflow = nil
     }
 
+    func toggleWalkthroughMode() {
+        isWalkthroughMode.toggle()
+        if isWalkthroughMode {
+            self.workflows = []
+            self.inspectWorkflow = nil
+            self.statusPillText = "CLIO • TEACH ME"
+        } else {
+            self.statusPillText = "CLIO • READY"
+        }
+    }
+
+    func startWalkthrough(query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+
+        guard let url = URL(string: "/api/walkthrough/start", relativeTo: baseURL) else { return }
+        var req = makeAuthorizedRequest(url: url, method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let frontmostApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? "Finder"
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
+        let payload: [String: Any] = [
+            "query": trimmed,
+            "mode": "guided_demo",
+            "context": [
+                "active_app": frontmostApp,
+                "os_version": osVersion,
+            ],
+        ]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        Task {
+            _ = try? await URLSession.shared.data(for: req)
+            await MainActor.run {
+                self.query = ""
+                self.isWalkthroughMode = false
+                AppDelegate.shared?.hidePanel()
+            }
+        }
+    }
+
     func executeSelected() {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
@@ -1290,6 +1558,13 @@ final class ClioViewModel: ObservableObject {
             self.query = ""
             self.inspectWorkflow = nil
             AppDelegate.shared?.hidePanel()
+            return
+        }
+
+        // 1b. Walkthrough Mode or Trigger Execution
+        let isWalkthroughTrigger = lower.hasPrefix("teach me") || lower.hasPrefix("how do i") || lower.hasPrefix("how can i") || lower.hasPrefix("show me how") || lower.hasPrefix("walk me through") || lower.hasPrefix("tutorial on")
+        if isWalkthroughMode || isWalkthroughTrigger {
+            startWalkthrough(query: trimmed)
             return
         }
 
@@ -1987,8 +2262,30 @@ final class ClioViewModel: ObservableObject {
             let x = obj["x"] as? Double ?? 0
             let y = obj["y"] as? Double ?? 0
             let state = (obj["state"] as? String ?? "IDLE").uppercased()
+            let isVisible = obj["is_visible"] as? Bool ?? true
             self.vcCoords = "VC (\(Int(x)), \(Int(y))) • \(state)"
-            VirtualCursorOverlayManager.shared.updatePosition(x: CGFloat(x), y: CGFloat(y), state: state)
+            if !isVisible || x < 0 || y < 0 {
+                VirtualCursorOverlayManager.shared.hide()
+            } else {
+                VirtualCursorOverlayManager.shared.updatePosition(x: CGFloat(x), y: CGFloat(y), state: state)
+            }
+        } else if type == "walkthrough" {
+            Task { @MainActor in
+                WalkthroughOverlayManager.shared.update(data: obj)
+                let status = (obj["status"] as? String ?? "").uppercased()
+                if status == "COMPLETED" || status == "CANCELLED" {
+                    self.statusPillText = "CLIO • READY"
+                    self.currentStepText = ""
+                    WalkthroughOverlayManager.shared.hide()
+                    VirtualCursorOverlayManager.shared.hide()
+                    AppDelegate.shared?.showPanel()
+                } else {
+                    self.statusPillText = "CLIO • TEACHING"
+                    if let step = obj["step"] as? [String: Any], let inst = step["instruction"] as? String {
+                        self.currentStepText = inst
+                    }
+                }
+            }
         } else if type == "ui" {
             let action = obj["action"] as? String ?? ""
             Task { @MainActor in
@@ -2011,28 +2308,46 @@ struct ClioBarView: View {
     @FocusState private var isFieldFocused: Bool
 
     private var currentTargetHeight: CGFloat {
-        if vm.showSaveModal {
-            return 430
+        var base: CGFloat = 58
+        if WalkthroughOverlayManager.shared.isVisible {
+            base += 32
         }
-        if let inspected = vm.inspectWorkflow {
+        if vm.showSaveModal {
+            return base + 372
+        }
+        if !vm.isWalkthroughMode, let inspected = vm.inspectWorkflow {
             let count = max(1, inspected.orderedSteps.count)
             let rows = min(count, 5)
-            return 58 + 48 + CGFloat(rows * 36) + 48 + 24
+            return base + 48 + CGFloat(rows * 36) + 48 + 24
         }
         if vm.isMemoryCommand {
             let count = vm.memoryWorkflows.count
             if count == 0 {
-                return 58 + 140
+                return base + 140
             }
             let rows = min(count, 5)
-            return 58 + 36 + CGFloat(rows * 48) + 34
+            return base + 36 + CGFloat(rows * 48) + 34
         }
-        let trimmed = vm.query.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty && !vm.workflows.isEmpty {
-            let rowCount = min(vm.workflows.count, 4)
-            return 58 + CGFloat(rowCount * 38) + 16
+        if !vm.isWalkthroughMode {
+            let trimmed = vm.query.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty && !vm.workflows.isEmpty {
+                let rowCount = min(vm.workflows.count, 4)
+                return base + CGFloat(rowCount * 38) + 16
+            }
         }
-        return 58
+        return base
+    }
+
+    private var hasActiveContentPanels: Bool {
+        vm.showSaveModal ||
+        (!vm.isWalkthroughMode && vm.inspectWorkflow != nil) ||
+        vm.isMemoryCommand ||
+        WalkthroughOverlayManager.shared.isVisible ||
+        (!vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty)
+    }
+
+    private var barCornerRadius: CGFloat {
+        hasActiveContentPanels ? 22 : 29
     }
 
     var body: some View {
@@ -2073,7 +2388,11 @@ struct ClioBarView: View {
                 }
 
                 // Command Search Input
-                TextField(vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything...", text: $vm.query)
+                TextField(
+                    vm.isWalkthroughMode ? "What do you want Clio to teach you? (e.g. 'dark mode', 'hot corners')..." :
+                    (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything..."),
+                    text: $vm.query
+                )
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, weight: .regular))
                     .foregroundColor(ObsidianTheme.platinum)
@@ -2084,6 +2403,37 @@ struct ClioBarView: View {
                     .onChange(of: vm.query) { newQuery in
                         Task { await vm.search(text: newQuery) }
                     }
+
+                // Interactive Walkthrough Button (Monochrome Obsidian/Platinum)
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        vm.toggleWalkthroughMode()
+                    }
+                    isFieldFocused = true
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: vm.isWalkthroughMode ? "graduationcap.fill" : "graduationcap")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(vm.isWalkthroughMode ? "TEACH ME" : "WALKTHROUGH")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    }
+                    .foregroundColor(vm.isWalkthroughMode ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        vm.isWalkthroughMode ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated
+                    )
+                    .overlay(
+                        Capsule().stroke(
+                            vm.isWalkthroughMode ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle,
+                            lineWidth: 1
+                        )
+                    )
+                    .clipShape(Capsule())
+                    .shadow(color: vm.isWalkthroughMode ? Color.white.opacity(0.15) : Color.clear, radius: 4)
+                }
+                .buttonStyle(.plain)
+                .help("Toggle interactive walkthrough mode (Clio teaches you on screen)")
 
                 // Dictation Microphone Button
                 Button(action: { vm.toggleDictation() }) {
@@ -2107,27 +2457,30 @@ struct ClioBarView: View {
                 .buttonStyle(.plain)
                 .help("Dictate command with voice")
 
-                // Single-Color Record Demonstration Button
-                Button(action: { vm.toggleRecording() }) {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                            .frame(width: 6, height: 6)
-                            .opacity(vm.isRecording ? 1.0 : 0.6)
-                        Text(vm.isRecording ? "● STOP & SAVE" : "RECORD")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                // Single-Color Record Demonstration Button (Hidden when Walkthrough mode is active)
+                if !vm.isWalkthroughMode {
+                    Button(action: { vm.toggleRecording() }) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                                .frame(width: 6, height: 6)
+                                .opacity(vm.isRecording ? 1.0 : 0.6)
+                            Text(vm.isRecording ? "● STOP & SAVE" : "RECORD")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        }
+                        .foregroundColor(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                        .overlay(
+                            Capsule().stroke(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
+                        )
+                        .clipShape(Capsule())
                     }
-                    .foregroundColor(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                    .overlay(
-                        Capsule().stroke(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
-                    )
-                    .clipShape(Capsule())
+                    .buttonStyle(.plain)
+                    .help("Record a new desktop demonstration")
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 }
-                .buttonStyle(.plain)
-                .help("Record a new desktop demonstration")
 
                 // Dismiss / Hide Bar Button
                 Button(action: {
@@ -2147,25 +2500,65 @@ struct ClioBarView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
 
-            // Content panels
+            // Walkthrough Active Indicator (Obsidian Monochrome)
+            if WalkthroughOverlayManager.shared.isVisible {
+                Divider().background(ObsidianTheme.borderSubtle)
+                HStack(spacing: 8) {
+                    Image(systemName: "graduationcap.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text("WALKTHROUGH ACTIVE:")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text(WalkthroughOverlayManager.shared.goal.isEmpty ? WalkthroughOverlayManager.shared.instruction : WalkthroughOverlayManager.shared.goal)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(ObsidianTheme.platinum)
+                        .lineLimit(1)
+                    Spacer()
+                    Button(action: {
+                        WalkthroughOverlayManager.shared.stopWalkthrough()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "xmark.circle")
+                                .font(.system(size: 9))
+                            Text("Stop")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        }
+                        .foregroundColor(Color.red.opacity(0.85))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.red.opacity(0.12))
+                        .cornerRadius(4)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.red.opacity(0.3), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(ObsidianTheme.surfaceElevated)
+            }
+
+            // Content panels (Suppressed completely in Walkthrough mode)
             if vm.showSaveModal {
                 saveModalView
-            } else if let inspected = vm.inspectWorkflow {
+            } else if !vm.isWalkthroughMode, let inspected = vm.inspectWorkflow {
                 inspectedWorkflowView(inspected)
             } else if vm.isMemoryCommand {
                 memorySpaceView
-            } else if !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty {
+            } else if !vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty {
                 searchResultsView
             }
         }
-        .frame(width: 680)
-        .background(ObsidianTheme.bgGlass)
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
+        .frame(width: 720)
+        .background(
+            RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
+                .fill(ObsidianTheme.bgGlass)
         )
-        .shadow(color: Color.black.opacity(0.65), radius: 24, x: 0, y: 12)
+        .clipShape(RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
+                .stroke(Color.white.opacity(0.18), lineWidth: 1.2)
+        )
         .onAppear {
             isFieldFocused = true
         }
@@ -2192,7 +2585,13 @@ struct ClioBarView: View {
         .onChange(of: vm.allSavedWorkflows.count) { _ in
             AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
         }
+        .onChange(of: vm.isWalkthroughMode) { _ in
+            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+        }
         .onChange(of: vm.query) { _ in
+            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+        }
+        .onChange(of: WalkthroughOverlayManager.shared.isVisible) { _ in
             AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("DeleteSelectedWorkflow"))) { _ in
@@ -2933,7 +3332,7 @@ final class SpotlightPanel: NSPanel {
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         self.isOpaque = false
         self.backgroundColor = .clear
-        self.hasShadow = true
+        self.hasShadow = false
         self.isMovableByWindowBackground = true
         self.titleVisibility = .hidden
         self.titlebarAppearsTransparent = true
@@ -2952,16 +3351,61 @@ final class SpotlightPanel: NSPanel {
             NotificationCenter.default.post(name: NSNotification.Name("ClioBarEscapeKey"), object: nil)
             return true
         }
-        // Cmd + W
-        if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "w" {
-            AppDelegate.shared?.hidePanel()
-            return true
+
+        let isCmd = event.modifierFlags.contains(.command)
+        let isShift = event.modifierFlags.contains(.shift)
+        let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+        // Standard macOS Command shortcuts for seamless Mac user experience
+        if isCmd {
+            switch chars {
+            case "w":
+                AppDelegate.shared?.hidePanel()
+                return true
+            case "q":
+                NSApp.terminate(nil)
+                return true
+            case "c":
+                if NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self) {
+                    return true
+                }
+            case "v":
+                if NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: self) {
+                    return true
+                }
+            case "x":
+                if NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: self) {
+                    return true
+                }
+            case "a":
+                if NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: self) {
+                    return true
+                }
+            case "z":
+                let action = isShift ? Selector(("redo:")) : Selector(("undo:"))
+                if NSApp.sendAction(action, to: nil, from: self) {
+                    return true
+                }
+            default:
+                break
+            }
         }
-        // Cmd + Backspace (51) to delete selected workflow
-        if event.modifierFlags.contains(.command) && event.keyCode == 51 {
-            NotificationCenter.default.post(name: NSNotification.Name("DeleteSelectedWorkflow"), object: nil)
-            return true
+
+        // Cmd + Backspace (51):
+        // If user is currently editing text in a text view, delete to beginning of line (macOS standard).
+        // Otherwise, if in workflow inspection/selection, delete selected workflow.
+        if isCmd && event.keyCode == 51 {
+            let isTextEditing = (self.firstResponder is NSTextView || self.firstResponder is NSText)
+            if isTextEditing {
+                if NSApp.sendAction(Selector(("deleteToBeginningOfLine:")), to: nil, from: self) {
+                    return true
+                }
+            } else {
+                NotificationCenter.default.post(name: NSNotification.Name("DeleteSelectedWorkflow"), object: nil)
+                return true
+            }
         }
+
         // Down Arrow (125)
         if event.keyCode == 125 {
             NotificationCenter.default.post(name: NSNotification.Name("SelectNextWorkflow"), object: nil)
@@ -2973,12 +3417,12 @@ final class SpotlightPanel: NSPanel {
             return true
         }
         // Left Arrow (123) with Cmd or Option
-        if event.keyCode == 123 && (event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option)) {
+        if event.keyCode == 123 && (isCmd || event.modifierFlags.contains(.option)) {
             NotificationCenter.default.post(name: NSNotification.Name("StepPrevWorkflow"), object: nil)
             return true
         }
         // Right Arrow (124) with Cmd or Option
-        if event.keyCode == 124 && (event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option)) {
+        if event.keyCode == 124 && (isCmd || event.modifierFlags.contains(.option)) {
             NotificationCenter.default.post(name: NSNotification.Name("StepNextWorkflow"), object: nil)
             return true
         }
@@ -3022,7 +3466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func updatePanelHeight(_ newHeight: CGFloat) {
         guard let panel = panel, let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let screenRect = screen.visibleFrame
-        let panelWidth: CGFloat = 680
+        let panelWidth: CGFloat = 720
         let currentFrame = panel.frame
         let newY = screenRect.origin.y + screenRect.height - newHeight - 120
         let newFrame = NSRect(x: currentFrame.origin.x, y: newY, width: panelWidth, height: newHeight)
@@ -3039,20 +3483,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = AXIsProcessTrusted()
         _ = VirtualCursorOverlayManager.shared
 
+        setupMainMenu()
+
         let screenRect = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let panelWidth: CGFloat = 680
+        let panelWidth: CGFloat = 720
         let panelHeight: CGFloat = 58
         let x = screenRect.origin.x + (screenRect.width - panelWidth) / 2
         let y = screenRect.origin.y + screenRect.height - panelHeight - 120
 
         let panel = SpotlightPanel(contentRect: NSRect(x: x, y: y, width: panelWidth, height: panelHeight))
-        panel.contentView = NSHostingView(rootView: ClioBarView())
+        let hostingView = NSHostingView(rootView: ClioBarView())
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        panel.contentView = hostingView
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.panel = panel
 
         setupStatusItem()
         setupGlobalShortcut()
+    }
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // 1. Application Menu
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu(title: "Clio")
+        appMenu.addItem(withTitle: "About Clio", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Hide Clio", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthersItem = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthersItem)
+        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Quit Clio", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // 2. Edit Menu (Standard macOS Clipboard & Text editing)
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redoItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redoItem)
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        let pastePlainItem = NSMenuItem(title: "Paste and Match Style", action: Selector(("pasteAsPlainText:")), keyEquivalent: "v")
+        pastePlainItem.keyEquivalentModifierMask = [.command, .option, .shift]
+        editMenu.addItem(pastePlainItem)
+        editMenu.addItem(withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        // 3. Window Menu
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+
+        NSApp.mainMenu = mainMenu
     }
 
     private func setupStatusItem() {

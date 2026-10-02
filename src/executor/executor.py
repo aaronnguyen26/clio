@@ -1799,3 +1799,20 @@ class AutonomousWorkflowExecutor:
             memory_engine.record_execution(record)
         except Exception as e:
             logger.warning("Could not record execution telemetry to TaskMemoryEngine: %s", e)
+
+
+def _query_live_element_bounds(
+    app_name_or_bundle: str,
+    ax_title: Optional[str] = None,
+    ax_role: Optional[str] = None,
+) -> Optional[Tuple[float, float, float, float]]:
+    """Standalone helper to query on-screen accessibility element bounds via Darwin AX."""
+    from src.actuators.macos_actuator import MacOSActuator
+    actuator = MacOSActuator()
+    executor = WorkflowExecutor(actuator=actuator)
+    return executor._query_accessibility_element(
+        app_name_or_bundle=app_name_or_bundle,
+        ax_role=ax_role,
+        ax_title=ax_title,
+    )
+

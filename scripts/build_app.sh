@@ -48,7 +48,7 @@ if [ -f "bin/clio-recorder" ]; then
 fi
 
 cp src/ui/Info.plist "${APP_BUNDLE}/Contents/Info.plist"
-cp AppIcon.icns "${APP_BUNDLE}/Contents/Resources/"
+cp assets/AppIcon.icns "${APP_BUNDLE}/Contents/Resources/"
 cp assets/logo.png "${APP_BUNDLE}/Contents/Resources/"
 
 # Sync Python source while strictly excluding any bytecode caches

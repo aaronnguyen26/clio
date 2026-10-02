@@ -409,3 +409,7 @@ class NLRetrievalEngine:
         """Convenience method returning the highest confidence match, or None."""
         matches = self.query(utterance, limit=1)
         return matches[0] if matches else None
+
+    # Alias for compatibility with router and external consumers
+    match_all = query
+
