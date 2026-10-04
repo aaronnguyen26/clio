@@ -2552,28 +2552,30 @@ struct ClioBarView: View {
                 .buttonStyle(.plain)
                 .help(vm.isListening ? "Click to stop listening and dictate" : "Dictate command with voice")
 
-                // Single-Color Record Demonstration Button (Permanently anchored with fixed frame to eliminate bar shifting)
-                Button(action: { vm.toggleRecording() }) {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                            .frame(width: 6, height: 6)
-                            .opacity(vm.isRecording ? 1.0 : 0.6)
-                        Text(vm.isRecording ? "● STOP & SAVE" : "RECORD")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                // Compact Micro-Pill Record Button (Hidden when Walkthrough mode is active, while audio option remains)
+                if !vm.isWalkthroughMode {
+                    Button(action: { vm.toggleRecording() }) {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                                .frame(width: 5, height: 5)
+                                .opacity(vm.isRecording ? 1.0 : 0.7)
+                            Text(vm.isRecording ? "STOP" : "REC")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        }
+                        .foregroundColor(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                        .overlay(
+                            Capsule().stroke(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
+                        )
+                        .clipShape(Capsule())
                     }
-                    .frame(width: 80, height: 16)
-                    .foregroundColor(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                    .overlay(
-                        Capsule().stroke(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
-                    )
-                    .clipShape(Capsule())
+                    .buttonStyle(.plain)
+                    .help("Record a new desktop demonstration")
+                    .transition(.opacity)
                 }
-                .buttonStyle(.plain)
-                .help("Record a new desktop demonstration")
 
                 // Dismiss / Hide Bar Button
                 Button(action: {
