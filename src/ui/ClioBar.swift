@@ -464,6 +464,91 @@ struct WorkflowItem: Identifiable, Decodable {
     }
 }
 
+// MARK: - Slash Command Shortcuts Registry & Catalog
+
+struct SlashShortcutItem: Identifiable, Equatable {
+    let id: String
+    let command: String
+    let title: String
+    let description: String
+    let iconName: String
+    let badge: String
+    let shortcutKey: String?
+}
+
+struct SlashShortcutCatalog {
+    // Extensible catalog of slash command shortcuts for the Clio automation bar.
+    // Adding any new shortcut here automatically exposes it in the '/' falldown dropdown.
+    static let shortcuts: [SlashShortcutItem] = [
+        SlashShortcutItem(
+            id: "shortcut_memory",
+            command: "/memory",
+            title: "Memory Space",
+            description: "Inspect saved automations, demonstrated workflows, and memory space",
+            iconName: "brain.head.profile",
+            badge: "ACTION ↵",
+            shortcutKey: "⌘1"
+        ),
+        SlashShortcutItem(
+            id: "shortcut_record",
+            command: "/record",
+            title: "Record Demonstration",
+            description: "Capture screen demonstration and teach Clio a new automation",
+            iconName: "record.circle",
+            badge: "ACTION ↵",
+            shortcutKey: "⌘2"
+        ),
+        SlashShortcutItem(
+            id: "shortcut_teach",
+            command: "/teach",
+            title: "Teach Me (Walkthrough)",
+            description: "Switch to interactive guided walkthrough mode",
+            iconName: "graduationcap",
+            badge: "ACTION ↵",
+            shortcutKey: "⌘3"
+        ),
+        SlashShortcutItem(
+            id: "shortcut_help",
+            command: "/help",
+            title: "Help & Documentation",
+            description: "Open system help guides and keyboard shortcuts",
+            iconName: "questionmark.circle",
+            badge: "ACTION ↵",
+            shortcutKey: "⌘4"
+        ),
+    ]
+
+    static func matchingShortcuts(for query: String) -> [SlashShortcutItem] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard q.hasPrefix("/") else { return [] }
+        if q == "/" {
+            return shortcuts
+        }
+        let clean = q
+        let queryWithoutSlash = String(clean.dropFirst()).trimmingCharacters(in: .whitespaces)
+
+        return shortcuts.filter { item in
+            let cmd = item.command.lowercased()
+            let title = item.title.lowercased()
+            let desc = item.description.lowercased()
+
+            if cmd.hasPrefix(clean) { return true }
+            if queryWithoutSlash.isEmpty { return true }
+
+            if queryWithoutSlash.count >= 3 {
+                let titleTokens = title.split(separator: " ").map { String($0) }
+                if titleTokens.contains(where: { $0.hasPrefix(queryWithoutSlash) }) ||
+                   title.contains(queryWithoutSlash) ||
+                   desc.contains(queryWithoutSlash) {
+                    return true
+                }
+            }
+
+            return false
+        }
+    }
+}
+
 // MARK: - Curated System Recommendations Catalog
 
 struct SystemRecommendationCatalog {
@@ -1637,9 +1722,36 @@ final class ClioViewModel: ObservableObject {
     // All saved workflows in persistent memory (preserved across search queries)
     @Published var allSavedWorkflows: [WorkflowItem] = []
 
+    @Published var isMemorySpaceOpen: Bool = false
+
+    var matchingSlashCommands: [SlashShortcutItem] {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("/") && !isMemorySpaceOpen else { return [] }
+        return SlashShortcutCatalog.matchingShortcuts(for: trimmed)
+    }
+
+    var isSlashMenuVisible: Bool {
+        guard !isWalkthroughMode, !showSaveModal, inspectWorkflow == nil else { return false }
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("/"), !isMemorySpaceOpen else { return false }
+        if trimmed.hasPrefix("/memory ") {
+            return false
+        }
+        return !matchingSlashCommands.isEmpty
+    }
+
     var isMemoryCommand: Bool {
         let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return trimmed == "/memory" || trimmed.hasPrefix("/memory ")
+        if isMemorySpaceOpen {
+            return true
+        }
+        if trimmed.hasPrefix("/memory ") {
+            return true
+        }
+        if trimmed == "/memory" && !isSlashMenuVisible {
+            return true
+        }
+        return false
     }
 
     var memoryWorkflows: [WorkflowItem] {
@@ -1691,7 +1803,7 @@ final class ClioViewModel: ObservableObject {
 
     func updateRecommendationsSynchronously(for rawQuery: String) {
         let trimmed = rawQuery.trimmingCharacters(in: .whitespaces)
-        if isWalkthroughMode || isMemoryCommand || trimmed.isEmpty {
+        if isWalkthroughMode || isMemoryCommand || isSlashMenuVisible || trimmed.hasPrefix("/") || trimmed.isEmpty {
             self.recommendations = []
             self.selectedIndex = 0
             return
@@ -1757,6 +1869,12 @@ final class ClioViewModel: ObservableObject {
             inspectNextWorkflow()
             return
         }
+        if isSlashMenuVisible {
+            let count = matchingSlashCommands.count
+            guard count > 0 else { return }
+            selectedIndex = min(selectedIndex + 1, count - 1)
+            return
+        }
         let count = isMemoryCommand ? memoryWorkflows.count : recommendations.count
         guard count > 0 else { return }
         selectedIndex = min(selectedIndex + 1, count - 1)
@@ -1765,6 +1883,12 @@ final class ClioViewModel: ObservableObject {
     func selectPreviousWorkflow() {
         if inspectWorkflow != nil {
             inspectPreviousWorkflow()
+            return
+        }
+        if isSlashMenuVisible {
+            let count = matchingSlashCommands.count
+            guard count > 0 else { return }
+            selectedIndex = max(selectedIndex - 1, 0)
             return
         }
         let count = isMemoryCommand ? memoryWorkflows.count : recommendations.count
@@ -1955,6 +2079,11 @@ final class ClioViewModel: ObservableObject {
             self.recommendations = []
             self.workflows = []
             self.inspectWorkflow = nil
+            self.selectedIndex = 0
+            return
+        }
+        if isSlashMenuVisible || text.trimmingCharacters(in: .whitespaces).hasPrefix("/") {
+            self.recommendations = []
             self.selectedIndex = 0
             return
         }
@@ -2164,6 +2293,17 @@ final class ClioViewModel: ObservableObject {
             return
         }
 
+        // Slash Commands Selection: execute or switch to the selected shortcut
+        if isSlashMenuVisible {
+            let list = matchingSlashCommands
+            if selectedIndex >= 0 && selectedIndex < list.count {
+                executeSlashShortcut(list[selectedIndex])
+            } else if let first = list.first {
+                executeSlashShortcut(first)
+            }
+            return
+        }
+
         // Memory Space Selection
         if isMemoryCommand {
             let list = memoryWorkflows
@@ -2203,6 +2343,30 @@ final class ClioViewModel: ObservableObject {
 
         // Novel user instruction fallback: launch Walkthrough Tutor dynamically!
         startWalkthrough(query: trimmed)
+    }
+
+    func executeSlashShortcut(_ item: SlashShortcutItem) {
+        switch item.id {
+        case "shortcut_memory":
+            self.isMemorySpaceOpen = true
+            self.query = "/memory "
+            self.selectedIndex = 0
+            if allSavedWorkflows.isEmpty {
+                Task { await fetchWorkflows() }
+            }
+        case "shortcut_record":
+            self.query = ""
+            self.toggleRecording()
+        case "shortcut_teach":
+            self.query = ""
+            self.isWalkthroughMode = true
+        case "shortcut_help":
+            self.query = ""
+            executeSystemAction("sys_help")
+            AppDelegate.shared?.hidePanel()
+        default:
+            self.query = item.command + " "
+        }
     }
 
     func executeWorkflowOrSystemAction(_ item: WorkflowItem) {
@@ -3000,6 +3164,10 @@ struct ClioBarView: View {
             let rows = min(count, 5)
             return base + 48 + CGFloat(rows * 36) + 48 + 24
         }
+        if vm.isSlashMenuVisible {
+            let count = max(1, vm.matchingSlashCommands.count)
+            return base + 30 + CGFloat(min(count, 5) * 44) + 26
+        }
         if vm.isMemoryCommand {
             let count = vm.memoryWorkflows.count
             if count == 0 {
@@ -3021,6 +3189,7 @@ struct ClioBarView: View {
     private var hasActiveContentPanels: Bool {
         vm.showSaveModal ||
         (!vm.isWalkthroughMode && vm.inspectWorkflow != nil) ||
+        vm.isSlashMenuVisible ||
         vm.isMemoryCommand ||
         WalkthroughOverlayManager.shared.isVisible ||
         (!vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.recommendations.isEmpty)
@@ -3031,317 +3200,366 @@ struct ClioBarView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Main Top Pill Bar
-            HStack(spacing: 10) {
-                // Minimalist Obsidian Eclipse 'C' Monogram with Connection Status Pip
-                ZStack(alignment: .bottomTrailing) {
-                    ZStack {
-                        Circle()
-                            .fill(ObsidianTheme.surfaceElevated)
-                            .overlay(
-                                Circle()
-                                    .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
-                            )
-                            .frame(width: 32, height: 32)
-                        Circle()
-                            .fill(Color(red: 0.16, green: 0.17, blue: 0.19))
-                            .frame(width: 18, height: 18)
-                            .overlay(
-                                Circle()
-                                    .strokeBorder(
-                                        AngularGradient(
-                                            gradient: Gradient(colors: [
-                                                ObsidianTheme.platinum,
-                                                ObsidianTheme.platinum.opacity(0.9),
-                                                Color.clear,
-                                                Color.clear,
-                                                Color.clear,
-                                                ObsidianTheme.platinum.opacity(0.7)
-                                            ]),
-                                            center: .center,
-                                            startAngle: .degrees(90),
-                                            endAngle: .degrees(450)
-                                        ),
-                                        lineWidth: 2.2
-                                    )
-                            )
-                    }
-                    Circle()
-                        .fill(vm.isConnected ? Color(red: 0.16, green: 0.82, blue: 0.55) : ObsidianTheme.slateDark)
-                        .frame(width: 6, height: 6)
-                        .overlay(Circle().stroke(ObsidianTheme.surface, lineWidth: 1))
-                        .offset(x: 1, y: 1)
-                }
-
-                // Command Search Input with Smooth Animated Word Transition
-                ZStack(alignment: .leading) {
-                    if vm.query.isEmpty {
-                        Text(vm.isWalkthroughMode ? "Ask clio to teach you anything..." :
-                             (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything..."))
-                            .font(.system(size: 16, weight: .regular))
-                            .foregroundColor(ObsidianTheme.platinum.opacity(0.45))
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .offset(y: 3)),
-                                removal: .opacity.combined(with: .offset(y: -3))
-                            ))
-                            .id(vm.isWalkthroughMode ? "teach_placeholder" : (vm.isMemoryCommand ? "memory_placeholder" : "do_placeholder"))
-                    }
-
-                    TextField(
-                        "",
-                        text: $vm.query
-                    )
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 16, weight: .regular))
-                    .foregroundColor(ObsidianTheme.platinum)
-                    .focused($isFieldFocused)
-                    .onSubmit {
-                        vm.executeSelected()
-                    }
-                    .onChange(of: vm.query) { newQuery in
-                        Task { await vm.search(text: newQuery) }
-                    }
-                }
-
-                // Interactive Walkthrough Button (Monochrome Obsidian/Platinum) - Fixed frame prevents any layout movement
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        vm.toggleWalkthroughMode()
-                    }
-                    isFieldFocused = true
-                }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: vm.isWalkthroughMode ? "graduationcap.fill" : "graduationcap")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(vm.isWalkthroughMode ? "TEACH ME" : "WALKTHROUGH")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    }
-                    .frame(width: 96, height: 16)
-                    .foregroundColor(vm.isWalkthroughMode ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(
-                        vm.isWalkthroughMode ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated
-                    )
-                    .overlay(
-                        Capsule().stroke(
-                            vm.isWalkthroughMode ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle,
-                            lineWidth: 1
-                        )
-                    )
-                    .clipShape(Capsule())
-                    .shadow(color: vm.isWalkthroughMode ? Color.white.opacity(0.15) : Color.clear, radius: 4)
-                }
-                .buttonStyle(.plain)
-                .help("Toggle interactive walkthrough mode (Clio teaches you on screen)")
-
-                // Dictation Microphone Button
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        vm.toggleDictation()
-                    }
-                }) {
-                    HStack(spacing: 5) {
-                        if vm.isListening {
-                            WaveformBarsView()
-                            Text("LISTENING...")
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        } else {
-                            Image(systemName: "mic.fill")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                    }
-                    .foregroundColor(vm.isListening ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                    .padding(.horizontal, vm.isListening ? 10 : 9)
-                    .padding(.vertical, 5)
-                    .background(vm.isListening ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                    .overlay(
-                        Capsule().stroke(vm.isListening ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
-                    )
-                    .clipShape(Capsule())
-                    .shadow(color: vm.isListening ? Color.white.opacity(0.25) : Color.clear, radius: 6)
-                }
-                .buttonStyle(.plain)
-                .help(vm.isListening ? "Click to stop listening and dictate" : "Dictate command with voice")
-
-                // Compact Micro-Pill Record Button (Hidden when Walkthrough mode is active, while audio option remains)
-                if !vm.isWalkthroughMode {
-                    Button(action: { vm.toggleRecording() }) {
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                                .frame(width: 5, height: 5)
-                                .opacity(vm.isRecording ? 1.0 : 0.7)
-                            Text(vm.isRecording ? "STOP" : "REC")
-                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        }
-                        .foregroundColor(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                        .overlay(
-                            Capsule().stroke(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
-                        )
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Record a new desktop demonstration")
-                    .transition(.opacity)
-                }
-
-                // Dismiss / Hide Bar Button
-                Button(action: {
-                    AppDelegate.shared?.hidePanel()
-                }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(ObsidianTheme.slate)
-                        .frame(width: 24, height: 24)
-                        .background(ObsidianTheme.surfaceElevated)
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .help("Hide Clio Bar (Esc)")
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-
-            // Walkthrough Active Indicator (Obsidian Monochrome)
-            if WalkthroughOverlayManager.shared.isVisible {
-                Divider().background(ObsidianTheme.borderSubtle)
-                HStack(spacing: 8) {
-                    Image(systemName: "graduationcap.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(ObsidianTheme.platinum)
-                    Text("WALKTHROUGH ACTIVE:")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.platinum)
-                    Text(WalkthroughOverlayManager.shared.goal.isEmpty ? WalkthroughOverlayManager.shared.instruction : WalkthroughOverlayManager.shared.goal)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(ObsidianTheme.platinum)
-                        .lineLimit(1)
-                    Spacer()
-                    Button(action: {
-                        WalkthroughOverlayManager.shared.stopWalkthrough()
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "xmark.circle")
-                                .font(.system(size: 9))
-                            Text("Stop")
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        }
-                        .foregroundColor(Color.red.opacity(0.85))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Color.red.opacity(0.12))
-                        .cornerRadius(4)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.red.opacity(0.3), lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .background(ObsidianTheme.surfaceElevated)
-            }
-
-            // Content panels (Suppressed completely in Walkthrough mode)
-            if vm.showSaveModal {
-                saveModalView
-            } else if !vm.isWalkthroughMode, let inspected = vm.inspectWorkflow {
-                inspectedWorkflowView(inspected)
-            } else if vm.isMemoryCommand {
-                memorySpaceView
-            } else if !vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.recommendations.isEmpty {
-                searchResultsView
-            }
-        }
-        .frame(width: 720)
-        .background(
-            RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
-                .fill(ObsidianTheme.bgGlass)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
-                .stroke(Color.white.opacity(0.18), lineWidth: 1.2)
-        )
-        .onAppear {
-            isFieldFocused = true
-        }
-        .onExitCommand {
-            if vm.showSaveModal {
-                vm.discardRecording()
-            } else if vm.inspectWorkflow != nil {
-                vm.dismissInspection()
-            } else if vm.isMemoryCommand {
-                vm.query = ""
-            } else if !vm.query.isEmpty {
-                vm.query = ""
-            } else {
-                AppDelegate.shared?.hidePanel()
-            }
-        }
-        .onChange(of: vm.showSaveModal) { _ in
-            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-        }
-        .onChange(of: vm.inspectWorkflow?.id) { _ in
-            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-        }
-        .onChange(of: vm.recommendations.count) { _ in
-            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-        }
-        .onChange(of: vm.allSavedWorkflows.count) { _ in
-            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-        }
-        .onChange(of: vm.isWalkthroughMode) { _ in
-            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-        }
-        .onChange(of: vm.query) { _ in
-            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-        }
-        .onChange(of: WalkthroughOverlayManager.shared.isVisible) { _ in
-            AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("DeleteSelectedWorkflow"))) { _ in
-            vm.deleteSelected()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("FocusClioField"))) { _ in
-            isFieldFocused = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SelectNextWorkflow"))) { _ in
-            vm.selectNextWorkflow()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SelectPrevWorkflow"))) { _ in
-            vm.selectPreviousWorkflow()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StepNextWorkflow"))) { _ in
-            if vm.inspectWorkflow != nil {
-                vm.inspectNextWorkflow()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StepPrevWorkflow"))) { _ in
-            if vm.inspectWorkflow != nil {
-                vm.inspectPreviousWorkflow()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ClioBarEscapeKey"))) { _ in
-            if vm.showSaveModal {
-                vm.discardRecording()
-            } else if vm.inspectWorkflow != nil {
-                vm.dismissInspection()
-            } else if vm.isMemoryCommand {
-                vm.query = ""
-            } else if !vm.query.isEmpty {
-                vm.query = ""
-            } else {
-                AppDelegate.shared?.hidePanel()
-            }
-        }
+        barContainerView
     }
 
+    private var barContainerView: some View {
+        mainVStackView
+            .frame(width: 720)
+            .background(
+                RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
+                    .fill(ObsidianTheme.bgGlass)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: barCornerRadius, style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1.2)
+            )
+            .onAppear {
+                isFieldFocused = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("FocusClioField"))) { _ in
+                isFieldFocused = true
+            }
+            .modifier(ClioBarEventModifier(vm: vm, currentTargetHeight: currentTargetHeight))
+    }
+
+    private var mainVStackView: some View {
+        VStack(spacing: 0) {
+            topPillBarView
+
+            if WalkthroughOverlayManager.shared.isVisible {
+                walkthroughActiveIndicatorView
+            }
+
+            contentPanelsView
+        }
+    }
+}
+
+// MARK: - Event and Notification Handling Modifier for Swift Compiler Performance
+
+struct ClioBarEventModifier: ViewModifier {
+    @ObservedObject var vm: ClioViewModel
+    let currentTargetHeight: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .onExitCommand {
+                handleEscape()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ClioBarEscapeKey"))) { _ in
+                handleEscape()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("DeleteSelectedWorkflow"))) { _ in
+                vm.deleteSelected()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SelectNextWorkflow"))) { _ in
+                vm.selectNextWorkflow()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SelectPrevWorkflow"))) { _ in
+                vm.selectPreviousWorkflow()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StepNextWorkflow"))) { _ in
+                if vm.inspectWorkflow != nil {
+                    vm.inspectNextWorkflow()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StepPrevWorkflow"))) { _ in
+                if vm.inspectWorkflow != nil {
+                    vm.inspectPreviousWorkflow()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TriggerNumberedShortcut"))) { notif in
+                guard vm.isSlashMenuVisible, let char = notif.object as? String, let num = Int(char), num >= 1 else { return }
+                let idx = num - 1
+                if idx < vm.matchingSlashCommands.count {
+                    let item = vm.matchingSlashCommands[idx]
+                    vm.selectedIndex = idx
+                    vm.executeSlashShortcut(item)
+                }
+            }
+            .onChange(of: vm.showSaveModal) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.inspectWorkflow?.id) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isSlashMenuVisible) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.matchingSlashCommands.count) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.recommendations.count) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.allSavedWorkflows.count) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isWalkthroughMode) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.query) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: WalkthroughOverlayManager.shared.isVisible) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+    }
+
+    private func handleEscape() {
+        if vm.showSaveModal {
+            vm.discardRecording()
+        } else if vm.inspectWorkflow != nil {
+            vm.dismissInspection()
+        } else if vm.isMemoryCommand {
+            vm.isMemorySpaceOpen = false
+            vm.query = ""
+        } else if vm.isSlashMenuVisible {
+            vm.query = ""
+        } else if !vm.query.isEmpty {
+            vm.query = ""
+        } else {
+            AppDelegate.shared?.hidePanel()
+        }
+    }
+}
+
+extension ClioBarView {
+
     // MARK: - Subviews for Fast Type Checking
+
+    @ViewBuilder
+    private var topPillBarView: some View {
+        HStack(spacing: 10) {
+            // Minimalist Obsidian Eclipse 'C' Monogram with Connection Status Pip
+            ZStack(alignment: .bottomTrailing) {
+                ZStack {
+                    Circle()
+                        .fill(ObsidianTheme.surfaceElevated)
+                        .overlay(
+                            Circle()
+                                .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
+                        )
+                        .frame(width: 32, height: 32)
+                    Circle()
+                        .fill(Color(red: 0.16, green: 0.17, blue: 0.19))
+                        .frame(width: 18, height: 18)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(
+                                    AngularGradient(
+                                        gradient: Gradient(colors: [
+                                            ObsidianTheme.platinum,
+                                            ObsidianTheme.platinum.opacity(0.9),
+                                            Color.clear,
+                                            Color.clear,
+                                            Color.clear,
+                                            ObsidianTheme.platinum.opacity(0.7)
+                                        ]),
+                                        center: .center,
+                                        startAngle: .degrees(90),
+                                        endAngle: .degrees(450)
+                                    ),
+                                    lineWidth: 2.2
+                                )
+                        )
+                }
+                Circle()
+                    .fill(vm.isConnected ? Color(red: 0.16, green: 0.82, blue: 0.55) : ObsidianTheme.slateDark)
+                    .frame(width: 6, height: 6)
+                    .overlay(Circle().stroke(ObsidianTheme.surface, lineWidth: 1))
+                    .offset(x: 1, y: 1)
+            }
+
+            // Command Search Input with Smooth Animated Word Transition
+            ZStack(alignment: .leading) {
+                if vm.query.isEmpty {
+                    Text(vm.isWalkthroughMode ? "Ask clio to teach you anything..." :
+                         (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything..."))
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundColor(ObsidianTheme.platinum.opacity(0.45))
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: 3)),
+                            removal: .opacity.combined(with: .offset(y: -3))
+                        ))
+                        .id(vm.isWalkthroughMode ? "teach_placeholder" : (vm.isMemoryCommand ? "memory_placeholder" : "do_placeholder"))
+                }
+
+                TextField(
+                    "",
+                    text: $vm.query
+                )
+                .textFieldStyle(.plain)
+                .font(.system(size: 16, weight: .regular))
+                .foregroundColor(ObsidianTheme.platinum)
+                .focused($isFieldFocused)
+                .onSubmit {
+                    vm.executeSelected()
+                }
+                .onChange(of: vm.query) { newQuery in
+                    Task { await vm.search(text: newQuery) }
+                }
+            }
+
+            // Interactive Walkthrough Button (Monochrome Obsidian/Platinum) - Fixed frame prevents any layout movement
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    vm.toggleWalkthroughMode()
+                }
+                isFieldFocused = true
+            }) {
+                HStack(spacing: 5) {
+                    Image(systemName: vm.isWalkthroughMode ? "graduationcap.fill" : "graduationcap")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(vm.isWalkthroughMode ? "TEACH ME" : "WALKTHROUGH")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                }
+                .frame(width: 96, height: 16)
+                .foregroundColor(vm.isWalkthroughMode ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(
+                    vm.isWalkthroughMode ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated
+                )
+                .overlay(
+                    Capsule().stroke(
+                        vm.isWalkthroughMode ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle,
+                        lineWidth: 1
+                    )
+                )
+                .clipShape(Capsule())
+                .shadow(color: vm.isWalkthroughMode ? Color.white.opacity(0.15) : Color.clear, radius: 4)
+            }
+            .buttonStyle(.plain)
+            .help("Toggle interactive walkthrough mode (Clio teaches you on screen)")
+
+            // Dictation Microphone Button
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    vm.toggleDictation()
+                }
+            }) {
+                HStack(spacing: 5) {
+                    if vm.isListening {
+                        WaveformBarsView()
+                        Text("LISTENING...")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    } else {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                }
+                .foregroundColor(vm.isListening ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                .padding(.horizontal, vm.isListening ? 10 : 9)
+                .padding(.vertical, 5)
+                .background(vm.isListening ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                .overlay(
+                    Capsule().stroke(vm.isListening ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
+                )
+                .clipShape(Capsule())
+                .shadow(color: vm.isListening ? Color.white.opacity(0.25) : Color.clear, radius: 6)
+            }
+            .buttonStyle(.plain)
+            .help(vm.isListening ? "Click to stop listening and dictate" : "Dictate command with voice")
+
+            // Compact Micro-Pill Record Button (Hidden when Walkthrough mode is active, while audio option remains)
+            if !vm.isWalkthroughMode {
+                Button(action: { vm.toggleRecording() }) {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                            .frame(width: 5, height: 5)
+                            .opacity(vm.isRecording ? 1.0 : 0.7)
+                        Text(vm.isRecording ? "STOP" : "REC")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    }
+                    .foregroundColor(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                    .overlay(
+                        Capsule().stroke(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
+                    )
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Record a new desktop demonstration")
+                .transition(.opacity)
+            }
+
+            // Dismiss / Hide Bar Button
+            Button(action: {
+                AppDelegate.shared?.hidePanel()
+            }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(ObsidianTheme.slate)
+                    .frame(width: 24, height: 24)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .help("Hide Clio Bar (Esc)")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private var walkthroughActiveIndicatorView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        HStack(spacing: 8) {
+            Image(systemName: "graduationcap.fill")
+                .font(.system(size: 11))
+                .foregroundColor(ObsidianTheme.platinum)
+            Text("WALKTHROUGH ACTIVE:")
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(ObsidianTheme.platinum)
+            Text(WalkthroughOverlayManager.shared.goal.isEmpty ? WalkthroughOverlayManager.shared.instruction : WalkthroughOverlayManager.shared.goal)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(ObsidianTheme.platinum)
+                .lineLimit(1)
+            Spacer()
+            Button(action: {
+                WalkthroughOverlayManager.shared.stopWalkthrough()
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "xmark.circle")
+                        .font(.system(size: 9))
+                    Text("Stop")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                }
+                .foregroundColor(Color.red.opacity(0.85))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.red.opacity(0.12))
+                .cornerRadius(4)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.red.opacity(0.3), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(ObsidianTheme.surfaceElevated)
+    }
+
+    @ViewBuilder
+    private var contentPanelsView: some View {
+        if vm.showSaveModal {
+            saveModalView
+        } else if !vm.isWalkthroughMode, let inspected = vm.inspectWorkflow {
+            inspectedWorkflowView(inspected)
+        } else if vm.isSlashMenuVisible {
+            slashCommandsMenuView
+        } else if vm.isMemoryCommand {
+            memorySpaceView
+        } else if !vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.recommendations.isEmpty {
+            searchResultsView
+        }
+    }
 
     @ViewBuilder
     private var saveModalView: some View {
@@ -3875,6 +4093,137 @@ struct ClioBarView: View {
         .padding(.vertical, 4)
         .background(ObsidianTheme.surfaceElevated.opacity(0.2))
     }
+
+    @ViewBuilder
+    private var slashCommandsMenuView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(spacing: 0) {
+            // Category Header
+            HStack(spacing: 6) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("AVAILABLE SHORTCUTS")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Spacer()
+                Text("TYPE TO FILTER • ⏎ TO SELECT")
+                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.35))
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
+
+            // Command Items
+            VStack(spacing: 2) {
+                ForEach(Array(vm.matchingSlashCommands.enumerated()), id: \.element.id) { idx, item in
+                    SlashCommandRowView(
+                        item: item,
+                        isSelected: idx == vm.selectedIndex,
+                        onSelect: {
+                            vm.selectedIndex = idx
+                            vm.executeSlashShortcut(item)
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
+
+            // Footer
+            HStack {
+                Text("↑↓ Navigate • ⏎ Select • Esc Clear")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                Spacer()
+                Text("\(vm.matchingSlashCommands.count) SHORTCUTS AVAILABLE")
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+        }
+        .background(ObsidianTheme.cardGlass)
+    }
+}
+
+struct SlashCommandRowView: View {
+    let item: SlashShortcutItem
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            // Icon in Squircle
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.zinc)
+                    .frame(width: 26, height: 26)
+                Image(systemName: item.iconName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor((isSelected || isHovered) ? ObsidianTheme.surface : ObsidianTheme.platinum)
+            }
+
+            // Command and Description
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(item.command)
+                        .font(.system(size: 12.5, weight: .bold, design: .monospaced))
+                        .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
+                    Text("—")
+                        .font(.system(size: 10))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                    Text(item.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.slate)
+                }
+
+                Text(item.description)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            if let key = item.shortcutKey {
+                Text(key)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(ObsidianTheme.surfaceElevated.opacity(0.7))
+                    .cornerRadius(4)
+            }
+
+            Text(item.badge)
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                .foregroundColor((isSelected || isHovered) ? ObsidianTheme.surface : ObsidianTheme.slateDark)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2.5)
+                .background((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated.opacity(0.5))
+                .cornerRadius(4)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background((isSelected || isHovered) ? ObsidianTheme.surfaceElevated : Color.clear)
+        .cornerRadius(7)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .onTapGesture {
+            onSelect()
+        }
+    }
 }
 
 struct SearchResultRowView: View {
@@ -4162,6 +4511,9 @@ final class SpotlightPanel: NSPanel {
                 if NSApp.sendAction(action, to: nil, from: self) {
                     return true
                 }
+            case "1", "2", "3", "4":
+                NotificationCenter.default.post(name: NSNotification.Name("TriggerNumberedShortcut"), object: chars)
+                return true
             default:
                 break
             }
@@ -4173,7 +4525,7 @@ final class SpotlightPanel: NSPanel {
         if isCmd && event.keyCode == 51 {
             let isTextEditing = (self.firstResponder is NSTextView || self.firstResponder is NSText)
             if isTextEditing {
-                if NSApp.sendAction(Selector(("deleteToBeginningOfLine:")), to: nil, from: self) {
+                if NSApp.sendAction(#selector(NSResponder.deleteToBeginningOfLine(_:)), to: nil, from: self) {
                     return true
                 }
             } else {
@@ -4305,15 +4657,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 2. Edit Menu (Standard macOS Clipboard & Text editing)
         let editMenuItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")
-        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Undo", action: #selector(UndoManager.undo), keyEquivalent: "z")
+        let redoItem = NSMenuItem(title: "Redo", action: #selector(UndoManager.redo), keyEquivalent: "z")
         redoItem.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(redoItem)
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        let pastePlainItem = NSMenuItem(title: "Paste and Match Style", action: Selector(("pasteAsPlainText:")), keyEquivalent: "v")
+        let pastePlainItem = NSMenuItem(title: "Paste and Match Style", action: #selector(NSTextView.pasteAsPlainText(_:)), keyEquivalent: "v")
         pastePlainItem.keyEquivalentModifierMask = [.command, .option, .shift]
         editMenu.addItem(pastePlainItem)
         editMenu.addItem(withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: "")
