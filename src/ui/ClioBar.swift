@@ -2461,12 +2461,24 @@ struct ClioBarView: View {
                         )
                 }
 
-                // Command Search Input
-                TextField(
-                    vm.isWalkthroughMode ? "Ask clio to teach you anything..." :
-                    (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything..."),
-                    text: $vm.query
-                )
+                // Command Search Input with Smooth Animated Word Transition
+                ZStack(alignment: .leading) {
+                    if vm.query.isEmpty {
+                        Text(vm.isWalkthroughMode ? "Ask clio to teach you anything..." :
+                             (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything..."))
+                            .font(.system(size: 16, weight: .regular))
+                            .foregroundColor(ObsidianTheme.platinum.opacity(0.45))
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .offset(y: 3)),
+                                removal: .opacity.combined(with: .offset(y: -3))
+                            ))
+                            .id(vm.isWalkthroughMode ? "teach_placeholder" : (vm.isMemoryCommand ? "memory_placeholder" : "do_placeholder"))
+                    }
+
+                    TextField(
+                        "",
+                        text: $vm.query
+                    )
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, weight: .regular))
                     .foregroundColor(ObsidianTheme.platinum)
@@ -2477,10 +2489,11 @@ struct ClioBarView: View {
                     .onChange(of: vm.query) { newQuery in
                         Task { await vm.search(text: newQuery) }
                     }
+                }
 
-                // Interactive Walkthrough Button (Monochrome Obsidian/Platinum)
+                // Interactive Walkthrough Button (Monochrome Obsidian/Platinum) - Fixed frame prevents any layout movement
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.easeInOut(duration: 0.25)) {
                         vm.toggleWalkthroughMode()
                     }
                     isFieldFocused = true
@@ -2491,6 +2504,7 @@ struct ClioBarView: View {
                         Text(vm.isWalkthroughMode ? "TEACH ME" : "WALKTHROUGH")
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     }
+                    .frame(width: 96, height: 16)
                     .foregroundColor(vm.isWalkthroughMode ? ObsidianTheme.surface : ObsidianTheme.platinum)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
@@ -2538,30 +2552,28 @@ struct ClioBarView: View {
                 .buttonStyle(.plain)
                 .help(vm.isListening ? "Click to stop listening and dictate" : "Dictate command with voice")
 
-                // Single-Color Record Demonstration Button (Hidden when Walkthrough mode is active)
-                if !vm.isWalkthroughMode {
-                    Button(action: { vm.toggleRecording() }) {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                                .frame(width: 6, height: 6)
-                                .opacity(vm.isRecording ? 1.0 : 0.6)
-                            Text(vm.isRecording ? "● STOP & SAVE" : "RECORD")
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        }
-                        .foregroundColor(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                        .overlay(
-                            Capsule().stroke(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
-                        )
-                        .clipShape(Capsule())
+                // Single-Color Record Demonstration Button (Permanently anchored with fixed frame to eliminate bar shifting)
+                Button(action: { vm.toggleRecording() }) {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                            .frame(width: 6, height: 6)
+                            .opacity(vm.isRecording ? 1.0 : 0.6)
+                        Text(vm.isRecording ? "● STOP & SAVE" : "RECORD")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     }
-                    .buttonStyle(.plain)
-                    .help("Record a new desktop demonstration")
-                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    .frame(width: 80, height: 16)
+                    .foregroundColor(vm.isRecording ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                    .overlay(
+                        Capsule().stroke(vm.isRecording ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
+                    )
+                    .clipShape(Capsule())
                 }
+                .buttonStyle(.plain)
+                .help("Record a new desktop demonstration")
 
                 // Dismiss / Hide Bar Button
                 Button(action: {
@@ -3546,9 +3558,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func updatePanelHeight(_ newHeight: CGFloat) {
         guard let panel = panel, let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let currentFrame = panel.frame
+        // If height is already identical, do not trigger window animation to avoid glitch/jitter
+        if abs(currentFrame.height - newHeight) < 0.5 {
+            return
+        }
         let screenRect = screen.visibleFrame
         let panelWidth: CGFloat = 720
-        let currentFrame = panel.frame
         let newY = screenRect.origin.y + screenRect.height - newHeight - 120
         let newFrame = NSRect(x: currentFrame.origin.x, y: newY, width: panelWidth, height: newHeight)
         panel.setFrame(newFrame, display: true, animate: true)
