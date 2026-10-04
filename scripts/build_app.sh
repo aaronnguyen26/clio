@@ -82,20 +82,28 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "${REPO_ROOT}/dist"
 (cd "${STAGE_DIR}" && zip -r -FS "${REPO_ROOT}/dist/Clio-macOS.zip" "Clio.app")
 
-# Deploy to Desktop
-echo "==> Deploying to Desktop..."
-[ -d "${DESKTOP_BUNDLE}" ] && chmod -R u+rwX "${DESKTOP_BUNDLE}" 2>/dev/null || true
-rm -rf "${DESKTOP_BUNDLE}"
-cp -a "${APP_BUNDLE}" "${DESKTOP_BUNDLE}"
+# Deploy to project root and Desktop
+echo "==> Deploying Clio.app..."
+LOCAL_BUNDLE="${REPO_ROOT}/Clio.app"
+rm -rf "${LOCAL_BUNDLE}"
+cp -a "${APP_BUNDLE}" "${LOCAL_BUNDLE}"
+
+if [ "${DESKTOP_BUNDLE}" != "${LOCAL_BUNDLE}" ]; then
+    echo "==> Deploying to Desktop..."
+    [ -d "${DESKTOP_BUNDLE}" ] && chmod -R u+rwX "${DESKTOP_BUNDLE}" 2>/dev/null || true
+    rm -rf "${DESKTOP_BUNDLE}"
+    cp -a "${APP_BUNDLE}" "${DESKTOP_BUNDLE}"
+fi
 
 # Force LaunchServices re-registration
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [ -x "${LSREGISTER}" ]; then
     echo "==> Forcing LaunchServices re-registration..."
-    "${LSREGISTER}" -f "${DESKTOP_BUNDLE}"
+    "${LSREGISTER}" -f "${LOCAL_BUNDLE}"
+    [ -d "${DESKTOP_BUNDLE}" ] && "${LSREGISTER}" -f "${DESKTOP_BUNDLE}" 2>/dev/null || true
 fi
 
 # Clean staging
-rm -rf "${STAGE_DIR}" Clio.app
+rm -rf "${STAGE_DIR}"
 
-echo "==> Build complete! Only ${DESKTOP_BUNDLE} is kept and verified."
+echo "==> Build complete! Clio.app is available at ${LOCAL_BUNDLE} and ${DESKTOP_BUNDLE}."

@@ -37,15 +37,12 @@ Clio records everyday tasks on your Mac (opening apps, clicking buttons, typing 
    ./scripts/build_app.sh
    ```
 
-3. Start the backend server:
-   ```bash
-   python3 -m src.main --server --port 8765
-   ```
-
-4. Launch the application:
+3. Launch the application:
    ```bash
    open Clio.app
    ```
+
+Note: When launched, Clio automatically starts and connects to its background engine on port 8765.
 
 ---
 
