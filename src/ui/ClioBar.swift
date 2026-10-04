@@ -1686,6 +1686,10 @@ final class WalkthroughOverlayManager: ObservableObject {
 final class ClioViewModel: ObservableObject {
     @Published var query: String = "" {
         didSet {
+            let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+            if !trimmed.hasPrefix("/memory") {
+                self.isMemorySpaceOpen = false
+            }
             updateRecommendationsSynchronously(for: query)
         }
     }
@@ -1734,14 +1738,16 @@ final class ClioViewModel: ObservableObject {
         guard !isWalkthroughMode, !showSaveModal, inspectWorkflow == nil else { return false }
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("/"), !isMemorySpaceOpen else { return false }
-        if trimmed.hasPrefix("/memory ") {
+        if trimmed.lowercased().hasPrefix("/memory ") {
             return false
         }
         return !matchingSlashCommands.isEmpty
     }
 
     var isMemoryCommand: Bool {
+        guard !isWalkthroughMode, !showSaveModal else { return false }
         let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard trimmed.hasPrefix("/memory") else { return false }
         if isMemorySpaceOpen {
             return true
         }
@@ -2204,6 +2210,7 @@ final class ClioViewModel: ObservableObject {
             self.recommendations = []
             self.workflows = []
             self.inspectWorkflow = nil
+            self.isMemorySpaceOpen = false
             self.statusPillText = "CLIO • TEACH ME"
         } else {
             self.statusPillText = "CLIO • READY"
@@ -2355,17 +2362,27 @@ final class ClioViewModel: ObservableObject {
                 Task { await fetchWorkflows() }
             }
         case "shortcut_record":
+            self.isMemorySpaceOpen = false
             self.query = ""
+            self.selectedIndex = 0
             self.toggleRecording()
         case "shortcut_teach":
+            self.isMemorySpaceOpen = false
             self.query = ""
-            self.isWalkthroughMode = true
+            self.selectedIndex = 0
+            withAnimation(.easeInOut(duration: 0.25)) {
+                self.isWalkthroughMode = true
+            }
         case "shortcut_help":
+            self.isMemorySpaceOpen = false
             self.query = ""
-            executeSystemAction("sys_help")
+            self.selectedIndex = 0
+            NSApp.showHelp(nil)
             AppDelegate.shared?.hidePanel()
         default:
+            self.isMemorySpaceOpen = false
             self.query = item.command + " "
+            self.selectedIndex = 0
         }
     }
 
@@ -2565,6 +2582,7 @@ final class ClioViewModel: ObservableObject {
         self.recordingGrade = nil
         self.showSaveModal = false
         self.isRecording = true
+        self.isMemorySpaceOpen = false
         self.recordedEvents.removeAll()
         self.lastRecordedMovePoint = nil
         self.lastRecordedMoveTime = 0
@@ -3317,8 +3335,10 @@ struct ClioBarEventModifier: ViewModifier {
             vm.isMemorySpaceOpen = false
             vm.query = ""
         } else if vm.isSlashMenuVisible {
+            vm.isMemorySpaceOpen = false
             vm.query = ""
         } else if !vm.query.isEmpty {
+            vm.isMemorySpaceOpen = false
             vm.query = ""
         } else {
             AppDelegate.shared?.hidePanel()
@@ -4161,67 +4181,67 @@ struct SlashCommandRowView: View {
     @State private var isHovered: Bool = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            // Icon in Squircle
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.zinc)
-                    .frame(width: 26, height: 26)
-                Image(systemName: item.iconName)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor((isSelected || isHovered) ? ObsidianTheme.surface : ObsidianTheme.platinum)
-            }
-
-            // Command and Description
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(item.command)
-                        .font(.system(size: 12.5, weight: .bold, design: .monospaced))
-                        .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
-                    Text("—")
-                        .font(.system(size: 10))
-                        .foregroundColor(ObsidianTheme.slateDark)
-                    Text(item.title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.slate)
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                // Icon in Squircle
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.zinc)
+                        .frame(width: 26, height: 26)
+                    Image(systemName: item.iconName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor((isSelected || isHovered) ? ObsidianTheme.surface : ObsidianTheme.platinum)
                 }
 
-                Text(item.description)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.slate)
-                    .lineLimit(1)
-            }
+                // Command and Description
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(item.command)
+                            .font(.system(size: 12.5, weight: .bold, design: .monospaced))
+                            .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
+                        Text("—")
+                            .font(.system(size: 10))
+                            .foregroundColor(ObsidianTheme.slateDark)
+                        Text(item.title)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.slate)
+                    }
 
-            Spacer()
+                    Text(item.description)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                        .lineLimit(1)
+                }
 
-            if let key = item.shortcutKey {
-                Text(key)
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.slateDark)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(ObsidianTheme.surfaceElevated.opacity(0.7))
+                Spacer()
+
+                if let key = item.shortcutKey {
+                    Text(key)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(ObsidianTheme.surfaceElevated.opacity(0.7))
+                        .cornerRadius(4)
+                }
+
+                Text(item.badge)
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundColor((isSelected || isHovered) ? ObsidianTheme.surface : ObsidianTheme.slateDark)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated.opacity(0.5))
                     .cornerRadius(4)
             }
-
-            Text(item.badge)
-                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                .foregroundColor((isSelected || isHovered) ? ObsidianTheme.surface : ObsidianTheme.slateDark)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2.5)
-                .background((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated.opacity(0.5))
-                .cornerRadius(4)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background((isSelected || isHovered) ? ObsidianTheme.surfaceElevated : Color.clear)
+            .cornerRadius(7)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background((isSelected || isHovered) ? ObsidianTheme.surfaceElevated : Color.clear)
-        .cornerRadius(7)
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
         .onHover { hovering in
             isHovered = hovering
-        }
-        .onTapGesture {
-            onSelect()
         }
     }
 }
