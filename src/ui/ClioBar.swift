@@ -176,31 +176,52 @@ final class SpeechDictationManager: ObservableObject {
     private var recognitionTask: SFSpeechRecognitionTask?
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
 
-    func toggleDictation(onRecognized: @escaping (String) -> Void, onFinished: @escaping (String) -> Void) {
+    func toggleDictation(
+        onRecognized: @escaping (String) -> Void,
+        onFinished: @escaping (String) -> Void,
+        onError: (() -> Void)? = nil
+    ) {
         if isListening {
             stopListening(onFinished: onFinished)
         } else {
-            startListening(onRecognized: onRecognized, onFinished: onFinished)
+            startListening(onRecognized: onRecognized, onFinished: onFinished, onError: onError)
         }
     }
 
-    func startListening(onRecognized: @escaping (String) -> Void, onFinished: @escaping (String) -> Void) {
+    func startListening(
+        onRecognized: @escaping (String) -> Void,
+        onFinished: @escaping (String) -> Void,
+        onError: (() -> Void)? = nil
+    ) {
+        cleanup()
+        isListening = true
+        recognizedText = ""
+
         SFSpeechRecognizer.requestAuthorization { [weak self] authStatus in
             Task { @MainActor in
                 guard let self = self else { return }
-                guard authStatus == .authorized else { return }
+                guard authStatus == .authorized else {
+                    self.isListening = false
+                    onError?()
+                    return
+                }
                 do {
-                    try self.startRecordingSession(onRecognized: onRecognized, onFinished: onFinished)
+                    try self.startRecordingSession(onRecognized: onRecognized, onFinished: onFinished, onError: onError)
                 } catch {
-                    self.stopListening(onFinished: onFinished)
+                    self.cleanup()
+                    self.isListening = false
+                    onError?()
                 }
             }
         }
     }
 
-    private func startRecordingSession(onRecognized: @escaping (String) -> Void, onFinished: @escaping (String) -> Void) throws {
-        recognitionTask?.cancel()
-        recognitionTask = nil
+    private func startRecordingSession(
+        onRecognized: @escaping (String) -> Void,
+        onFinished: @escaping (String) -> Void,
+        onError: (() -> Void)? = nil
+    ) throws {
+        cleanup()
 
         let engine = AVAudioEngine()
         self.audioEngine = engine
@@ -210,6 +231,9 @@ final class SpeechDictationManager: ObservableObject {
         self.recognitionRequest = request
 
         guard let recognizer = speechRecognizer, recognizer.isAvailable else {
+            cleanup()
+            isListening = false
+            onError?()
             return
         }
 
@@ -221,7 +245,6 @@ final class SpeechDictationManager: ObservableObject {
 
         engine.prepare()
         try engine.start()
-
         self.isListening = true
 
         self.recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -237,27 +260,60 @@ final class SpeechDictationManager: ObservableObject {
                 }
                 if error != nil {
                     self.stopListening(onFinished: onFinished)
+                    onError?()
                 }
             }
         }
     }
 
     func stopListening(onFinished: @escaping (String) -> Void) {
-        guard isListening else { return }
-        audioEngine?.stop()
-        audioEngine?.inputNode.removeTap(onBus: 0)
+        let text = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleanup()
+        isListening = false
+        if !text.isEmpty {
+            onFinished(text)
+        }
+    }
+
+    private func cleanup() {
+        if let engine = audioEngine, engine.isRunning {
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+        }
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest = nil
         audioEngine = nil
-        isListening = false
-        let text = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.isEmpty {
-            onFinished(text)
+    }
+}
+
+// MARK: - Voice Dictation Animated Waveform Audio Bars
+
+struct WaveformBarsView: View {
+    @State private var animating: Bool = false
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<4) { index in
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(ObsidianTheme.surface)
+                    .frame(width: 2, height: animating ? CGFloat([9, 13, 7, 11][index]) : CGFloat([3, 5, 4, 3][index]))
+                    .animation(
+                        Animation.easeInOut(duration: 0.45)
+                            .repeatForever(autoreverses: true)
+                            .delay(Double(index) * 0.12),
+                        value: animating
+                    )
+            }
+        }
+        .frame(height: 13)
+        .onAppear {
+            animating = true
         }
     }
 }
+
 
 // MARK: - Models
 
@@ -1673,22 +1729,42 @@ final class ClioViewModel: ObservableObject {
     }
 
     func toggleDictation() {
-        speechManager.toggleDictation(
-            onRecognized: { [weak self] text in
+        if isListening {
+            // Immediately toggle UI state off
+            isListening = false
+            speechManager.stopListening { [weak self] finalText in
                 guard let self = self else { return }
-                self.query = text
-                self.isListening = true
-            },
-            onFinished: { [weak self] finalText in
-                guard let self = self else { return }
-                self.query = finalText
-                self.isListening = false
-                Task {
-                    await self.search(text: finalText)
+                if !finalText.isEmpty {
+                    self.query = finalText
+                    Task {
+                        await self.search(text: finalText)
+                    }
                 }
             }
-        )
-        self.isListening = speechManager.isListening
+        } else {
+            // Immediately toggle UI state on
+            isListening = true
+            speechManager.startListening(
+                onRecognized: { [weak self] text in
+                    guard let self = self, self.isListening else { return }
+                    self.query = text
+                },
+                onFinished: { [weak self] finalText in
+                    guard let self = self else { return }
+                    self.isListening = false
+                    if !finalText.isEmpty {
+                        self.query = finalText
+                        Task {
+                            await self.search(text: finalText)
+                        }
+                    }
+                },
+                onError: { [weak self] in
+                    guard let self = self else { return }
+                    self.isListening = false
+                }
+            )
+        }
     }
 
     func toggleRecording() {
@@ -2434,26 +2510,33 @@ struct ClioBarView: View {
                 .help("Toggle interactive walkthrough mode (Clio teaches you on screen)")
 
                 // Dictation Microphone Button
-                Button(action: { vm.toggleDictation() }) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        vm.toggleDictation()
+                    }
+                }) {
                     HStack(spacing: 5) {
-                        Image(systemName: vm.isListening ? "waveform" : "mic.fill")
-                            .font(.system(size: 11, weight: .semibold))
                         if vm.isListening {
+                            WaveformBarsView()
                             Text("LISTENING...")
                                 .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        } else {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 11, weight: .semibold))
                         }
                     }
                     .foregroundColor(vm.isListening ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                    .padding(.horizontal, 9)
+                    .padding(.horizontal, vm.isListening ? 10 : 9)
                     .padding(.vertical, 5)
                     .background(vm.isListening ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
                     .overlay(
                         Capsule().stroke(vm.isListening ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
                     )
                     .clipShape(Capsule())
+                    .shadow(color: vm.isListening ? Color.white.opacity(0.25) : Color.clear, radius: 6)
                 }
                 .buttonStyle(.plain)
-                .help("Dictate command with voice")
+                .help(vm.isListening ? "Click to stop listening and dictate" : "Dictate command with voice")
 
                 // Single-Color Record Demonstration Button (Hidden when Walkthrough mode is active)
                 if !vm.isWalkthroughMode {
