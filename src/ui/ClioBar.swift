@@ -2216,6 +2216,22 @@ final class ClioViewModel: ObservableObject {
         inspectWorkflowDetails(item)
     }
 
+    private func launchSystemApp(bundleId: String, appName: String) {
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.openApplication(at: appURL, configuration: config, completionHandler: nil)
+            return
+        }
+        let systemPath = "/System/Applications/\(appName).app"
+        let normalPath = "/Applications/\(appName).app"
+        let path = FileManager.default.fileExists(atPath: systemPath) ? systemPath : normalPath
+        let url = URL(fileURLWithPath: path)
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config, completionHandler: nil)
+    }
+
     func executeSystemAction(_ id: String) {
         switch id {
         case "sys_home":
@@ -2233,11 +2249,11 @@ final class ClioViewModel: ObservableObject {
         case "sys_hide_others":
             NSWorkspace.shared.hideOtherApplications()
         case "sys_photos":
-            NSWorkspace.shared.launchApplication("Photos")
+            launchSystemApp(bundleId: "com.apple.Photos", appName: "Photos")
         case "sys_podcasts":
-            NSWorkspace.shared.launchApplication("Podcasts")
+            launchSystemApp(bundleId: "com.apple.podcasts", appName: "Podcasts")
         case "sys_preview":
-            NSWorkspace.shared.launchApplication("Preview")
+            launchSystemApp(bundleId: "com.apple.Preview", appName: "Preview")
         case "sys_settings":
             if let url = URL(string: "x-apple.systempreferences:") {
                 NSWorkspace.shared.open(url)
@@ -2245,27 +2261,27 @@ final class ClioViewModel: ObservableObject {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
             }
         case "sys_calculator":
-            NSWorkspace.shared.launchApplication("Calculator")
+            launchSystemApp(bundleId: "com.apple.calculator", appName: "Calculator")
         case "sys_calendar":
-            NSWorkspace.shared.launchApplication("Calendar")
+            launchSystemApp(bundleId: "com.apple.iCal", appName: "Calendar")
         case "sys_safari":
-            NSWorkspace.shared.launchApplication("Safari")
+            launchSystemApp(bundleId: "com.apple.Safari", appName: "Safari")
         case "sys_terminal":
-            NSWorkspace.shared.launchApplication("Terminal")
+            launchSystemApp(bundleId: "com.apple.Terminal", appName: "Utilities/Terminal")
         case "sys_textedit":
-            NSWorkspace.shared.launchApplication("TextEdit")
+            launchSystemApp(bundleId: "com.apple.TextEdit", appName: "TextEdit")
         case "sys_notes":
-            NSWorkspace.shared.launchApplication("Notes")
+            launchSystemApp(bundleId: "com.apple.Notes", appName: "Notes")
         case "sys_messages":
-            NSWorkspace.shared.launchApplication("Messages")
+            launchSystemApp(bundleId: "com.apple.MobileSMS", appName: "Messages")
         case "sys_mail":
-            NSWorkspace.shared.launchApplication("Mail")
+            launchSystemApp(bundleId: "com.apple.mail", appName: "Mail")
         case "sys_music":
-            NSWorkspace.shared.launchApplication("Music")
+            launchSystemApp(bundleId: "com.apple.Music", appName: "Music")
         case "sys_finder":
-            NSWorkspace.shared.launchApplication("Finder")
+            launchSystemApp(bundleId: "com.apple.finder", appName: "Finder")
         case "sys_activity":
-            NSWorkspace.shared.launchApplication("Activity Monitor")
+            launchSystemApp(bundleId: "com.apple.ActivityMonitor", appName: "Utilities/Activity Monitor")
         default:
             break
         }
@@ -2996,7 +3012,7 @@ struct ClioBarView: View {
             let trimmed = vm.query.trimmingCharacters(in: .whitespaces)
             if !trimmed.isEmpty && !vm.recommendations.isEmpty {
                 let rowCount = min(vm.recommendations.count, 4)
-                return base + CGFloat(rowCount * 38) + 16
+                return base + CGFloat(rowCount * 38) + 16 + 22
             }
         }
         return base
@@ -3018,37 +3034,44 @@ struct ClioBarView: View {
         VStack(spacing: 0) {
             // Main Top Pill Bar
             HStack(spacing: 10) {
-                // Minimalist Obsidian Eclipse 'C' Monogram
-                ZStack {
+                // Minimalist Obsidian Eclipse 'C' Monogram with Connection Status Pip
+                ZStack(alignment: .bottomTrailing) {
+                    ZStack {
+                        Circle()
+                            .fill(ObsidianTheme.surfaceElevated)
+                            .overlay(
+                                Circle()
+                                    .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
+                            )
+                            .frame(width: 32, height: 32)
+                        Circle()
+                            .fill(Color(red: 0.16, green: 0.17, blue: 0.19))
+                            .frame(width: 18, height: 18)
+                            .overlay(
+                                Circle()
+                                    .strokeBorder(
+                                        AngularGradient(
+                                            gradient: Gradient(colors: [
+                                                ObsidianTheme.platinum,
+                                                ObsidianTheme.platinum.opacity(0.9),
+                                                Color.clear,
+                                                Color.clear,
+                                                Color.clear,
+                                                ObsidianTheme.platinum.opacity(0.7)
+                                            ]),
+                                            center: .center,
+                                            startAngle: .degrees(90),
+                                            endAngle: .degrees(450)
+                                        ),
+                                        lineWidth: 2.2
+                                    )
+                            )
+                    }
                     Circle()
-                        .fill(ObsidianTheme.surfaceElevated)
-                        .overlay(
-                            Circle()
-                                .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
-                        )
-                        .frame(width: 32, height: 32)
-                    Circle()
-                        .fill(Color(red: 0.16, green: 0.17, blue: 0.19))
-                        .frame(width: 18, height: 18)
-                        .overlay(
-                            Circle()
-                                .strokeBorder(
-                                    AngularGradient(
-                                        gradient: Gradient(colors: [
-                                            ObsidianTheme.platinum,
-                                            ObsidianTheme.platinum.opacity(0.9),
-                                            Color.clear,
-                                            Color.clear,
-                                            Color.clear,
-                                            ObsidianTheme.platinum.opacity(0.7)
-                                        ]),
-                                        center: .center,
-                                        startAngle: .degrees(90),
-                                        endAngle: .degrees(450)
-                                    ),
-                                    lineWidth: 2.2
-                                )
-                        )
+                        .fill(vm.isConnected ? Color(red: 0.16, green: 0.82, blue: 0.55) : ObsidianTheme.slateDark)
+                        .frame(width: 6, height: 6)
+                        .overlay(Circle().stroke(ObsidianTheme.surface, lineWidth: 1))
+                        .offset(x: 1, y: 1)
                 }
 
                 // Command Search Input with Smooth Animated Word Transition
@@ -3254,6 +3277,8 @@ struct ClioBarView: View {
                 vm.dismissInspection()
             } else if vm.isMemoryCommand {
                 vm.query = ""
+            } else if !vm.query.isEmpty {
+                vm.query = ""
             } else {
                 AppDelegate.shared?.hidePanel()
             }
@@ -3307,6 +3332,8 @@ struct ClioBarView: View {
             } else if vm.inspectWorkflow != nil {
                 vm.dismissInspection()
             } else if vm.isMemoryCommand {
+                vm.query = ""
+            } else if !vm.query.isEmpty {
                 vm.query = ""
             } else {
                 AppDelegate.shared?.hidePanel()
@@ -3833,6 +3860,20 @@ struct ClioBarView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(ObsidianTheme.cardGlass)
+
+        Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
+        HStack {
+            Text("↑↓ to navigate • ⏎ to perform • Esc to clear")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(ObsidianTheme.slate)
+            Spacer()
+            Text("\(vm.recommendations.count) MATCHES")
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                .foregroundColor(ObsidianTheme.slateDark)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+        .background(ObsidianTheme.surfaceElevated.opacity(0.2))
     }
 }
 
@@ -3842,6 +3883,8 @@ struct SearchResultRowView: View {
     let onPreview: () -> Void
     let onSelect: () -> Void
     let onDelete: () -> Void
+
+    @State private var isHovered: Bool = false
 
     private var rowIconName: String {
         switch wf.id {
@@ -3872,13 +3915,13 @@ struct SearchResultRowView: View {
         HStack(spacing: 8) {
             Image(systemName: rowIconName)
                 .font(.system(size: 11))
-                .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
+                .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(wf.displayName)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
+                    .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
                 if let desc = wf.description, !desc.isEmpty {
                     Text(desc)
                         .font(.system(size: 10, design: .monospaced))
@@ -3939,9 +3982,12 @@ struct SearchResultRowView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
-        .background(isSelected ? ObsidianTheme.surfaceElevated : Color.clear)
+        .background((isSelected || isHovered) ? ObsidianTheme.surfaceElevated : Color.clear)
         .cornerRadius(6)
         .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
         .onTapGesture {
             onSelect()
         }
@@ -3955,6 +4001,8 @@ struct MemorySpaceRowView: View {
     let onPreview: () -> Void
     let onSelect: () -> Void
     let onDelete: () -> Void
+
+    @State private var isHovered: Bool = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -3971,7 +4019,7 @@ struct MemorySpaceRowView: View {
                 HStack(spacing: 6) {
                     Text(wf.displayName)
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
+                        .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
                         .lineLimit(1)
                 }
 
@@ -4029,13 +4077,16 @@ struct MemorySpaceRowView: View {
             // Inspect arrow
             Image(systemName: "chevron.right")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
+                .foregroundColor((isSelected || isHovered) ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(isSelected ? ObsidianTheme.surfaceElevated : Color.clear)
+        .background((isSelected || isHovered) ? ObsidianTheme.surfaceElevated : Color.clear)
         .cornerRadius(8)
         .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
         .onTapGesture {
             onSelect()
         }
