@@ -21,10 +21,9 @@ Clio records everyday tasks on your Mac (opening apps, clicking buttons, typing 
 ### Prerequisites
 
 - Python 3.10 or later
-- Xcode Command Line Tools (`xcode-select --install`)
 - Accessibility permissions enabled in System Settings > Privacy & Security > Accessibility
 
-### Build and Run
+### Quick Start
 
 1. Clone the repository:
    ```bash
@@ -32,17 +31,19 @@ Clio records everyday tasks on your Mac (opening apps, clicking buttons, typing 
    cd clio
    ```
 
-2. Build the native application bundle:
-   ```bash
-   ./scripts/build_app.sh
-   ```
-
-3. Launch the application:
+2. Open the application:
    ```bash
    open Clio.app
    ```
 
 Note: When launched, Clio automatically starts and connects to its background engine on port 8765.
+
+### Building from Source (Optional)
+
+To rebuild the native application bundle:
+```bash
+./scripts/build_app.sh
+```
 
 ---
 

@@ -8,6 +8,10 @@ env/
 venv/
 .venv/
 ENV/
+.env
+.env.*
+.env.local
+
 
 # Build artifacts & temp
 bin/clio-bar
@@ -18,7 +22,6 @@ dist/
 main
 extract/
 *.log
-Clio.app/
 .agents/
 
 # Testing & Development Internals (excluded from public app repo)
