@@ -331,6 +331,23 @@ struct WorkflowStepItem: Identifiable, Decodable {
         case action
     }
 
+    init(
+        step_id: String? = nil,
+        id: String? = nil,
+        order: Int? = nil,
+        step_index: Int? = nil,
+        instruction: String? = nil,
+        action: String? = nil,
+        app: String? = nil,
+        target_role: String? = nil,
+        description: String? = nil
+    ) {
+        self.step_id = step_id ?? id
+        self.order = order ?? step_index
+        self.description = description ?? instruction
+        self.action = action
+    }
+
     var displayOrder: Int { order ?? 1 }
     var displayDescription: String {
         if let d = description, !d.isEmpty {
@@ -419,7 +436,402 @@ struct WorkflowItem: Identifiable, Decodable {
         guard let s = steps else { return [] }
         return s.sorted(by: { $0.displayOrder < $1.displayOrder })
     }
+
+    init(
+        workflow_id: String? = nil,
+        id_field: String? = nil,
+        name: String,
+        description: String? = nil,
+        confidence: Double? = nil,
+        step_count: Int? = 1,
+        canonical_trigger: String? = nil,
+        video_path: String? = nil,
+        recording_score: Double? = nil,
+        recording_grade: String? = nil,
+        steps: [WorkflowStepItem]? = nil
+    ) {
+        self.workflow_id = workflow_id
+        self.id_field = id_field
+        self.name = name
+        self.description = description
+        self.confidence = confidence
+        self.step_count = step_count
+        self.canonical_trigger = canonical_trigger
+        self.video_path = video_path
+        self.recording_score = recording_score
+        self.recording_grade = recording_grade
+        self.steps = steps
+    }
 }
+
+// MARK: - Curated System Recommendations Catalog
+
+struct SystemRecommendationCatalog {
+    static let items: [WorkflowItem] = [
+        WorkflowItem(
+            workflow_id: "sys_home",
+            name: "Open Home Folder",
+            description: "Finder • ~/",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open home folder",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_home_1",
+                    step_index: 1,
+                    instruction: "Open user home folder in Finder",
+                    action: "launch_app",
+                    app: "Finder",
+                    target_role: "AXApplication",
+                    description: "Reveal user directory ~/"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_help",
+            name: "Help & Documentation",
+            description: "System Help • ⌘?",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "help and documentation",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_help_1",
+                    step_index: 1,
+                    instruction: "Open macOS Help Documentation",
+                    action: "launch_app",
+                    app: "HelpViewer",
+                    target_role: "AXApplication",
+                    description: "Display Mac user guide & shortcuts"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_hotcorners",
+            name: "Hot Corners Settings",
+            description: "Desktop & Dock preferences",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "hot corners settings",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_hotcorners_1",
+                    step_index: 1,
+                    instruction: "Open Hot Corners configuration in System Settings",
+                    action: "launch_app",
+                    app: "System Settings",
+                    target_role: "AXApplication",
+                    description: "Configure display corner gestures"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_hide_others",
+            name: "Hide Other Applications",
+            description: "Window Management • ⌥⌘H",
+            confidence: 0.98,
+            step_count: 1,
+            canonical_trigger: "hide other applications",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_hide_1",
+                    step_index: 1,
+                    instruction: "Hide background windows",
+                    action: "key_combo",
+                    app: "Finder",
+                    target_role: "AXApplication",
+                    description: "Focus exclusively on active window"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_photos",
+            name: "Open Photos",
+            description: "Apple Photos Library",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open photos",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_photos_1",
+                    step_index: 1,
+                    instruction: "Launch Photos application",
+                    action: "launch_app",
+                    app: "Photos",
+                    target_role: "AXApplication",
+                    description: "Browse photo albums and memories"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_podcasts",
+            name: "Open Podcasts",
+            description: "Apple Podcasts",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open podcasts",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_podcasts_1",
+                    step_index: 1,
+                    instruction: "Launch Podcasts application",
+                    action: "launch_app",
+                    app: "Podcasts",
+                    target_role: "AXApplication",
+                    description: "Listen to audio shows and episodes"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_preview",
+            name: "Open Preview",
+            description: "PDF & Image Viewer",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open preview",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_preview_1",
+                    step_index: 1,
+                    instruction: "Launch Preview application",
+                    action: "launch_app",
+                    app: "Preview",
+                    target_role: "AXApplication",
+                    description: "View and annotate documents"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_settings",
+            name: "Open System Settings",
+            description: "macOS Preferences & Controls",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open system settings",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_settings_1",
+                    step_index: 1,
+                    instruction: "Open macOS System Settings",
+                    action: "launch_app",
+                    app: "System Settings",
+                    target_role: "AXApplication",
+                    description: "Manage system preferences"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_calculator",
+            name: "Open Calculator",
+            description: "macOS Calculator",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open calculator",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_calc_1",
+                    step_index: 1,
+                    instruction: "Launch Calculator application",
+                    action: "launch_app",
+                    app: "Calculator",
+                    target_role: "AXApplication",
+                    description: "Standard, scientific, and programmer math"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_calendar",
+            name: "Open Calendar",
+            description: "Apple Calendar",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open calendar",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_cal_1",
+                    step_index: 1,
+                    instruction: "Launch Calendar application",
+                    action: "launch_app",
+                    app: "Calendar",
+                    target_role: "AXApplication",
+                    description: "Manage schedule and meetings"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_safari",
+            name: "Open Safari",
+            description: "Web Browser",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open safari",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_safari_1",
+                    step_index: 1,
+                    instruction: "Launch Safari browser",
+                    action: "launch_app",
+                    app: "Safari",
+                    target_role: "AXApplication",
+                    description: "Browse the web"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_terminal",
+            name: "Open Terminal",
+            description: "Command Line Shell",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open terminal",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_term_1",
+                    step_index: 1,
+                    instruction: "Launch Terminal application",
+                    action: "launch_app",
+                    app: "Terminal",
+                    target_role: "AXApplication",
+                    description: "Execute zsh shell commands"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_textedit",
+            name: "Open TextEdit",
+            description: "Rich Text & Plain Text Editor",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open textedit",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_textedit_1",
+                    step_index: 1,
+                    instruction: "Launch TextEdit application",
+                    action: "launch_app",
+                    app: "TextEdit",
+                    target_role: "AXApplication",
+                    description: "Edit text notes and documents"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_notes",
+            name: "Open Notes",
+            description: "Apple Notes",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open notes",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_notes_1",
+                    step_index: 1,
+                    instruction: "Launch Notes application",
+                    action: "launch_app",
+                    app: "Notes",
+                    target_role: "AXApplication",
+                    description: "Capture thoughts, checklists, and documents"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_messages",
+            name: "Open Messages",
+            description: "iMessage & SMS",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open messages",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_msg_1",
+                    step_index: 1,
+                    instruction: "Launch Messages application",
+                    action: "launch_app",
+                    app: "Messages",
+                    target_role: "AXApplication",
+                    description: "Chat and send messages"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_mail",
+            name: "Open Mail",
+            description: "Apple Mail Client",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open mail",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_mail_1",
+                    step_index: 1,
+                    instruction: "Launch Mail application",
+                    action: "launch_app",
+                    app: "Mail",
+                    target_role: "AXApplication",
+                    description: "Read and compose emails"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_music",
+            name: "Open Music",
+            description: "Apple Music",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open music",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_music_1",
+                    step_index: 1,
+                    instruction: "Launch Music application",
+                    action: "launch_app",
+                    app: "Music",
+                    target_role: "AXApplication",
+                    description: "Play tracks and playlists"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_finder",
+            name: "Open Finder",
+            description: "macOS File Manager",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open finder",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_finder_1",
+                    step_index: 1,
+                    instruction: "Bring Finder to front",
+                    action: "launch_app",
+                    app: "Finder",
+                    target_role: "AXApplication",
+                    description: "Browse files and folders"
+                )
+            ]
+        ),
+        WorkflowItem(
+            workflow_id: "sys_activity",
+            name: "Open Activity Monitor",
+            description: "CPU & Memory Performance",
+            confidence: 0.99,
+            step_count: 1,
+            canonical_trigger: "open activity monitor",
+            steps: [
+                WorkflowStepItem(
+                    id: "step_act_1",
+                    step_index: 1,
+                    instruction: "Launch Activity Monitor",
+                    action: "launch_app",
+                    app: "Activity Monitor",
+                    target_role: "AXApplication",
+                    description: "Inspect running processes and memory"
+                )
+            ]
+        )
+    ]
+}
+
 
 // MARK: - Swift-Native Screen Recorder (Apple ScreenCaptureKit + SCRecordingOutput)
 //
@@ -1187,8 +1599,13 @@ final class WalkthroughOverlayManager: ObservableObject {
 
 @MainActor
 final class ClioViewModel: ObservableObject {
-    @Published var query: String = ""
+    @Published var query: String = "" {
+        didSet {
+            updateRecommendationsSynchronously(for: query)
+        }
+    }
     @Published var workflows: [WorkflowItem] = []
+    @Published var recommendations: [WorkflowItem] = []
     @Published var selectedIndex: Int = 0
     @Published var isExecuting: Bool = false
     @Published var isRecording: Bool = false
@@ -1243,6 +1660,80 @@ final class ClioViewModel: ObservableObject {
         }
     }
 
+    func recommendationMatches(item: WorkflowItem, query: String) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return false }
+
+        let name = item.displayName.lowercased()
+        let trig = item.canonical_trigger?.lowercased() ?? ""
+        let desc = item.displayDesc.lowercased()
+
+        // 1. Direct prefix matches on name or trigger
+        if name.hasPrefix(q) || trig.hasPrefix(q) {
+            return true
+        }
+
+        // 2. Token / word boundary matches: any individual word begins with query
+        let words = (name + " " + trig).components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        if words.contains(where: { $0.hasPrefix(q) }) {
+            return true
+        }
+
+        // 3. For queries with 3 or more characters, allow substring containment
+        if q.count >= 3 {
+            if name.contains(q) || trig.contains(q) || desc.contains(q) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    func updateRecommendationsSynchronously(for rawQuery: String) {
+        let trimmed = rawQuery.trimmingCharacters(in: .whitespaces)
+        if isWalkthroughMode || isMemoryCommand || trimmed.isEmpty {
+            self.recommendations = []
+            self.selectedIndex = 0
+            return
+        }
+
+        var candidates: [WorkflowItem] = []
+        var seenIds = Set<String>()
+
+        // 1. User saved custom workflows
+        for item in (allSavedWorkflows + workflows) {
+            if !seenIds.contains(item.id) && recommendationMatches(item: item, query: trimmed) {
+                seenIds.insert(item.id)
+                candidates.append(item)
+            }
+        }
+
+        // 2. Built-in system recommendations
+        for sysItem in SystemRecommendationCatalog.items {
+            if !seenIds.contains(sysItem.id) && recommendationMatches(item: sysItem, query: trimmed) {
+                seenIds.insert(sysItem.id)
+                candidates.append(sysItem)
+            }
+        }
+
+        // 3. Sort candidates to prioritize exact prefix starts
+        let lowerQ = trimmed.lowercased()
+        candidates.sort { a, b in
+            let aName = a.displayName.lowercased()
+            let bName = b.displayName.lowercased()
+            let aExact = aName.hasPrefix(lowerQ)
+            let bExact = bName.hasPrefix(lowerQ)
+            if aExact && !bExact { return true }
+            if !aExact && bExact { return false }
+            return (a.confidence ?? 0) > (b.confidence ?? 0)
+        }
+
+        self.recommendations = Array(candidates.prefix(4))
+        if self.selectedIndex >= self.recommendations.count {
+            self.selectedIndex = 0
+        }
+    }
+
     var currentInspectedIndex: Int? {
         guard let current = inspectWorkflow else { return nil }
         let list = isMemoryCommand ? memoryWorkflows : workflows
@@ -1266,7 +1757,7 @@ final class ClioViewModel: ObservableObject {
             inspectNextWorkflow()
             return
         }
-        let count = isMemoryCommand ? memoryWorkflows.count : workflows.count
+        let count = isMemoryCommand ? memoryWorkflows.count : recommendations.count
         guard count > 0 else { return }
         selectedIndex = min(selectedIndex + 1, count - 1)
     }
@@ -1276,7 +1767,7 @@ final class ClioViewModel: ObservableObject {
             inspectPreviousWorkflow()
             return
         }
-        let count = isMemoryCommand ? memoryWorkflows.count : workflows.count
+        let count = isMemoryCommand ? memoryWorkflows.count : recommendations.count
         guard count > 0 else { return }
         selectedIndex = max(selectedIndex - 1, 0)
     }
@@ -1427,7 +1918,8 @@ final class ClioViewModel: ObservableObject {
                 self.workflows = deduped
                 self.allSavedWorkflows = deduped
                 self.isConnected = true
-                if self.selectedIndex >= self.workflows.count { self.selectedIndex = 0 }
+                self.updateRecommendationsSynchronously(for: self.query)
+                if self.selectedIndex >= self.recommendations.count { self.selectedIndex = 0 }
             }
         } catch {
             // Silently suppress -1004 connection errors while retrying
@@ -1456,8 +1948,11 @@ final class ClioViewModel: ObservableObject {
         }
     }
 
+    private var searchTask: Task<Void, Never>?
+
     func search(text: String) async {
         if isWalkthroughMode {
+            self.recommendations = []
             self.workflows = []
             self.inspectWorkflow = nil
             self.selectedIndex = 0
@@ -1470,27 +1965,41 @@ final class ClioViewModel: ObservableObject {
             self.selectedIndex = 0
             return
         }
-        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
+        // Immediate synchronous filtering eliminates 100% of flicker
+        self.updateRecommendationsSynchronously(for: text)
+
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
             await fetchWorkflows()
             self.inspectWorkflow = nil
             return
         }
-        guard let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "/api/search?q=\(encoded)", relativeTo: baseURL) else { return }
-        do {
-            let req = makeAuthorizedRequest(url: url)
-            let (data, _) = try await URLSession.shared.data(for: req)
-            if self.isWalkthroughMode {
-                self.workflows = []
-                self.inspectWorkflow = nil
-                return
+
+        // Cancel previous pending search task to avoid out-of-order race conditions
+        searchTask?.cancel()
+        searchTask = Task { [weak self] in
+            guard let self = self else { return }
+            guard let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                  let url = URL(string: "/api/search?q=\(encoded)", relativeTo: self.baseURL) else { return }
+            do {
+                let req = self.makeAuthorizedRequest(url: url)
+                let (data, _) = try await URLSession.shared.data(for: req)
+                if Task.isCancelled || self.isWalkthroughMode { return }
+                let items = try JSONDecoder().decode([WorkflowItem].self, from: data)
+                let deduped = self.deduplicateWorkflows(items)
+                await MainActor.run {
+                    if Task.isCancelled { return }
+                    for item in deduped {
+                        if !self.allSavedWorkflows.contains(where: { $0.id == item.id }) {
+                            self.allSavedWorkflows.append(item)
+                        }
+                    }
+                    self.updateRecommendationsSynchronously(for: self.query)
+                    self.checkAndInspectQuery(trimmed)
+                }
+            } catch {
+                // Silently handled
             }
-            let items = try JSONDecoder().decode([WorkflowItem].self, from: data)
-            self.workflows = self.deduplicateWorkflows(items)
-            self.selectedIndex = 0
-            self.checkAndInspectQuery(text)
-        } catch {
-            // Silently handled
         }
     }
 
@@ -1563,11 +2072,13 @@ final class ClioViewModel: ObservableObject {
     func toggleWalkthroughMode() {
         isWalkthroughMode.toggle()
         if isWalkthroughMode {
+            self.recommendations = []
             self.workflows = []
             self.inspectWorkflow = nil
             self.statusPillText = "CLIO • TEACH ME"
         } else {
             self.statusPillText = "CLIO • READY"
+            self.updateRecommendationsSynchronously(for: self.query)
         }
     }
 
@@ -1616,7 +2127,17 @@ final class ClioViewModel: ObservableObject {
         }
 
         // 1b. Walkthrough Mode or Trigger Execution
-        let isWalkthroughTrigger = lower.hasPrefix("teach me") || lower.hasPrefix("how do i") || lower.hasPrefix("how can i") || lower.hasPrefix("show me how") || lower.hasPrefix("walk me through") || lower.hasPrefix("tutorial on")
+        let isWalkthroughTrigger = lower.hasPrefix("teach ") ||
+                                   lower.hasPrefix("teach me") ||
+                                   lower.hasPrefix("how do i") ||
+                                   lower.hasPrefix("how can i") ||
+                                   lower.hasPrefix("how to") ||
+                                   lower.hasPrefix("show me") ||
+                                   lower.hasPrefix("guide me") ||
+                                   lower.hasPrefix("walk me through") ||
+                                   lower.hasPrefix("walkthrough") ||
+                                   lower.hasPrefix("tutorial") ||
+                                   lower.hasPrefix("learn")
         if isWalkthroughMode || isWalkthroughTrigger {
             startWalkthrough(query: trimmed)
             return
@@ -1654,11 +2175,18 @@ final class ClioViewModel: ObservableObject {
             return
         }
 
+        // Recommendations selection: executes system actions or inspects matching actions immediately
+        if !recommendations.isEmpty && selectedIndex >= 0 && selectedIndex < recommendations.count {
+            let selectedItem = recommendations[selectedIndex]
+            executeWorkflowOrSystemAction(selectedItem)
+            return
+        }
+
         let normQuery = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
 
         // When the user types an action in the Clio bar, it shouldn't take any action yet;
         // it should show the steps in order to perform that action.
-        if let match = workflows.first(where: {
+        if let match = (allSavedWorkflows + workflows).first(where: {
             let dName = $0.displayName.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
             let cTrig = $0.canonical_trigger?.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
             return dName == normQuery || cTrig == normQuery
@@ -1667,18 +2195,80 @@ final class ClioViewModel: ObservableObject {
             return
         }
 
-        // Check if there is a selected or top matching workflow
+        // Check if there is an explicitly selected workflow from arrow keys
         if selectedIndex >= 0 && selectedIndex < workflows.count {
             inspectWorkflowDetails(workflows[selectedIndex])
             return
         }
 
-        if let topMatch = workflows.first {
-            inspectWorkflowDetails(topMatch)
+        // Novel user instruction fallback: launch Walkthrough Tutor dynamically!
+        startWalkthrough(query: trimmed)
+    }
+
+    func executeWorkflowOrSystemAction(_ item: WorkflowItem) {
+        if item.id.hasPrefix("sys_") {
+            executeSystemAction(item.id)
+            self.query = ""
+            self.inspectWorkflow = nil
+            AppDelegate.shared?.hidePanel()
             return
         }
+        inspectWorkflowDetails(item)
+    }
 
-        // Do not conduct any actions with Clio cursor or execute hands-free actions
+    func executeSystemAction(_ id: String) {
+        switch id {
+        case "sys_home":
+            NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser)
+        case "sys_help":
+            if let url = URL(string: "help:") {
+                NSWorkspace.shared.open(url)
+            }
+        case "sys_hotcorners":
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.expose") {
+                NSWorkspace.shared.open(url)
+            } else {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+            }
+        case "sys_hide_others":
+            NSWorkspace.shared.hideOtherApplications()
+        case "sys_photos":
+            NSWorkspace.shared.launchApplication("Photos")
+        case "sys_podcasts":
+            NSWorkspace.shared.launchApplication("Podcasts")
+        case "sys_preview":
+            NSWorkspace.shared.launchApplication("Preview")
+        case "sys_settings":
+            if let url = URL(string: "x-apple.systempreferences:") {
+                NSWorkspace.shared.open(url)
+            } else {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+            }
+        case "sys_calculator":
+            NSWorkspace.shared.launchApplication("Calculator")
+        case "sys_calendar":
+            NSWorkspace.shared.launchApplication("Calendar")
+        case "sys_safari":
+            NSWorkspace.shared.launchApplication("Safari")
+        case "sys_terminal":
+            NSWorkspace.shared.launchApplication("Terminal")
+        case "sys_textedit":
+            NSWorkspace.shared.launchApplication("TextEdit")
+        case "sys_notes":
+            NSWorkspace.shared.launchApplication("Notes")
+        case "sys_messages":
+            NSWorkspace.shared.launchApplication("Messages")
+        case "sys_mail":
+            NSWorkspace.shared.launchApplication("Mail")
+        case "sys_music":
+            NSWorkspace.shared.launchApplication("Music")
+        case "sys_finder":
+            NSWorkspace.shared.launchApplication("Finder")
+        case "sys_activity":
+            NSWorkspace.shared.launchApplication("Activity Monitor")
+        default:
+            break
+        }
     }
 
     func deleteWorkflow(id: String) {
@@ -2404,8 +2994,8 @@ struct ClioBarView: View {
         }
         if !vm.isWalkthroughMode {
             let trimmed = vm.query.trimmingCharacters(in: .whitespaces)
-            if !trimmed.isEmpty && !vm.workflows.isEmpty {
-                let rowCount = min(vm.workflows.count, 4)
+            if !trimmed.isEmpty && !vm.recommendations.isEmpty {
+                let rowCount = min(vm.recommendations.count, 4)
                 return base + CGFloat(rowCount * 38) + 16
             }
         }
@@ -2417,7 +3007,7 @@ struct ClioBarView: View {
         (!vm.isWalkthroughMode && vm.inspectWorkflow != nil) ||
         vm.isMemoryCommand ||
         WalkthroughOverlayManager.shared.isVisible ||
-        (!vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty)
+        (!vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.recommendations.isEmpty)
     }
 
     private var barCornerRadius: CGFloat {
@@ -2640,7 +3230,7 @@ struct ClioBarView: View {
                 inspectedWorkflowView(inspected)
             } else if vm.isMemoryCommand {
                 memorySpaceView
-            } else if !vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.workflows.isEmpty {
+            } else if !vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.recommendations.isEmpty {
                 searchResultsView
             }
         }
@@ -2674,7 +3264,7 @@ struct ClioBarView: View {
         .onChange(of: vm.inspectWorkflow?.id) { _ in
             AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
         }
-        .onChange(of: vm.workflows.count) { _ in
+        .onChange(of: vm.recommendations.count) { _ in
             AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
         }
         .onChange(of: vm.allSavedWorkflows.count) { _ in
@@ -3225,14 +3815,14 @@ struct ClioBarView: View {
     private var searchResultsView: some View {
         Divider().background(ObsidianTheme.borderSubtle)
         VStack(spacing: 2) {
-            ForEach(Array(vm.workflows.prefix(4).enumerated()), id: \.element.id) { idx, wf in
+            ForEach(Array(vm.recommendations.prefix(4).enumerated()), id: \.element.id) { idx, wf in
                 SearchResultRowView(
                     wf: wf,
                     isSelected: idx == vm.selectedIndex,
                     onPreview: { vm.previewExistingWorkflowRecording(wf) },
                     onSelect: {
                         vm.selectedIndex = idx
-                        vm.inspectWorkflowDetails(wf)
+                        vm.executeWorkflowOrSystemAction(wf)
                     },
                     onDelete: {
                         vm.deleteWorkflow(id: wf.id)
@@ -3253,17 +3843,47 @@ struct SearchResultRowView: View {
     let onSelect: () -> Void
     let onDelete: () -> Void
 
+    private var rowIconName: String {
+        switch wf.id {
+        case "sys_home": return "house.fill"
+        case "sys_help": return "questionmark.circle.fill"
+        case "sys_hotcorners": return "macwindow.badge.plus"
+        case "sys_hide_others": return "eye.slash.fill"
+        case "sys_photos": return "photo.fill"
+        case "sys_podcasts": return "antenna.radiowaves.left.and.right"
+        case "sys_preview": return "doc.text.magnifyingglass"
+        case "sys_settings": return "gearshape.fill"
+        case "sys_calculator": return "plus.slash.minus"
+        case "sys_calendar": return "calendar"
+        case "sys_safari": return "safari.fill"
+        case "sys_terminal": return "terminal.fill"
+        case "sys_textedit": return "doc.text.fill"
+        case "sys_notes": return "note.text"
+        case "sys_messages": return "message.fill"
+        case "sys_mail": return "envelope.fill"
+        case "sys_music": return "music.note"
+        case "sys_finder": return "folder.fill"
+        case "sys_activity": return "chart.bar.xaxis"
+        default: return "command"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "command")
+            Image(systemName: rowIconName)
                 .font(.system(size: 11))
                 .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.slateDark)
+                .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(wf.displayName)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(isSelected ? ObsidianTheme.platinum : ObsidianTheme.platinumDim)
-                if let trig = wf.canonical_trigger, !trig.isEmpty {
+                if let desc = wf.description, !desc.isEmpty {
+                    Text(desc)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                } else if let trig = wf.canonical_trigger, !trig.isEmpty {
                     Text(trig)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(ObsidianTheme.slate)
@@ -3291,21 +3911,31 @@ struct SearchResultRowView: View {
                 .help("View screen recording of this action")
             }
 
-            Text("\(wf.displaySteps) steps")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(ObsidianTheme.slate)
-
-            // Explicit Delete Button
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-                    .font(.system(size: 10))
+            if wf.id.hasPrefix("sys_") {
+                Text("System Action")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     .foregroundColor(ObsidianTheme.slateDark)
-                    .frame(width: 20, height: 20)
-                    .background(ObsidianTheme.surfaceElevated)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(ObsidianTheme.surfaceElevated.opacity(0.6))
                     .cornerRadius(4)
+            } else {
+                Text("\(wf.displaySteps) steps")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+
+                // Explicit Delete Button
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                        .frame(width: 20, height: 20)
+                        .background(ObsidianTheme.surfaceElevated)
+                        .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+                .help("Delete action and associated recording")
             }
-            .buttonStyle(.plain)
-            .help("Delete action and associated recording")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
