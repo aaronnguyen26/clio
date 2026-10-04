@@ -2463,7 +2463,7 @@ struct ClioBarView: View {
 
                 // Command Search Input
                 TextField(
-                    vm.isWalkthroughMode ? "What do you want Clio to teach you? (e.g. 'dark mode', 'hot corners')..." :
+                    vm.isWalkthroughMode ? "Ask clio to teach you anything..." :
                     (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything..."),
                     text: $vm.query
                 )
