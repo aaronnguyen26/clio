@@ -178,7 +178,7 @@
 		</data>
 		<key>Resources/src/ui/ClioBar.swift</key>
 		<data>
-		fCSpM4infqKGf/31U8XxUCJGVLA=
+		D68LaVNVJg1gdvSDRdfTbmQNc14=
 		</data>
 		<key>Resources/src/ui/Info.plist</key>
 		<data>
@@ -235,7 +235,7 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			P3rzqxB1qmn6EmSc+Hk7IXBee3c=
+			pRIkAVz1RWkDPJ5myk8Q+5pfOH0=
 			</data>
 			<key>requirement</key>
 			<string>identifier "clio-bar" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: min.aaronnguyen@gmail.com (48CU82S8GW)" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */</string>
@@ -572,7 +572,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			xjtLTZU009/jLQXJafHzj8sjlvZsnaAbbePVd3dwRH0=
+			H4IW/p+4TLf7Ar3rbrYF4ZkDxbOSILmXz8gIUslkwfw=
 			</data>
 		</dict>
 		<key>Resources/src/ui/Info.plist</key>

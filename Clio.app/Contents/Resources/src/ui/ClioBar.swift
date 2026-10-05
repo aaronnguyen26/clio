@@ -513,7 +513,7 @@ struct SlashShortcutCatalog {
             title: "Recent Automations",
             description: "View and immediately re-run recently used automations",
             iconName: "clock.arrow.circlepath",
-            badge: "ACTION ↵",
+            badge: "RUN ↵",
             shortcutKey: "⌘4"
         ),
         SlashShortcutItem(
@@ -549,7 +549,7 @@ struct SlashShortcutCatalog {
             title: "Help & Documentation",
             description: "Open system help guides and keyboard shortcuts",
             iconName: "questionmark.circle",
-            badge: "HELP ↵",
+            badge: "GUIDE ↵",
             shortcutKey: "⌘8"
         ),
     ]
@@ -1729,6 +1729,9 @@ final class ClioViewModel: ObservableObject {
             if !trimmed.hasPrefix("/status") {
                 self.isStatusPanelOpen = false
             }
+            if !trimmed.hasPrefix("/help") {
+                self.isHelpPanelOpen = false
+            }
             if !trimmed.hasPrefix("/ai") {
                 self.aiCompanionResponse = ""
                 self.aiTriggeredWorkflow = nil
@@ -1771,6 +1774,7 @@ final class ClioViewModel: ObservableObject {
 
     @Published var isMemorySpaceOpen: Bool = false
     @Published var isStatusPanelOpen: Bool = false
+    @Published var isHelpPanelOpen: Bool = false
     @Published var systemAccessibilityGranted: Bool = false
     @Published var aiProviderName: String = "Local Engine"
     @Published var aiProviderStatus: String = "Ready"
@@ -1782,16 +1786,16 @@ final class ClioViewModel: ObservableObject {
 
     var matchingSlashCommands: [SlashShortcutItem] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("/") && !isMemorySpaceOpen && !isStatusPanelOpen else { return [] }
+        guard trimmed.hasPrefix("/") && !isMemorySpaceOpen && !isStatusPanelOpen && !isHelpPanelOpen else { return [] }
         return SlashShortcutCatalog.matchingShortcuts(for: trimmed)
     }
 
     var isSlashMenuVisible: Bool {
         guard !isWalkthroughMode, !showSaveModal, inspectWorkflow == nil else { return false }
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("/"), !isMemorySpaceOpen, !isStatusPanelOpen else { return false }
+        guard trimmed.hasPrefix("/"), !isMemorySpaceOpen, !isStatusPanelOpen, !isHelpPanelOpen else { return false }
         let lower = trimmed.lowercased()
-        if lower.hasPrefix("/memory ") || lower.hasPrefix("/recent ") || lower.hasPrefix("/ai ") || lower == "/status" {
+        if lower.hasPrefix("/memory ") || lower.hasPrefix("/recent ") || lower.hasPrefix("/ai ") || lower == "/status" || lower == "/help" {
             return false
         }
         return !matchingSlashCommands.isEmpty
@@ -1833,7 +1837,21 @@ final class ClioViewModel: ObservableObject {
             searchFilter = String(trimmed.dropFirst(8)).trimmingCharacters(in: .whitespaces)
         }
 
-        let sourceList = !allSavedWorkflows.isEmpty ? allSavedWorkflows : workflows
+        var sourceList: [WorkflowItem] = []
+        var seenIds = Set<String>()
+        for item in (allSavedWorkflows + workflows) {
+            if !seenIds.contains(item.id) {
+                seenIds.insert(item.id)
+                sourceList.append(item)
+            }
+        }
+        for sysItem in SystemRecommendationCatalog.items {
+            if !seenIds.contains(sysItem.id) {
+                seenIds.insert(sysItem.id)
+                sourceList.append(sysItem)
+            }
+        }
+
         if searchFilter.isEmpty {
             return Array(sourceList.prefix(5))
         } else {
@@ -1853,6 +1871,19 @@ final class ClioViewModel: ObservableObject {
             return true
         }
         if trimmed == "/status" && !isSlashMenuVisible {
+            return true
+        }
+        return false
+    }
+
+    var isHelpCommand: Bool {
+        guard !isWalkthroughMode, !showSaveModal else { return false }
+        let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard trimmed.hasPrefix("/help") else { return false }
+        if isHelpPanelOpen {
+            return true
+        }
+        if trimmed == "/help" && !isSlashMenuVisible {
             return true
         }
         return false
@@ -2453,19 +2484,31 @@ final class ClioViewModel: ObservableObject {
             }
         }
 
-        // Recent Automations Selection
-        if isRecentCommand {
-            let list = recentWorkflows
-            if selectedIndex >= 0 && selectedIndex < list.count {
-                inspectWorkflowDetails(list[selectedIndex])
-            } else if let first = list.first {
-                inspectWorkflowDetails(first)
+        // Recent Automations Execution
+        if lower == "/recent" || isRecentCommand {
+            self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
+            self.query = ""
+            if let recent = recentWorkflows.first {
+                executeWorkflowOrSystemAction(recent)
+            } else if let fallback = SystemRecommendationCatalog.items.first {
+                executeWorkflowOrSystemAction(fallback)
             }
             return
         }
 
+        // Help Guide Execution
+        if lower == "/help" || isHelpCommand {
+            self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = true
+            self.query = "/help"
+            return
+        }
+
         // Status Diagnostics Selection
-        if isStatusCommand {
+        if lower == "/status" || isStatusCommand {
             checkSystemHealth()
             return
         }
@@ -2519,8 +2562,9 @@ final class ClioViewModel: ObservableObject {
     func executeSlashShortcut(_ item: SlashShortcutItem) {
         switch item.id {
         case "shortcut_memory":
-            self.isMemorySpaceOpen = true
             self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
+            self.isMemorySpaceOpen = true
             self.query = "/memory "
             self.selectedIndex = 0
             if allSavedWorkflows.isEmpty {
@@ -2529,12 +2573,14 @@ final class ClioViewModel: ObservableObject {
         case "shortcut_record":
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             self.toggleRecording()
         case "shortcut_teach":
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             withAnimation(.easeInOut(duration: 0.25)) {
@@ -2543,14 +2589,18 @@ final class ClioViewModel: ObservableObject {
         case "shortcut_recent":
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
-            self.query = "/recent "
+            self.isHelpPanelOpen = false
+            self.query = ""
             self.selectedIndex = 0
-            if allSavedWorkflows.isEmpty {
-                Task { await fetchWorkflows() }
+            if let recent = self.recentWorkflows.first {
+                self.executeWorkflowOrSystemAction(recent)
+            } else if let fallback = SystemRecommendationCatalog.items.first {
+                self.executeWorkflowOrSystemAction(fallback)
             }
         case "shortcut_stop":
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             self.cancelTask()
@@ -2564,6 +2614,7 @@ final class ClioViewModel: ObservableObject {
             }
         case "shortcut_status":
             self.isMemorySpaceOpen = false
+            self.isHelpPanelOpen = false
             self.isStatusPanelOpen = true
             self.query = "/status"
             self.selectedIndex = 0
@@ -2571,18 +2622,19 @@ final class ClioViewModel: ObservableObject {
         case "shortcut_ai":
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
             self.query = "/ai "
             self.selectedIndex = 0
         case "shortcut_help":
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
-            self.query = ""
+            self.isHelpPanelOpen = true
+            self.query = "/help"
             self.selectedIndex = 0
-            NSApp.showHelp(nil)
-            AppDelegate.shared?.hidePanel()
         default:
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
             self.query = item.command + " "
             self.selectedIndex = 0
         }
@@ -2659,10 +2711,19 @@ final class ClioViewModel: ObservableObject {
             executeSystemAction(item.id)
             self.query = ""
             self.inspectWorkflow = nil
+            withAnimation(.easeInOut(duration: 0.2)) {
+                self.statusPillText = "RUNNING: \(item.displayName.uppercased())"
+            }
             AppDelegate.shared?.hidePanel()
             return
         }
-        inspectWorkflowDetails(item)
+        self.query = ""
+        self.inspectWorkflow = nil
+        withAnimation(.easeInOut(duration: 0.2)) {
+            self.statusPillText = "RUNNING: \(item.displayName.uppercased())"
+        }
+        AppDelegate.shared?.hidePanel()
+        self.executeById(item.id)
     }
 
     private func launchSystemApp(bundleId: String, appName: String) {
@@ -3452,7 +3513,7 @@ struct ClioBarView: View {
         }
         if vm.isSlashMenuVisible {
             let count = max(1, vm.matchingSlashCommands.count)
-            return base + 30 + CGFloat(min(count, 6) * 44) + 26
+            return base + CGFloat(min(count, 8) * 44) + 38
         }
         if vm.isMemoryCommand {
             let count = vm.memoryWorkflows.count
@@ -3472,6 +3533,9 @@ struct ClioBarView: View {
         }
         if vm.isStatusCommand {
             return base + 210
+        }
+        if vm.isHelpCommand {
+            return base + 300
         }
         if vm.isAICommand {
             if vm.isAILoading {
@@ -3499,6 +3563,7 @@ struct ClioBarView: View {
         vm.isMemoryCommand ||
         vm.isRecentCommand ||
         vm.isStatusCommand ||
+        vm.isHelpCommand ||
         vm.isAICommand ||
         WalkthroughOverlayManager.shared.isVisible ||
         (!vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.recommendations.isEmpty)
@@ -3548,9 +3613,8 @@ struct ClioBarView: View {
 
 // MARK: - Event and Notification Handling Modifier for Swift Compiler Performance
 
-struct ClioBarEventModifier: ViewModifier {
+struct ClioBarNotificationModifier: ViewModifier {
     @ObservedObject var vm: ClioViewModel
-    let currentTargetHeight: CGFloat
 
     func body(content: Content) -> some View {
         content
@@ -3588,42 +3652,6 @@ struct ClioBarEventModifier: ViewModifier {
                     vm.executeSlashShortcut(item)
                 }
             }
-            .onChange(of: vm.showSaveModal) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.inspectWorkflow?.id) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.isSlashMenuVisible) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.matchingSlashCommands.count) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.recommendations.count) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.allSavedWorkflows.count) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.isWalkthroughMode) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.isStatusPanelOpen) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.aiCompanionResponse) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.isAILoading) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: vm.query) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
-            .onChange(of: WalkthroughOverlayManager.shared.isVisible) { _ in
-                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
-            }
     }
 
     private func handleEscape() {
@@ -3639,6 +3667,9 @@ struct ClioBarEventModifier: ViewModifier {
         } else if vm.isStatusCommand {
             vm.isStatusPanelOpen = false
             vm.query = ""
+        } else if vm.isHelpCommand {
+            vm.isHelpPanelOpen = false
+            vm.query = ""
         } else if vm.isAICommand {
             vm.aiCompanionResponse = ""
             vm.query = ""
@@ -3653,6 +3684,50 @@ struct ClioBarEventModifier: ViewModifier {
         } else {
             AppDelegate.shared?.hidePanel()
         }
+    }
+}
+
+struct ClioBarHeightModifier: ViewModifier {
+    @ObservedObject var vm: ClioViewModel
+    let currentTargetHeight: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: currentTargetHeight) { newH in
+                AppDelegate.shared?.updatePanelHeight(newH)
+            }
+            .onChange(of: vm.query) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isSlashMenuVisible) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isHelpPanelOpen) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isStatusPanelOpen) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isMemorySpaceOpen) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.recommendations.count) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isWalkthroughMode) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+    }
+}
+
+struct ClioBarEventModifier: ViewModifier {
+    @ObservedObject var vm: ClioViewModel
+    let currentTargetHeight: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .modifier(ClioBarNotificationModifier(vm: vm))
+            .modifier(ClioBarHeightModifier(vm: vm, currentTargetHeight: currentTargetHeight))
     }
 }
 
@@ -3886,6 +3961,8 @@ extension ClioBarView {
             recentWorkflowsView
         } else if vm.isStatusCommand {
             statusDiagnosticView
+        } else if vm.isHelpCommand {
+            helpGuideView
         } else if vm.isAICommand {
             aiCompanionView
         } else if !vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.recommendations.isEmpty {
@@ -4430,27 +4507,8 @@ extension ClioBarView {
     private var slashCommandsMenuView: some View {
         Divider().background(ObsidianTheme.borderSubtle)
         VStack(spacing: 0) {
-            // Category Header
-            HStack(spacing: 6) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(ObsidianTheme.platinum)
-                Text("AVAILABLE SHORTCUTS")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.platinum)
-                Spacer()
-                Text("TYPE TO FILTER • ⏎ TO SELECT")
-                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.slateDark)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .background(ObsidianTheme.surfaceElevated.opacity(0.35))
-
-            Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
-
             // Command Items in ScrollView for smooth scrolling when multiple shortcuts exist
-            ScrollView(.vertical, showsIndicators: false) {
+            ScrollView(.vertical, showsIndicators: vm.matchingSlashCommands.count > 8) {
                 VStack(spacing: 2) {
                     ForEach(Array(vm.matchingSlashCommands.enumerated()), id: \.element.id) { idx, item in
                         SlashCommandRowView(
@@ -4466,22 +4524,22 @@ extension ClioBarView {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
             }
-            .frame(maxHeight: CGFloat(min(vm.matchingSlashCommands.count, 6) * 44 + 12))
+            .frame(maxHeight: CGFloat(min(vm.matchingSlashCommands.count, 8) * 44 + 12))
 
             Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
 
             // Footer
             HStack {
-                Text("↑↓ Navigate • ⏎ Select • Esc Clear")
+                Text("↑↓ Navigate • ⏎ Perform • Esc Clear")
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(ObsidianTheme.slate)
                 Spacer()
-                Text("\(vm.matchingSlashCommands.count) SHORTCUTS AVAILABLE")
+                Text("\(vm.matchingSlashCommands.count) COMMANDS")
                     .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                     .foregroundColor(ObsidianTheme.slateDark)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 4)
+            .padding(.vertical, 5)
             .background(ObsidianTheme.surfaceElevated.opacity(0.2))
         }
         .background(ObsidianTheme.cardGlass)
@@ -4892,6 +4950,160 @@ extension ClioBarView {
             .background(ObsidianTheme.surfaceElevated.opacity(0.2))
         }
         .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
+    private var helpGuideView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: 6) {
+                Image(systemName: "questionmark.circle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("CLIO SYSTEM GUIDE & SHORTCUTS")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Spacer()
+                Text("v1.0 • HUD QUICKSTART")
+                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.35))
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
+
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 10) {
+                    // Section 1: Productivity Slash Commands
+                    Text("SLASH COMMANDS")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                        .padding(.top, 4)
+
+                    VStack(spacing: 4) {
+                        ForEach(SlashShortcutCatalog.shortcuts, id: \.id) { item in
+                            HStack(spacing: 8) {
+                                Text(item.command)
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundColor(ObsidianTheme.platinum)
+                                    .frame(width: 65, alignment: .leading)
+                                Text(item.title)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(ObsidianTheme.platinumDim)
+                                Spacer()
+                                if let key = item.shortcutKey {
+                                    Text(key)
+                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .foregroundColor(ObsidianTheme.slate)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(ObsidianTheme.surfaceElevated)
+                                        .cornerRadius(4)
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+                            .cornerRadius(5)
+                        }
+                    }
+
+                    Divider().background(ObsidianTheme.borderSubtle.opacity(0.25))
+
+                    // Section 2: Key Navigation
+                    Text("KEYBOARD CONTROLS")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+
+                    VStack(spacing: 4) {
+                        helpKeyRow(keys: "⏎ Return", desc: "Execute command / Run highlighted action")
+                        helpKeyRow(keys: "Esc", desc: "Clear input / Dismiss active panel")
+                        helpKeyRow(keys: "↑ / ↓", desc: "Navigate commands & recommendation items")
+                        helpKeyRow(keys: "⌘1 – ⌘8", desc: "Quick-fire corresponding slash command")
+                        helpKeyRow(keys: "⌘D", desc: "Toggle voice dictation audio recording")
+                    }
+
+                    Divider().background(ObsidianTheme.borderSubtle.opacity(0.25))
+
+                    // Section 3: Action Buttons
+                    HStack {
+                        Button(action: {
+                            if let url = URL(string: "https://github.com/aaronnguyen26/clio#readme") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "safari")
+                                    .font(.system(size: 10))
+                                Text("Open Documentation")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            }
+                            .foregroundColor(ObsidianTheme.surface)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(ObsidianTheme.platinum)
+                            .cornerRadius(5)
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer()
+
+                        Button(action: {
+                            vm.isHelpPanelOpen = false
+                            vm.query = ""
+                        }) {
+                            Text("Dismiss Help")
+                                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.slate)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(ObsidianTheme.surfaceElevated)
+                                .cornerRadius(5)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.top, 4)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+            .frame(maxHeight: 280)
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
+
+            // Footer
+            HStack {
+                Text("Esc to close • ⏎ or ⌘1-8 to execute")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                Spacer()
+                Text("SYSTEM MANUAL")
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+        }
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    private func helpKeyRow(keys: String, desc: String) -> some View {
+        HStack(spacing: 8) {
+            Text(keys)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(ObsidianTheme.platinum)
+                .frame(width: 80, alignment: .leading)
+            Text(desc)
+                .font(.system(size: 10.5))
+                .foregroundColor(ObsidianTheme.slate)
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
     }
 }
 
