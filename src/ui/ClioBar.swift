@@ -484,7 +484,7 @@ struct SlashShortcutCatalog {
             id: "shortcut_memory",
             command: "/memory",
             title: "Memory Space",
-            description: "Inspect saved automations, demonstrated workflows, and memory space",
+            description: "Inspect saved automations, neural memory, and demonstrated actions",
             iconName: "brain.head.profile",
             badge: "ACTION ↵",
             shortcutKey: "⌘1"
@@ -508,13 +508,49 @@ struct SlashShortcutCatalog {
             shortcutKey: "⌘3"
         ),
         SlashShortcutItem(
+            id: "shortcut_recent",
+            command: "/recent",
+            title: "Recent Automations",
+            description: "View and immediately re-run recently used automations",
+            iconName: "clock.arrow.circlepath",
+            badge: "ACTION ↵",
+            shortcutKey: "⌘4"
+        ),
+        SlashShortcutItem(
+            id: "shortcut_stop",
+            command: "/stop",
+            title: "Emergency Stop / Halt",
+            description: "Immediately halt running automations, virtual cursor, and walkthroughs",
+            iconName: "stop.circle.fill",
+            badge: "HALT ↵",
+            shortcutKey: "⌘5"
+        ),
+        SlashShortcutItem(
+            id: "shortcut_status",
+            command: "/status",
+            title: "System Health & Permissions",
+            description: "Check engine, AI connection, and macOS accessibility permissions",
+            iconName: "heart.text.square",
+            badge: "DIAGNOSE ↵",
+            shortcutKey: "⌘6"
+        ),
+        SlashShortcutItem(
+            id: "shortcut_ai",
+            command: "/ai",
+            title: "Ask AI Companion",
+            description: "Ask a question or query Clio reasoning engine without automating",
+            iconName: "sparkles",
+            badge: "PROMPT ↵",
+            shortcutKey: "⌘7"
+        ),
+        SlashShortcutItem(
             id: "shortcut_help",
             command: "/help",
             title: "Help & Documentation",
             description: "Open system help guides and keyboard shortcuts",
             iconName: "questionmark.circle",
-            badge: "ACTION ↵",
-            shortcutKey: "⌘4"
+            badge: "HELP ↵",
+            shortcutKey: "⌘8"
         ),
     ]
 
@@ -1690,6 +1726,13 @@ final class ClioViewModel: ObservableObject {
             if !trimmed.hasPrefix("/memory") {
                 self.isMemorySpaceOpen = false
             }
+            if !trimmed.hasPrefix("/status") {
+                self.isStatusPanelOpen = false
+            }
+            if !trimmed.hasPrefix("/ai") {
+                self.aiCompanionResponse = ""
+                self.aiTriggeredWorkflow = nil
+            }
             updateRecommendationsSynchronously(for: query)
         }
     }
@@ -1727,18 +1770,28 @@ final class ClioViewModel: ObservableObject {
     @Published var allSavedWorkflows: [WorkflowItem] = []
 
     @Published var isMemorySpaceOpen: Bool = false
+    @Published var isStatusPanelOpen: Bool = false
+    @Published var systemAccessibilityGranted: Bool = false
+    @Published var aiProviderName: String = "Local Engine"
+    @Published var aiProviderStatus: String = "Ready"
+
+    @Published var aiCompanionPrompt: String = ""
+    @Published var aiCompanionResponse: String = ""
+    @Published var isAILoading: Bool = false
+    @Published var aiTriggeredWorkflow: String? = nil
 
     var matchingSlashCommands: [SlashShortcutItem] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("/") && !isMemorySpaceOpen else { return [] }
+        guard trimmed.hasPrefix("/") && !isMemorySpaceOpen && !isStatusPanelOpen else { return [] }
         return SlashShortcutCatalog.matchingShortcuts(for: trimmed)
     }
 
     var isSlashMenuVisible: Bool {
         guard !isWalkthroughMode, !showSaveModal, inspectWorkflow == nil else { return false }
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("/"), !isMemorySpaceOpen else { return false }
-        if trimmed.lowercased().hasPrefix("/memory ") {
+        guard trimmed.hasPrefix("/"), !isMemorySpaceOpen, !isStatusPanelOpen else { return false }
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("/memory ") || lower.hasPrefix("/recent ") || lower.hasPrefix("/ai ") || lower == "/status" {
             return false
         }
         return !matchingSlashCommands.isEmpty
@@ -1755,6 +1808,64 @@ final class ClioViewModel: ObservableObject {
             return true
         }
         if trimmed == "/memory" && !isSlashMenuVisible {
+            return true
+        }
+        return false
+    }
+
+    var isRecentCommand: Bool {
+        guard !isWalkthroughMode, !showSaveModal else { return false }
+        let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard trimmed.hasPrefix("/recent") else { return false }
+        if trimmed.hasPrefix("/recent ") {
+            return true
+        }
+        if trimmed == "/recent" && !isSlashMenuVisible {
+            return true
+        }
+        return false
+    }
+
+    var recentWorkflows: [WorkflowItem] {
+        let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        var searchFilter = ""
+        if trimmed.hasPrefix("/recent ") {
+            searchFilter = String(trimmed.dropFirst(8)).trimmingCharacters(in: .whitespaces)
+        }
+
+        let sourceList = !allSavedWorkflows.isEmpty ? allSavedWorkflows : workflows
+        if searchFilter.isEmpty {
+            return Array(sourceList.prefix(5))
+        } else {
+            return sourceList.filter {
+                $0.name.lowercased().contains(searchFilter) ||
+                ($0.canonical_trigger?.lowercased().contains(searchFilter) ?? false) ||
+                ($0.description?.lowercased().contains(searchFilter) ?? false)
+            }
+        }
+    }
+
+    var isStatusCommand: Bool {
+        guard !isWalkthroughMode, !showSaveModal else { return false }
+        let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard trimmed.hasPrefix("/status") else { return false }
+        if isStatusPanelOpen {
+            return true
+        }
+        if trimmed == "/status" && !isSlashMenuVisible {
+            return true
+        }
+        return false
+    }
+
+    var isAICommand: Bool {
+        guard !isWalkthroughMode, !showSaveModal else { return false }
+        let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard trimmed.hasPrefix("/ai") else { return false }
+        if trimmed.hasPrefix("/ai ") {
+            return true
+        }
+        if trimmed == "/ai" && !isSlashMenuVisible {
             return true
         }
         return false
@@ -1881,6 +1992,12 @@ final class ClioViewModel: ObservableObject {
             selectedIndex = min(selectedIndex + 1, count - 1)
             return
         }
+        if isRecentCommand {
+            let count = recentWorkflows.count
+            guard count > 0 else { return }
+            selectedIndex = min(selectedIndex + 1, count - 1)
+            return
+        }
         let count = isMemoryCommand ? memoryWorkflows.count : recommendations.count
         guard count > 0 else { return }
         selectedIndex = min(selectedIndex + 1, count - 1)
@@ -1893,6 +2010,12 @@ final class ClioViewModel: ObservableObject {
         }
         if isSlashMenuVisible {
             let count = matchingSlashCommands.count
+            guard count > 0 else { return }
+            selectedIndex = max(selectedIndex - 1, 0)
+            return
+        }
+        if isRecentCommand {
+            let count = recentWorkflows.count
             guard count > 0 else { return }
             selectedIndex = max(selectedIndex - 1, 0)
             return
@@ -2322,6 +2445,47 @@ final class ClioViewModel: ObservableObject {
             return
         }
 
+        // Literal "/stop" execution
+        if lower == "/stop" {
+            if let stopItem = SlashShortcutCatalog.shortcuts.first(where: { $0.id == "shortcut_stop" }) {
+                executeSlashShortcut(stopItem)
+                return
+            }
+        }
+
+        // Recent Automations Selection
+        if isRecentCommand {
+            let list = recentWorkflows
+            if selectedIndex >= 0 && selectedIndex < list.count {
+                inspectWorkflowDetails(list[selectedIndex])
+            } else if let first = list.first {
+                inspectWorkflowDetails(first)
+            }
+            return
+        }
+
+        // Status Diagnostics Selection
+        if isStatusCommand {
+            checkSystemHealth()
+            return
+        }
+
+        // AI Companion Query
+        if isAICommand {
+            let prompt: String
+            if trimmed.lowercased().hasPrefix("/ai ") {
+                prompt = String(trimmed.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+            } else if trimmed.lowercased() == "/ai" {
+                prompt = ""
+            } else {
+                prompt = trimmed
+            }
+            if !prompt.isEmpty {
+                Task { await askAICompanion(prompt: prompt) }
+            }
+            return
+        }
+
         // Recommendations selection: executes system actions or inspects matching actions immediately
         if !recommendations.isEmpty && selectedIndex >= 0 && selectedIndex < recommendations.count {
             let selectedItem = recommendations[selectedIndex]
@@ -2356,6 +2520,7 @@ final class ClioViewModel: ObservableObject {
         switch item.id {
         case "shortcut_memory":
             self.isMemorySpaceOpen = true
+            self.isStatusPanelOpen = false
             self.query = "/memory "
             self.selectedIndex = 0
             if allSavedWorkflows.isEmpty {
@@ -2363,26 +2528,129 @@ final class ClioViewModel: ObservableObject {
             }
         case "shortcut_record":
             self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             self.toggleRecording()
         case "shortcut_teach":
             self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             withAnimation(.easeInOut(duration: 0.25)) {
                 self.isWalkthroughMode = true
             }
+        case "shortcut_recent":
+            self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
+            self.query = "/recent "
+            self.selectedIndex = 0
+            if allSavedWorkflows.isEmpty {
+                Task { await fetchWorkflows() }
+            }
+        case "shortcut_stop":
+            self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
+            self.query = ""
+            self.selectedIndex = 0
+            self.cancelTask()
+            WalkthroughOverlayManager.shared.stopWalkthrough()
+            VirtualCursorOverlayManager.shared.hide()
+            if self.isRecording {
+                self.discardRecording()
+            }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                self.statusPillText = "ALL HALTED • SAFE"
+            }
+        case "shortcut_status":
+            self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = true
+            self.query = "/status"
+            self.selectedIndex = 0
+            self.checkSystemHealth()
+        case "shortcut_ai":
+            self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
+            self.query = "/ai "
+            self.selectedIndex = 0
         case "shortcut_help":
             self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             NSApp.showHelp(nil)
             AppDelegate.shared?.hidePanel()
         default:
             self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
             self.query = item.command + " "
             self.selectedIndex = 0
+        }
+    }
+
+    func checkSystemHealth() {
+        self.systemAccessibilityGranted = AXIsProcessTrusted()
+        Task {
+            await fetchStatus()
+            await fetchAIStatus()
+        }
+    }
+
+    func fetchAIStatus() async {
+        guard let url = URL(string: "/api/ai/status", relativeTo: baseURL) else { return }
+        do {
+            let req = makeAuthorizedRequest(url: url)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let provider = json["active_provider"] as? String ?? "Local Engine"
+                let status = json["status"] as? String ?? "Ready"
+                self.aiProviderName = provider.capitalized
+                self.aiProviderStatus = status.capitalized
+            }
+        } catch {
+            self.aiProviderName = "Local Engine"
+            self.aiProviderStatus = "Fallback Active"
+        }
+    }
+
+    func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func askAICompanion(prompt: String) async {
+        self.isAILoading = true
+        self.aiCompanionPrompt = prompt
+        self.aiCompanionResponse = ""
+        self.aiTriggeredWorkflow = nil
+
+        guard let url = URL(string: "/api/chat", relativeTo: baseURL) else {
+            self.isAILoading = false
+            return
+        }
+        var req = makeAuthorizedRequest(url: url, method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let payload: [String: Any] = ["message": prompt]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            self.isAILoading = false
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let reply = json["reply"] as? String ?? "I'm here to help with your Mac automation."
+                self.aiCompanionResponse = reply
+                if let triggered = json["triggered_workflow"] as? String {
+                    self.aiTriggeredWorkflow = triggered
+                }
+            } else {
+                self.aiCompanionResponse = "Clio companion received: '\(prompt)'. How else can I assist with your workflow?"
+            }
+        } catch {
+            self.isAILoading = false
+            self.aiCompanionResponse = "Clio companion: Could not reach chat engine. Make sure the local server is running."
         }
     }
 
@@ -3184,7 +3452,7 @@ struct ClioBarView: View {
         }
         if vm.isSlashMenuVisible {
             let count = max(1, vm.matchingSlashCommands.count)
-            return base + 30 + CGFloat(min(count, 5) * 44) + 26
+            return base + 30 + CGFloat(min(count, 6) * 44) + 26
         }
         if vm.isMemoryCommand {
             let count = vm.memoryWorkflows.count
@@ -3193,6 +3461,26 @@ struct ClioBarView: View {
             }
             let rows = min(count, 5)
             return base + 36 + CGFloat(rows * 48) + 34
+        }
+        if vm.isRecentCommand {
+            let count = vm.recentWorkflows.count
+            if count == 0 {
+                return base + 130
+            }
+            let rows = min(count, 5)
+            return base + 36 + CGFloat(rows * 48) + 34
+        }
+        if vm.isStatusCommand {
+            return base + 210
+        }
+        if vm.isAICommand {
+            if vm.isAILoading {
+                return base + 80
+            } else if !vm.aiCompanionResponse.isEmpty {
+                return base + 190
+            } else {
+                return base + 110
+            }
         }
         if !vm.isWalkthroughMode {
             let trimmed = vm.query.trimmingCharacters(in: .whitespaces)
@@ -3209,6 +3497,9 @@ struct ClioBarView: View {
         (!vm.isWalkthroughMode && vm.inspectWorkflow != nil) ||
         vm.isSlashMenuVisible ||
         vm.isMemoryCommand ||
+        vm.isRecentCommand ||
+        vm.isStatusCommand ||
+        vm.isAICommand ||
         WalkthroughOverlayManager.shared.isVisible ||
         (!vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.recommendations.isEmpty)
     }
@@ -3318,6 +3609,15 @@ struct ClioBarEventModifier: ViewModifier {
             .onChange(of: vm.isWalkthroughMode) { _ in
                 AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
             }
+            .onChange(of: vm.isStatusPanelOpen) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.aiCompanionResponse) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isAILoading) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
             .onChange(of: vm.query) { _ in
                 AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
             }
@@ -3334,11 +3634,21 @@ struct ClioBarEventModifier: ViewModifier {
         } else if vm.isMemoryCommand {
             vm.isMemorySpaceOpen = false
             vm.query = ""
+        } else if vm.isRecentCommand {
+            vm.query = ""
+        } else if vm.isStatusCommand {
+            vm.isStatusPanelOpen = false
+            vm.query = ""
+        } else if vm.isAICommand {
+            vm.aiCompanionResponse = ""
+            vm.query = ""
         } else if vm.isSlashMenuVisible {
             vm.isMemorySpaceOpen = false
+            vm.isStatusPanelOpen = false
             vm.query = ""
         } else if !vm.query.isEmpty {
             vm.isMemorySpaceOpen = false
+            vm.isStatusPanelOpen = false
             vm.query = ""
         } else {
             AppDelegate.shared?.hidePanel()
@@ -3353,58 +3663,54 @@ extension ClioBarView {
     @ViewBuilder
     private var topPillBarView: some View {
         HStack(spacing: 10) {
-            // Minimalist Obsidian Eclipse 'C' Monogram with Connection Status Pip
-            ZStack(alignment: .bottomTrailing) {
-                ZStack {
-                    Circle()
-                        .fill(ObsidianTheme.surfaceElevated)
-                        .overlay(
-                            Circle()
-                                .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
-                        )
-                        .frame(width: 32, height: 32)
-                    Circle()
-                        .fill(Color(red: 0.16, green: 0.17, blue: 0.19))
-                        .frame(width: 18, height: 18)
-                        .overlay(
-                            Circle()
-                                .strokeBorder(
-                                    AngularGradient(
-                                        gradient: Gradient(colors: [
-                                            ObsidianTheme.platinum,
-                                            ObsidianTheme.platinum.opacity(0.9),
-                                            Color.clear,
-                                            Color.clear,
-                                            Color.clear,
-                                            ObsidianTheme.platinum.opacity(0.7)
-                                        ]),
-                                        center: .center,
-                                        startAngle: .degrees(90),
-                                        endAngle: .degrees(450)
-                                    ),
-                                    lineWidth: 2.2
-                                )
-                        )
-                }
+            // Minimalist Obsidian Eclipse 'C' Monogram (Clean, unadorned mark)
+            ZStack {
                 Circle()
-                    .fill(vm.isConnected ? Color(red: 0.16, green: 0.82, blue: 0.55) : ObsidianTheme.slateDark)
-                    .frame(width: 6, height: 6)
-                    .overlay(Circle().stroke(ObsidianTheme.surface, lineWidth: 1))
-                    .offset(x: 1, y: 1)
+                    .fill(ObsidianTheme.surfaceElevated)
+                    .overlay(
+                        Circle()
+                            .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
+                    )
+                    .frame(width: 32, height: 32)
+                Circle()
+                    .fill(Color(red: 0.16, green: 0.17, blue: 0.19))
+                    .frame(width: 18, height: 18)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(
+                                AngularGradient(
+                                    gradient: Gradient(colors: [
+                                        ObsidianTheme.platinum,
+                                        ObsidianTheme.platinum.opacity(0.9),
+                                        Color.clear,
+                                        Color.clear,
+                                        Color.clear,
+                                        ObsidianTheme.platinum.opacity(0.7)
+                                    ]),
+                                    center: .center,
+                                    startAngle: .degrees(90),
+                                    endAngle: .degrees(450)
+                                ),
+                                lineWidth: 2.2
+                            )
+                    )
             }
 
             // Command Search Input with Smooth Animated Word Transition
             ZStack(alignment: .leading) {
                 if vm.query.isEmpty {
                     Text(vm.isWalkthroughMode ? "Ask clio to teach you anything..." :
-                         (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." : "Ask clio to do anything..."))
+                         (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." :
+                          (vm.isRecentCommand ? "Search recent automations..." :
+                           (vm.isAICommand ? "Ask Clio AI anything..." :
+                            (vm.isStatusCommand ? "System diagnostics & permissions..." : "Ask clio to do anything...")))))
                         .font(.system(size: 16, weight: .regular))
                         .foregroundColor(ObsidianTheme.platinum.opacity(0.45))
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .offset(y: 3)),
                             removal: .opacity.combined(with: .offset(y: -3))
                         ))
-                        .id(vm.isWalkthroughMode ? "teach_placeholder" : (vm.isMemoryCommand ? "memory_placeholder" : "do_placeholder"))
+                        .id(vm.isWalkthroughMode ? "teach_placeholder" : (vm.isMemoryCommand ? "memory_placeholder" : (vm.isRecentCommand ? "recent_placeholder" : (vm.isAICommand ? "ai_placeholder" : (vm.isStatusCommand ? "status_placeholder" : "do_placeholder")))))
                 }
 
                 TextField(
@@ -3576,6 +3882,12 @@ extension ClioBarView {
             slashCommandsMenuView
         } else if vm.isMemoryCommand {
             memorySpaceView
+        } else if vm.isRecentCommand {
+            recentWorkflowsView
+        } else if vm.isStatusCommand {
+            statusDiagnosticView
+        } else if vm.isAICommand {
+            aiCompanionView
         } else if !vm.isWalkthroughMode && !vm.query.trimmingCharacters(in: .whitespaces).isEmpty && !vm.recommendations.isEmpty {
             searchResultsView
         }
@@ -4137,21 +4449,24 @@ extension ClioBarView {
 
             Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
 
-            // Command Items
-            VStack(spacing: 2) {
-                ForEach(Array(vm.matchingSlashCommands.enumerated()), id: \.element.id) { idx, item in
-                    SlashCommandRowView(
-                        item: item,
-                        isSelected: idx == vm.selectedIndex,
-                        onSelect: {
-                            vm.selectedIndex = idx
-                            vm.executeSlashShortcut(item)
-                        }
-                    )
+            // Command Items in ScrollView for smooth scrolling when multiple shortcuts exist
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 2) {
+                    ForEach(Array(vm.matchingSlashCommands.enumerated()), id: \.element.id) { idx, item in
+                        SlashCommandRowView(
+                            item: item,
+                            isSelected: idx == vm.selectedIndex,
+                            onSelect: {
+                                vm.selectedIndex = idx
+                                vm.executeSlashShortcut(item)
+                            }
+                        )
+                    }
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .frame(maxHeight: CGFloat(min(vm.matchingSlashCommands.count, 6) * 44 + 12))
 
             Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
 
@@ -4162,6 +4477,413 @@ extension ClioBarView {
                     .foregroundColor(ObsidianTheme.slate)
                 Spacer()
                 Text("\(vm.matchingSlashCommands.count) SHORTCUTS AVAILABLE")
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+        }
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
+    private var recentWorkflowsView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("RECENT AUTOMATIONS")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Spacer()
+                Text("⏎ TO RUN • ↑↓ NAVIGATE")
+                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.35))
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
+
+            if vm.recentWorkflows.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 18))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                    Text("No Recent Automations Found")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(ObsidianTheme.slate)
+                    Text("Capture your first workflow with /record")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+            } else {
+                VStack(spacing: 2) {
+                    ForEach(Array(vm.recentWorkflows.prefix(5).enumerated()), id: \.element.id) { idx, wf in
+                        MemorySpaceRowView(
+                            index: idx,
+                            wf: wf,
+                            isSelected: idx == vm.selectedIndex,
+                            onPreview: {
+                                vm.previewExistingWorkflowRecording(wf)
+                            },
+                            onSelect: {
+                                vm.selectedIndex = idx
+                                vm.executeWorkflowOrSystemAction(wf)
+                            },
+                            onDelete: {
+                                vm.deleteWorkflow(id: wf.id)
+                            }
+                        )
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            }
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
+
+            // Footer
+            HStack {
+                Text("↑↓ Navigate • ⏎ Inspect & Run • Esc Clear")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                Spacer()
+                Text("\(vm.recentWorkflows.count) AUTOMATIONS")
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+        }
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
+    private var statusDiagnosticView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: 6) {
+                Image(systemName: "heart.text.square")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("SYSTEM HEALTH & PERMISSIONS")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Spacer()
+                Text("DIAGNOSTIC TELEMETRY")
+                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.35))
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
+
+            VStack(spacing: 8) {
+                // Row 1: macOS Accessibility
+                HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(ObsidianTheme.surfaceElevated)
+                            .frame(width: 28, height: 28)
+                        Image(systemName: vm.systemAccessibilityGranted ? "lock.open.fill" : "exclamationmark.triangle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(vm.systemAccessibilityGranted ? ObsidianTheme.platinum : Color.orange)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("macOS Accessibility Permissions")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(ObsidianTheme.platinum)
+                        Text(vm.systemAccessibilityGranted ? "Granted — Synthetic events authorized" : "Required for keyboard and mouse automation")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+
+                    Spacer()
+
+                    if !vm.systemAccessibilityGranted {
+                        Button(action: { vm.openAccessibilitySettings() }) {
+                            Text("Open Settings")
+                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.surface)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(ObsidianTheme.platinum)
+                                .cornerRadius(5)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text("GRANTED")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.surface)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2.5)
+                            .background(ObsidianTheme.platinum)
+                            .cornerRadius(4)
+                    }
+                }
+
+                Divider().background(ObsidianTheme.borderSubtle.opacity(0.2))
+
+                // Row 2: Local Engine Daemon
+                HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(ObsidianTheme.surfaceElevated)
+                            .frame(width: 28, height: 28)
+                        Image(systemName: "cpu")
+                            .font(.system(size: 12))
+                            .foregroundColor(ObsidianTheme.platinum)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Clio Engine Daemon")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(ObsidianTheme.platinum)
+                        Text(vm.isConnected ? "Connected to 127.0.0.1:8765 • SSE Stream Active" : "Connecting to local service...")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+
+                    Spacer()
+
+                    Text(vm.isConnected ? "ONLINE" : "CONNECTING")
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor((vm.isConnected) ? ObsidianTheme.surface : ObsidianTheme.slateDark)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background((vm.isConnected) ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                        .cornerRadius(4)
+                }
+
+                Divider().background(ObsidianTheme.borderSubtle.opacity(0.2))
+
+                // Row 3: AI Engine Status
+                HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(ObsidianTheme.surfaceElevated)
+                            .frame(width: 28, height: 28)
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 12))
+                            .foregroundColor(ObsidianTheme.platinum)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI Reasoning Engine")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(ObsidianTheme.platinum)
+                        Text("\(vm.aiProviderName) • Provider \(vm.aiProviderStatus)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+
+                    Spacer()
+
+                    Text("READY")
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.surface)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background(ObsidianTheme.platinum)
+                        .cornerRadius(4)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
+
+            // Footer
+            HStack {
+                Button(action: { vm.checkSystemHealth() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 8))
+                        Text("Re-check System")
+                            .font(.system(size: 9, design: .monospaced))
+                    }
+                    .foregroundColor(ObsidianTheme.platinumDim)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button(action: {
+                    vm.isStatusPanelOpen = false
+                    vm.query = ""
+                }) {
+                    Text("Dismiss (Esc)")
+                        .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+        }
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
+    private var aiCompanionView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("CLIO AI COMPANION")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Spacer()
+                Text(vm.isAILoading ? "GENERATING..." : "REASONING ENGINE")
+                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.35))
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
+
+            if vm.isAILoading {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .progressViewStyle(CircularProgressViewStyle(tint: ObsidianTheme.platinum))
+                    Text("Asking Clio companion: \"\(vm.aiCompanionPrompt)\"...")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 16)
+            } else if !vm.aiCompanionResponse.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(vm.aiCompanionResponse)
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(ObsidianTheme.platinum)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+
+                    if let triggered = vm.aiTriggeredWorkflow {
+                        HStack(spacing: 6) {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(ObsidianTheme.platinum)
+                            Text("Matched Automation: \(triggered)")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.platinum)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(ObsidianTheme.surfaceElevated)
+                        .cornerRadius(5)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button(action: {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(vm.aiCompanionResponse, forType: .string)
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.system(size: 9))
+                                Text("Copy Answer")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            }
+                            .foregroundColor(ObsidianTheme.platinum)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(ObsidianTheme.surfaceElevated)
+                            .cornerRadius(5)
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer()
+
+                        Button(action: {
+                            vm.aiCompanionResponse = ""
+                            vm.query = "/ai "
+                        }) {
+                            Text("Ask Another")
+                                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.slate)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Type your question in the bar above and press ⏎ to ask Clio.")
+                        .font(.system(size: 11.5, weight: .regular))
+                        .foregroundColor(ObsidianTheme.slate)
+
+                    HStack(spacing: 6) {
+                        Text("Suggested:")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slateDark)
+
+                        Button(action: {
+                            vm.query = "/ai How do I split screen on Mac?"
+                            Task { await vm.askAICompanion(prompt: "How do I split screen on Mac?") }
+                        }) {
+                            Text("\"Split screen on Mac\"")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.platinum)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2.5)
+                                .background(ObsidianTheme.surfaceElevated)
+                                .cornerRadius(4)
+                        }
+                        .buttonStyle(.plain)
+
+                        Button(action: {
+                            vm.query = "/ai How do I take a screenshot?"
+                            Task { await vm.askAICompanion(prompt: "How do I take a screenshot?") }
+                        }) {
+                            Text("\"Take a screenshot\"")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.platinum)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2.5)
+                                .background(ObsidianTheme.surfaceElevated)
+                                .cornerRadius(4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
+
+            // Footer
+            HStack {
+                Text("⏎ Send Query • Esc Clear")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                Spacer()
+                Text("CLIO REASONING")
                     .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                     .foregroundColor(ObsidianTheme.slateDark)
             }
@@ -4531,7 +5253,7 @@ final class SpotlightPanel: NSPanel {
                 if NSApp.sendAction(action, to: nil, from: self) {
                     return true
                 }
-            case "1", "2", "3", "4":
+            case "1", "2", "3", "4", "5", "6", "7", "8":
                 NotificationCenter.default.post(name: NSNotification.Name("TriggerNumberedShortcut"), object: chars)
                 return true
             default:
