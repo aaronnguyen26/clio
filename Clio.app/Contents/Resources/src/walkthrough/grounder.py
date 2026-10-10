@@ -44,21 +44,79 @@ class ScreenGrounder:
             return None
 
         try:
-            import Quartz
-            window_list = Quartz.CGWindowListCopyWindowInfo(
-                Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
-                Quartz.kCGNullWindowID,
-            )
-            for win in window_list:
-                owner = win.get(Quartz.kCGWindowOwnerName, "")
-                if owner and owner.lower() == app_name.lower():
-                    bounds_dict = win.get(Quartz.kCGWindowBounds, {})
-                    x = float(bounds_dict.get("X", 0))
-                    y = float(bounds_dict.get("Y", 0))
-                    w = float(bounds_dict.get("Width", 0))
-                    h = float(bounds_dict.get("Height", 0))
-                    if w > 100 and h > 100:
-                        return (x, y, w, h)
+            import ctypes
+            from ctypes import byref, c_void_p, c_int, c_double, Structure
+
+            class CGPoint(Structure):
+                _fields_ = [("x", c_double), ("y", c_double)]
+
+            class CGSize(Structure):
+                _fields_ = [("width", c_double), ("height", c_double)]
+
+            class CGRect(Structure):
+                _fields_ = [("origin", CGPoint), ("size", CGSize)]
+
+            cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+            cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+
+            cg.CGWindowListCopyWindowInfo.argtypes = [c_int, c_int]
+            cg.CGWindowListCopyWindowInfo.restype = c_void_p
+            cg.CGRectMakeWithDictionaryRepresentation.argtypes = [c_void_p, ctypes.POINTER(CGRect)]
+            cg.CGRectMakeWithDictionaryRepresentation.restype = ctypes.c_bool
+
+            cf.CFArrayGetCount.argtypes = [c_void_p]
+            cf.CFArrayGetCount.restype = c_int
+            cf.CFArrayGetValueAtIndex.argtypes = [c_void_p, c_int]
+            cf.CFArrayGetValueAtIndex.restype = c_void_p
+            cf.CFDictionaryGetValue.argtypes = [c_void_p, c_void_p]
+            cf.CFDictionaryGetValue.restype = c_void_p
+            cf.CFStringCreateWithCString.argtypes = [c_void_p, ctypes.c_char_p, c_int]
+            cf.CFStringCreateWithCString.restype = c_void_p
+            cf.CFStringGetCString.argtypes = [c_void_p, ctypes.c_char_p, c_int, c_int]
+            cf.CFStringGetCString.restype = ctypes.c_bool
+            cf.CFRelease.argtypes = [c_void_p]
+
+            k_owner = cf.CFStringCreateWithCString(None, b"kCGWindowOwnerName", 0x08000100)
+            k_bounds = cf.CFStringCreateWithCString(None, b"kCGWindowBounds", 0x08000100)
+
+            # Option 1 (kCGWindowListOptionOnScreenOnly) avoids hidden 500x500 off-screen backing windows
+            win_list = cg.CGWindowListCopyWindowInfo(1, 0)
+            if not win_list:
+                cf.CFRelease(k_owner)
+                cf.CFRelease(k_bounds)
+                return None
+
+            count = cf.CFArrayGetCount(win_list)
+            target_clean = app_name.lower().replace(" ", "")
+            best_bounds = None
+
+            for i in range(count):
+                win_dict = cf.CFArrayGetValueAtIndex(win_list, i)
+                owner_ref = cf.CFDictionaryGetValue(win_dict, k_owner)
+                if not owner_ref:
+                    continue
+                buf = ctypes.create_string_buffer(256)
+                if not cf.CFStringGetCString(owner_ref, buf, 256, 0x08000100):
+                    continue
+                owner = buf.value.decode("utf-8", errors="ignore")
+                owner_clean = owner.lower().replace(" ", "")
+                if target_clean in owner_clean or owner_clean in target_clean:
+                    bounds_ref = cf.CFDictionaryGetValue(win_dict, k_bounds)
+                    if bounds_ref:
+                        rect = CGRect()
+                        if cg.CGRectMakeWithDictionaryRepresentation(bounds_ref, byref(rect)):
+                            w, h = rect.size.width, rect.size.height
+                            if rect.origin.x == 0.0 and rect.origin.y == 456.0 and w == 500.0 and h == 500.0:
+                                continue
+                            min_h = 40.0 if target_clean == "spotlight" else 100.0
+                            if w > 100 and h >= min_h:
+                                best_bounds = (float(rect.origin.x), float(rect.origin.y), float(w), float(h))
+                                break
+
+            cf.CFRelease(win_list)
+            cf.CFRelease(k_owner)
+            cf.CFRelease(k_bounds)
+            return best_bounds
         except Exception as e:
             logger.debug("Failed to query live window bounds for %s: %s", app_name, e)
 
@@ -227,19 +285,63 @@ class ScreenGrounder:
         """
         app = step.target_app or ""
         query = step.target_element_query or {}
-        role = query.get("ax_role", "")
-        title = query.get("ax_title", "")
+        role = query.get("ax_role") or query.get("role") or ""
+        title = query.get("ax_title") or query.get("title") or ""
+        role_lower = role.strip().lower()
+        title_lower = title.strip().lower()
+        combined_text = f"{(step.title or '').lower()} {(step.instruction or '').lower()}"
 
         # 1. Attempt live / mock resolution
         if app and (role or title):
             bounds = self.resolve_element_bounds(app_name=app, ax_role=role, ax_title=title)
             if bounds and len(bounds) == 4 and bounds[2] > 0 and bounds[3] > 0:
                 bx, by, bw, bh = bounds
+                if not self.mock and by > 850.0:
+                    wb = self.get_window_bounds(app)
+                    if wb and len(wb) == 4:
+                        wx, wy, ww, wh = wb
+                        by = max(wy + 40.0, min(by, wy + wh - bh - 28.0))
+                    else:
+                        by = min(by, 760.0)
+                    bounds = (bx, by, bw, bh)
                 center_x = bx + (bw / 2.0)
                 center_y = by + (bh / 2.0)
                 return center_x, center_y, bounds
 
         # 2. Window Anchoring Fallback
+        is_screen_level = False
+        if step.fallback_screen_coords and len(step.fallback_screen_coords) == 2:
+            fx, fy = step.fallback_screen_coords
+            # Check if this is a Menu Bar item (top of screen)
+            if (
+                fy <= 30.0
+                or role_lower in ("axmenubaritem", "axmenubutton", "axmenuextra")
+                or title_lower in ("apple", "", "apple menu", "apple icon")
+            ):
+                is_screen_level = True
+            # Check if this is a Menu Bar dropdown item (e.g. Apple menu dropdown)
+            elif role_lower == "axmenuitem" and fx <= 350.0 and fy <= 320.0:
+                is_screen_level = True
+            # Check if this is a Dock item (bottom of screen)
+            elif fy >= 650.0 or app.lower() == "dock":
+                is_screen_level = True
+            # Check if this is Spotlight (center search overlay)
+            elif app.lower() == "spotlight" or "spotlight" in combined_text:
+                is_screen_level = True
+            # Check if this is a desktop gesture, screen hotkey, or system utility navigation
+            elif app.lower() in ("finder", "system utility", "system utilities", "controlcenter", "desktop") and (
+                step.hotkey_combo or (550.0 <= fx <= 750.0 and 350.0 <= fy <= 500.0)
+            ):
+                is_screen_level = True
+            # If coordinates are centered on default screen resolution (640, 400) without specific element query
+            elif (fx == 640.0 and fy == 400.0) and not role:
+                is_screen_level = True
+
+        if is_screen_level and step.fallback_screen_coords:
+            fx, fy = step.fallback_screen_coords
+            spotlight = step.spotlight_bounds or (fx - 40.0, fy - 20.0, 80.0, 40.0)
+            return fx, fy, spotlight
+
         win_bounds = self.get_window_bounds(app) if app else None
         if win_bounds and len(win_bounds) == 4:
             wx, wy, ww, wh = win_bounds
@@ -247,7 +349,11 @@ class ScreenGrounder:
                 fx, fy = step.fallback_screen_coords
                 cx = wx + fx
                 cy = wy + fy
-                spotlight = (cx - 40.0, cy - 20.0, 80.0, 40.0)
+                if step.spotlight_bounds and len(step.spotlight_bounds) == 4:
+                    sx, sy, sw, sh = step.spotlight_bounds
+                    spotlight = (wx + sx, wy + sy, sw, sh)
+                else:
+                    spotlight = (cx - 40.0, cy - 20.0, 80.0, 40.0)
                 return cx, cy, spotlight
             else:
                 cx = wx + (ww / 2.0)

@@ -20,8 +20,10 @@ import json
 import logging
 import os
 import re
+import socket
+import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -168,14 +170,166 @@ class BaseAIProvider(ABC):
 
 
 # -----------------------------------------------------------------------------
-# Google Gemini Provider (gemini-2.5-flash)
+# Model Health Tracker & Circuit Breaker
+# -----------------------------------------------------------------------------
+
+class ModelHealthTracker:
+    """Thread-safe circuit breaker and health tracker for AI models.
+
+    Tracks rate limits (HTTP 429), transient outages (HTTP 503, 500, 502, 504),
+    timeouts/unresponsiveness, and retired models (HTTP 404) to avoid hammering
+    unhealthy models and dynamically prioritize responsive ones across both
+    workflow dissection and interactive walkthrough tutoring.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cooldown_until: Dict[str, float] = {}
+        self._retired_models: Set[str] = set()
+        self._consecutive_failures: Dict[str, int] = {}
+
+    def mark_success(self, model: str) -> None:
+        """Records a successful call, resetting failure counts and clearing cooldown."""
+        with self._lock:
+            self._consecutive_failures[model] = 0
+            self._cooldown_until.pop(model, None)
+
+    def mark_rate_limited(self, model: str, cooldown_seconds: float = 60.0, base_cooldown_seconds: Optional[float] = None) -> None:
+        """Mark model as rate-limited / quota exhausted (HTTP 429 or RESOURCE_EXHAUSTED).
+        
+        Applies exponential backoff based on consecutive failures (e.g. 60s, 120s, 240s, max 1800s)
+        so alternate models are prioritized when a free plan quota is exhausted.
+        """
+        eff_base = base_cooldown_seconds if base_cooldown_seconds is not None else cooldown_seconds
+        with self._lock:
+            failures = self._consecutive_failures.get(model, 0) + 1
+            self._consecutive_failures[model] = failures
+            # Exponential backoff capped at 30 minutes (1800s)
+            multiplier = 2 ** min(failures - 1, 5)
+            cooldown = min(eff_base * multiplier, 1800.0)
+            self._cooldown_until[model] = time.time() + cooldown
+
+    def mark_unavailable(self, model: str, cooldown_seconds: float = 30.0, base_cooldown_seconds: Optional[float] = None) -> None:
+        """Mark model as temporarily unavailable or unresponsive (HTTP 503/500/timeout)."""
+        eff_base = base_cooldown_seconds if base_cooldown_seconds is not None else cooldown_seconds
+        with self._lock:
+            failures = self._consecutive_failures.get(model, 0) + 1
+            self._consecutive_failures[model] = failures
+            multiplier = 2 ** min(failures - 1, 4)
+            cooldown = min(eff_base * multiplier, 600.0)
+            self._cooldown_until[model] = time.time() + cooldown
+
+    def mark_retired(self, model: str) -> None:
+        """Mark model as permanently retired or not found (HTTP 404)."""
+        with self._lock:
+            self._retired_models.add(model)
+            self._cooldown_until.pop(model, None)
+
+    def is_healthy(self, model: str) -> bool:
+        """Checks if a model is currently healthy and not in cooldown or retired."""
+        with self._lock:
+            if model in self._retired_models:
+                return False
+            until = self._cooldown_until.get(model, 0.0)
+            return time.time() >= until
+
+    def get_candidate_models(self, preferred_model: str, fallback_models: List[str]) -> List[str]:
+        """Returns ordered list of candidate models: healthy preferred first, then healthy fallbacks, then cooling down fallbacks."""
+        with self._lock:
+            now = time.time()
+            all_models: List[str] = []
+            for m in [preferred_model] + fallback_models:
+                if m and m not in all_models and m not in self._retired_models:
+                    all_models.append(m)
+
+            healthy: List[str] = []
+            cooling_down: List[str] = []
+
+            for m in all_models:
+                until = self._cooldown_until.get(m, 0.0)
+                if now >= until:
+                    healthy.append(m)
+                else:
+                    cooling_down.append(m)
+
+            cooling_down.sort(key=lambda m: self._cooldown_until.get(m, 0.0))
+
+            if preferred_model in healthy:
+                healthy.remove(preferred_model)
+                healthy.insert(0, preferred_model)
+
+            candidates = healthy + cooling_down
+            return candidates or [preferred_model]
+
+    def reset(self) -> None:
+        """Clears all tracking states (useful for testing)."""
+        with self._lock:
+            self._cooldown_until.clear()
+            self._retired_models.clear()
+            self._consecutive_failures.clear()
+
+
+global_model_health_tracker = ModelHealthTracker()
+_preferred_gemini_model_lock = threading.Lock()
+_global_preferred_gemini_model: Optional[str] = None
+
+
+def is_quota_or_rate_limit_error(http_code: int, error_body: str) -> bool:
+    """Detects whether an HTTP error is due to rate limits or quota exhaustion on a free or standard plan.
+    
+    Google Generative AI REST API returns 429 for rate limits, but can also return 400/403 with
+    RESOURCE_EXHAUSTED status, quota metric errors (e.g. 'Quota exceeded for quota metric...'),
+    or rate limit descriptions.
+    """
+    if http_code == 429:
+        return True
+    if http_code in (400, 403):
+        body_lower = error_body.lower()
+        quota_indicators = (
+            "resource_exhausted",
+            "quota exceeded",
+            "quota_exceeded",
+            "rate limit",
+            "ratelimit",
+            "free tier",
+            "resource has been exhausted",
+            "requests per minute",
+            "tokens per minute",
+        )
+        return any(ind in body_lower for ind in quota_indicators)
+    return False
+
+DEFAULT_GEMINI_FALLBACK_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+]
+
+DEFAULT_CLAUDE_FALLBACK_MODELS = [
+    "claude-3-5-haiku-20241022",
+    "claude-3-haiku-20240307",
+    "claude-3-5-sonnet-20241022",
+]
+
+
+# -----------------------------------------------------------------------------
+# Google Gemini Provider (with Multi-Model Failover & Circuit Breaker)
 # -----------------------------------------------------------------------------
 
 class GeminiProvider(BaseAIProvider):
-    """Google Gemini Flash implementation using Google Generative Language REST API.
+    """Google Gemini implementation using Google Generative Language REST API.
 
-    Defaults to gemini-3.5-flash-lite (Google's most efficient and cost-effective model),
-    with automatic fallback to gemini-2.5-flash.
+    Defaults to gemini-3.5-flash-lite (Google's most efficient, high-RPM model),
+    with automatic multi-model failover across healthy flash endpoints on
+    HTTP 429 (quota exhaustion), HTTP 503 (high demand), timeouts, or retirement (HTTP 404).
     """
 
     def __init__(
@@ -184,8 +338,26 @@ class GeminiProvider(BaseAIProvider):
         model: Optional[str] = None,
         timeout: float = DEFAULT_API_TIMEOUT_SECONDS,
         api_base_url: str = "https://generativelanguage.googleapis.com/v1beta",
+        fallback_models: Optional[List[str]] = None,
+        health_tracker: Optional[ModelHealthTracker] = None,
     ) -> None:
-        eff_model = model or os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        self.health_tracker = health_tracker or global_model_health_tracker
+        self.fallback_models = list(fallback_models or DEFAULT_GEMINI_FALLBACK_MODELS)
+        
+        # If no explicit model was requested, check if a healthy model was already discovered globally
+        if model:
+            eff_model = model
+        else:
+            env_model = os.environ.get("GEMINI_MODEL")
+            if env_model:
+                eff_model = env_model
+            else:
+                with _preferred_gemini_model_lock:
+                    if _global_preferred_gemini_model and self.health_tracker.is_healthy(_global_preferred_gemini_model):
+                        eff_model = _global_preferred_gemini_model
+                    else:
+                        eff_model = "gemini-3.5-flash-lite"
+
         super().__init__(api_key=api_key, model=eff_model, timeout=timeout)
         self.api_base_url = api_base_url
 
@@ -200,7 +372,7 @@ class GeminiProvider(BaseAIProvider):
         initial_frame_bytes: Optional[bytes] = None,
         final_frame_bytes: Optional[bytes] = None,
     ) -> Dict[str, Any]:
-        """Dispatches single-pass payload to Gemini with JSON schema output enforcement."""
+        """Dispatches single-pass payload to Gemini with JSON schema output enforcement and multi-model failover."""
         prompt_text = (
             f"{DISSECTION_SYSTEM_PROMPT}\n\n"
             f"CONTEXT METADATA:\n{json.dumps(context_metadata, indent=2)}\n\n"
@@ -235,55 +407,83 @@ class GeminiProvider(BaseAIProvider):
             },
         }
 
-        url = f"{self.api_base_url}/models/{self.model}:generateContent?key={self.api_key}"
         data_bytes = json.dumps(req_payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data_bytes,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        candidates = self.health_tracker.get_candidate_models(self.model, self.fallback_models)
+        last_exception: Optional[Exception] = None
+        resp_json: Optional[Dict[str, Any]] = None
 
-        try:
-            start_t = time.time()
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                resp_bytes = resp.read()
-                elapsed = time.time() - start_t
-                logger.info("Gemini API call succeeded in %.2fs (HTTP %d)", elapsed, resp.status)
-                resp_json = json.loads(resp_bytes.decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-            logger.error("Gemini API HTTP %d error: %s", e.code, err_body)
-            # Auto-fallback to active flash models if model name is unrecognized or experiencing high demand (503)
-            if e.code in (404, 503):
-                fallback_models = [
-                    "gemini-3.5-flash-lite",
-                    "gemini-3.5-flash",
-                    "gemini-3.7-flash",
-                    "gemini-flash-lite-latest",
-                    "gemini-2.5-flash",
-                ]
-                for fb_m in fallback_models:
-                    if self.model != fb_m:
-                        logger.info("Retrying with fallback model: %s", fb_m)
-                        self.model = fb_m
-                        return self.dissect_workflow(
-                            event_sequence=event_sequence,
-                            context_metadata=context_metadata,
-                            initial_frame_bytes=initial_frame_bytes,
-                            final_frame_bytes=final_frame_bytes,
+        for candidate_model in candidates:
+            url = f"{self.api_base_url}/models/{candidate_model}:generateContent?key={self.api_key}"
+            req = urllib.request.Request(
+                url,
+                data=data_bytes,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                start_t = time.time()
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    resp_bytes = resp.read()
+                    elapsed = time.time() - start_t
+                    logger.info("Gemini API (%s) succeeded in %.2fs (HTTP %d)", candidate_model, elapsed, resp.status)
+                    resp_json = json.loads(resp_bytes.decode("utf-8"))
+                self.health_tracker.mark_success(candidate_model)
+                self.model = candidate_model
+                try:
+                    from src.ai.usage_tracker import get_usage_tracker
+                    get_usage_tracker().record_api_call(provider="gemini", model=candidate_model, rate_limited=False)
+                except Exception:
+                    pass
+                with _preferred_gemini_model_lock:
+                    global _global_preferred_gemini_model
+                    _global_preferred_gemini_model = candidate_model
+                break
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+                logger.warning("Gemini model %s HTTP %d: %s", candidate_model, e.code, err_body[:200])
+                last_exception = RuntimeError(f"Gemini API HTTP {e.code} on {candidate_model}: {err_body}")
+                if is_quota_or_rate_limit_error(e.code, err_body):
+                    logger.warning("Gemini model %s hit rate limit/quota (free tier or RPM limit). Switching to next candidate model...", candidate_model)
+                    self.health_tracker.mark_rate_limited(candidate_model)
+                    try:
+                        from src.ai.usage_tracker import get_usage_tracker
+                        get_usage_tracker().record_api_call(
+                            provider="gemini",
+                            model=candidate_model,
+                            rate_limited=True,
+                            cooldown_seconds=60.0,
+                            error_message=f"HTTP {e.code} on {candidate_model}",
                         )
-            raise RuntimeError(f"Gemini API HTTP {e.code}: {err_body}") from e
-        except Exception as e:
-            logger.error("Gemini API request failed: %s", e)
-            raise RuntimeError(f"Gemini API request failed: {e}") from e
+                    except Exception:
+                        pass
+                    continue
+                elif e.code in (500, 502, 503, 504, 408):
+                    logger.warning("Gemini model %s temporarily unavailable (HTTP %d). Switching to next candidate model...", candidate_model, e.code)
+                    self.health_tracker.mark_unavailable(candidate_model)
+                    continue
+                elif e.code == 404:
+                    logger.warning("Gemini model %s not found (HTTP 404). Permanently retiring model...", candidate_model)
+                    self.health_tracker.mark_retired(candidate_model)
+                    continue
+                else:
+                    raise last_exception from e
+            except (urllib.error.URLError, TimeoutError, socket.timeout, Exception) as e:
+                logger.warning("Gemini model %s request failed/timed out: %s", candidate_model, e)
+                self.health_tracker.mark_unavailable(candidate_model)
+                last_exception = RuntimeError(f"Gemini request on {candidate_model} failed: {e}")
+                continue
+        else:
+            raise last_exception or RuntimeError("All Gemini candidate models failed")
+
+        if not resp_json:
+            raise last_exception or RuntimeError("Empty Gemini response")
 
         # Extract generated content text
         try:
-            candidates = resp_json.get("candidates", [])
-            if not candidates:
+            candidates_out = resp_json.get("candidates", [])
+            if not candidates_out:
                 raise ValueError("Gemini returned zero candidates.")
-            content = candidates[0].get("content", {})
+            content = candidates_out[0].get("content", {})
             parts_out = content.get("parts", [])
             raw_text = parts_out[0].get("text", "")
             return extract_json_payload(raw_text)
@@ -298,7 +498,7 @@ class GeminiProvider(BaseAIProvider):
         schema: Optional[Dict[str, Any]] = None,
         max_tokens: int = 800,
     ) -> str:
-        """Invokes Gemini with structured JSON output enforcement."""
+        """Invokes Gemini with structured JSON output enforcement and multi-model failover."""
         req_payload: Dict[str, Any] = {
             "systemInstruction": {
                 "parts": [{"text": system_prompt}]
@@ -315,67 +515,127 @@ class GeminiProvider(BaseAIProvider):
         if schema:
             req_payload["generationConfig"]["response_schema"] = schema
 
-        url = f"{self.api_base_url}/models/{self.model}:generateContent?key={self.api_key}"
         data_bytes = json.dumps(req_payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data_bytes,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        candidates = self.health_tracker.get_candidate_models(self.model, self.fallback_models)
+        last_exception: Optional[Exception] = None
+        resp_json: Optional[Dict[str, Any]] = None
 
-        fallback_models = [
-            "gemini-3.5-flash-lite",
-            "gemini-3.5-flash",
-            "gemini-3.7-flash",
-            "gemini-flash-lite-latest",
-            "gemini-2.5-flash",
-        ]
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                resp_bytes = resp.read()
-                resp_json = json.loads(resp_bytes.decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-            logger.error("Gemini call_llm_json HTTP %d error: %s", e.code, err_body)
-            if e.code in (404, 503):
-                for fb_m in fallback_models:
-                    if self.model != fb_m:
-                        logger.info("Retrying call_llm_json with fallback model: %s", fb_m)
-                        self.model = fb_m
-                        return self.call_llm_json(system_prompt, user_prompt, schema, max_tokens)
-            raise RuntimeError(f"Gemini API HTTP {e.code}: {err_body}") from e
-        except Exception as e:
-            logger.error("Gemini call_llm_json request failed: %s", e)
-            raise RuntimeError(f"Gemini API request failed: {e}") from e
+        for candidate_model in candidates:
+            url = f"{self.api_base_url}/models/{candidate_model}:generateContent?key={self.api_key}"
+            req = urllib.request.Request(
+                url,
+                data=data_bytes,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                start_t = time.time()
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    resp_bytes = resp.read()
+                    elapsed = time.time() - start_t
+                    logger.info("Gemini call_llm_json (%s) succeeded in %.2fs (HTTP %d)", candidate_model, elapsed, resp.status)
+                    resp_json = json.loads(resp_bytes.decode("utf-8"))
+                self.health_tracker.mark_success(candidate_model)
+                self.model = candidate_model
+                try:
+                    from src.ai.usage_tracker import get_usage_tracker
+                    get_usage_tracker().record_api_call(provider="gemini", model=candidate_model, rate_limited=False)
+                except Exception:
+                    pass
+                with _preferred_gemini_model_lock:
+                    global _global_preferred_gemini_model
+                    _global_preferred_gemini_model = candidate_model
+                break
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+                logger.warning("Gemini call_llm_json %s HTTP %d: %s", candidate_model, e.code, err_body[:200])
+                last_exception = RuntimeError(f"Gemini API HTTP {e.code} on {candidate_model}: {err_body}")
+                if is_quota_or_rate_limit_error(e.code, err_body):
+                    logger.warning("Gemini model %s hit rate limit/quota (free tier or RPM limit). Switching to next candidate model...", candidate_model)
+                    self.health_tracker.mark_rate_limited(candidate_model)
+                    try:
+                        from src.ai.usage_tracker import get_usage_tracker
+                        get_usage_tracker().record_api_call(
+                            provider="gemini",
+                            model=candidate_model,
+                            rate_limited=True,
+                            cooldown_seconds=60.0,
+                            error_message=f"HTTP {e.code} on {candidate_model}",
+                        )
+                    except Exception:
+                        pass
+                    continue
+                elif e.code in (500, 502, 503, 504, 408):
+                    logger.warning("Gemini model %s temporarily unavailable (HTTP %d). Switching to next candidate model...", candidate_model, e.code)
+                    self.health_tracker.mark_unavailable(candidate_model)
+                    continue
+                elif e.code == 404:
+                    logger.warning("Gemini model %s not found (HTTP 404). Permanently retiring model...", candidate_model)
+                    self.health_tracker.mark_retired(candidate_model)
+                    continue
+                else:
+                    raise last_exception from e
+            except (urllib.error.URLError, TimeoutError, socket.timeout, Exception) as e:
+                logger.warning("Gemini call_llm_json %s request failed/timed out: %s", candidate_model, e)
+                self.health_tracker.mark_unavailable(candidate_model)
+                last_exception = RuntimeError(f"Gemini call_llm_json on {candidate_model} failed: {e}")
+                continue
+        else:
+            raise last_exception or RuntimeError("All Gemini candidate models failed for call_llm_json")
 
-        candidates = resp_json.get("candidates", [])
-        if not candidates:
+        if not resp_json:
+            raise last_exception or RuntimeError("Empty Gemini response")
+
+        candidates_out = resp_json.get("candidates", [])
+        if not candidates_out:
             raise ValueError("Gemini returned zero candidates.")
-        content = candidates[0].get("content", {})
+        content = candidates_out[0].get("content", {})
         parts_out = content.get("parts", [])
         if not parts_out:
             raise ValueError("Gemini returned empty parts.")
         return parts_out[0].get("text", "")
 
     def validate_key(self) -> bool:
-        """Validates API key via lightweight model list or test prompt."""
-        url = f"{self.api_base_url}/models/{self.model}?key={self.api_key}"
+        """Validates API key via lightweight models endpoint query or candidate model probe."""
+        # 1. Direct validation via the models list endpoint
+        url = f"{self.api_base_url}/models?key={self.api_key}&pageSize=1"
         req = urllib.request.Request(url, method="GET")
         try:
             with urllib.request.urlopen(req, timeout=5.0) as resp:
-                return resp.status == 200
-        except Exception as e:
-            logger.debug("Gemini key validation failed: %s", e)
-            return False
+                if resp.status == 200:
+                    return True
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 401, 403):
+                return False
+        except Exception:
+            pass
+
+        # 2. Candidate probe across healthy models
+        candidates = self.health_tracker.get_candidate_models(self.model, self.fallback_models)
+        for cand in candidates:
+            cand_url = f"{self.api_base_url}/models/{cand}?key={self.api_key}"
+            cand_req = urllib.request.Request(cand_url, method="GET")
+            try:
+                with urllib.request.urlopen(cand_req, timeout=5.0) as resp:
+                    if resp.status == 200:
+                        return True
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    return False
+                elif e.code == 404:
+                    self.health_tracker.mark_retired(cand)
+                    continue
+            except Exception:
+                continue
+        return False
 
 
 # -----------------------------------------------------------------------------
-# Anthropic Claude Provider (claude-3-5-haiku-20241022)
+# Anthropic Claude Provider (with Multi-Model Failover & Circuit Breaker)
 # -----------------------------------------------------------------------------
 
 class ClaudeProvider(BaseAIProvider):
-    """Anthropic Claude implementation using Anthropic Messages REST API."""
+    """Anthropic Claude implementation using Anthropic Messages REST API with multi-model failover."""
 
     def __init__(
         self,
@@ -383,9 +643,13 @@ class ClaudeProvider(BaseAIProvider):
         model: str = "claude-3-5-haiku-20241022",
         timeout: float = DEFAULT_API_TIMEOUT_SECONDS,
         api_base_url: str = "https://api.anthropic.com/v1",
+        fallback_models: Optional[List[str]] = None,
+        health_tracker: Optional[ModelHealthTracker] = None,
     ) -> None:
         super().__init__(api_key=api_key, model=model, timeout=timeout)
         self.api_base_url = api_base_url
+        self.fallback_models = list(fallback_models or DEFAULT_CLAUDE_FALLBACK_MODELS)
+        self.health_tracker = health_tracker or global_model_health_tracker
 
     @property
     def provider_name(self) -> str:
@@ -398,7 +662,7 @@ class ClaudeProvider(BaseAIProvider):
         initial_frame_bytes: Optional[bytes] = None,
         final_frame_bytes: Optional[bytes] = None,
     ) -> Dict[str, Any]:
-        """Dispatches single-pass payload to Claude with image content blocks and JSON schema enforcement."""
+        """Dispatches single-pass payload to Claude with image content blocks and multi-model failover."""
         content_blocks: List[Dict[str, Any]] = []
 
         if initial_frame_bytes:
@@ -428,43 +692,69 @@ class ClaudeProvider(BaseAIProvider):
         )
         content_blocks.append({"type": "text", "text": user_text})
 
-        req_payload = {
-            "model": self.model,
-            "max_tokens": 4096,
-            "system": DISSECTION_SYSTEM_PROMPT,
-            "messages": [
-                {"role": "user", "content": content_blocks},
-            ],
-            "temperature": 0.2,
-        }
+        candidates = self.health_tracker.get_candidate_models(self.model, self.fallback_models)
+        last_exception: Optional[Exception] = None
+        resp_json: Optional[Dict[str, Any]] = None
 
-        url = f"{self.api_base_url}/messages"
-        data_bytes = json.dumps(req_payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data_bytes,
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
+        for candidate_model in candidates:
+            req_payload = {
+                "model": candidate_model,
+                "max_tokens": 4096,
+                "system": DISSECTION_SYSTEM_PROMPT,
+                "messages": [
+                    {"role": "user", "content": content_blocks},
+                ],
+                "temperature": 0.2,
+            }
 
-        try:
-            start_t = time.time()
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                resp_bytes = resp.read()
-                elapsed = time.time() - start_t
-                logger.info("Claude API call succeeded in %.2fs (HTTP %d)", elapsed, resp.status)
-                resp_json = json.loads(resp_bytes.decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-            logger.error("Claude API HTTP %d error: %s", e.code, err_body)
-            raise RuntimeError(f"Claude API HTTP {e.code}: {err_body}") from e
-        except Exception as e:
-            logger.error("Claude API request failed: %s", e)
-            raise RuntimeError(f"Claude API request failed: {e}") from e
+            url = f"{self.api_base_url}/messages"
+            data_bytes = json.dumps(req_payload).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                method="POST",
+            )
+
+            try:
+                start_t = time.time()
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    resp_bytes = resp.read()
+                    elapsed = time.time() - start_t
+                    logger.info("Claude API (%s) succeeded in %.2fs (HTTP %d)", candidate_model, elapsed, resp.status)
+                    resp_json = json.loads(resp_bytes.decode("utf-8"))
+                self.health_tracker.mark_success(candidate_model)
+                self.model = candidate_model
+                break
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+                logger.warning("Claude API model %s HTTP %d: %s", candidate_model, e.code, err_body[:200])
+                last_exception = RuntimeError(f"Claude API HTTP {e.code} on {candidate_model}: {err_body}")
+                if e.code == 429:
+                    self.health_tracker.mark_rate_limited(candidate_model)
+                    continue
+                elif e.code in (500, 502, 503, 504, 529, 408):
+                    self.health_tracker.mark_unavailable(candidate_model)
+                    continue
+                elif e.code == 404:
+                    self.health_tracker.mark_retired(candidate_model)
+                    continue
+                else:
+                    raise last_exception from e
+            except (urllib.error.URLError, TimeoutError, socket.timeout, Exception) as e:
+                logger.warning("Claude model %s request failed/timed out: %s", candidate_model, e)
+                self.health_tracker.mark_unavailable(candidate_model)
+                last_exception = RuntimeError(f"Claude request on {candidate_model} failed: {e}")
+                continue
+        else:
+            raise last_exception or RuntimeError("All Claude candidate models failed")
+
+        if not resp_json:
+            raise last_exception or RuntimeError("Empty Claude response")
 
         try:
             blocks = resp_json.get("content", [])
@@ -476,29 +766,40 @@ class ClaudeProvider(BaseAIProvider):
             raise
 
     def validate_key(self) -> bool:
-        """Validates Claude API key via a minimal 1-token test prompt."""
+        """Validates Claude API key via a minimal 1-token test prompt across candidate models."""
         url = f"{self.api_base_url}/messages"
-        payload = {
-            "model": self.model,
-            "max_tokens": 1,
-            "messages": [{"role": "user", "content": "ping"}],
-        }
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
-                return resp.status == 200
-        except Exception as e:
-            logger.debug("Claude key validation failed: %s", e)
-            return False
+        candidates = self.health_tracker.get_candidate_models(self.model, self.fallback_models)
+
+        for candidate_model in candidates:
+            payload = {
+                "model": candidate_model,
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "ping"}],
+            }
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    if resp.status == 200:
+                        return True
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    return False
+                elif e.code == 404:
+                    self.health_tracker.mark_retired(candidate_model)
+                    continue
+            except Exception as e:
+                logger.debug("Claude key validation failed on %s: %s", candidate_model, e)
+                continue
+        return False
 
     def call_llm_json(
         self,
@@ -507,41 +808,73 @@ class ClaudeProvider(BaseAIProvider):
         schema: Optional[Dict[str, Any]] = None,
         max_tokens: int = 800,
     ) -> str:
-        """Invokes Claude with structured output instruction."""
+        """Invokes Claude with structured output instruction and multi-model failover."""
         prompt_with_schema = user_prompt
         if schema:
             prompt_with_schema += f"\n\nReturn strictly valid JSON conforming to this schema:\n{json.dumps(schema)}"
 
-        req_payload = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "system": system_prompt,
-            "messages": [
-                {"role": "user", "content": prompt_with_schema}
-            ],
-        }
-        url = f"{self.api_base_url}/messages"
-        data_bytes = json.dumps(req_payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data_bytes,
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                resp_json = json.loads(resp.read().decode("utf-8"))
-                for block in resp_json.get("content", []):
-                    if block.get("type") == "text":
-                        return block.get("text", "")
-                return ""
-        except Exception as e:
-            raise RuntimeError(f"Claude API request failed: {e}") from e
+        candidates = self.health_tracker.get_candidate_models(self.model, self.fallback_models)
+        last_exception: Optional[Exception] = None
+        resp_json: Optional[Dict[str, Any]] = None
+
+        for candidate_model in candidates:
+            req_payload = {
+                "model": candidate_model,
+                "max_tokens": max_tokens,
+                "temperature": 0.2,
+                "system": system_prompt,
+                "messages": [
+                    {"role": "user", "content": prompt_with_schema}
+                ],
+            }
+            url = f"{self.api_base_url}/messages"
+            data_bytes = json.dumps(req_payload).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    resp_json = json.loads(resp.read().decode("utf-8"))
+                self.health_tracker.mark_success(candidate_model)
+                self.model = candidate_model
+                break
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+                logger.warning("Claude call_llm_json %s HTTP %d: %s", candidate_model, e.code, err_body[:200])
+                last_exception = RuntimeError(f"Claude API HTTP {e.code} on {candidate_model}: {err_body}")
+                if e.code == 429:
+                    self.health_tracker.mark_rate_limited(candidate_model)
+                    continue
+                elif e.code in (500, 502, 503, 504, 529, 408):
+                    self.health_tracker.mark_unavailable(candidate_model)
+                    continue
+                elif e.code == 404:
+                    self.health_tracker.mark_retired(candidate_model)
+                    continue
+                else:
+                    raise last_exception from e
+            except (urllib.error.URLError, TimeoutError, socket.timeout, Exception) as e:
+                logger.warning("Claude call_llm_json %s failed/timed out: %s", candidate_model, e)
+                self.health_tracker.mark_unavailable(candidate_model)
+                last_exception = RuntimeError(f"Claude call_llm_json on {candidate_model} failed: {e}")
+                continue
+        else:
+            raise last_exception or RuntimeError("All Claude candidate models failed for call_llm_json")
+
+        if not resp_json:
+            raise last_exception or RuntimeError("Empty Claude response")
+
+        for block in resp_json.get("content", []):
+            if block.get("type") == "text":
+                return block.get("text", "")
+        return ""
 
 
 # -----------------------------------------------------------------------------
@@ -762,7 +1095,7 @@ def get_ai_provider(
 
     p_clean = p_name.lower().strip()
     if p_clean == "gemini":
-        m = model or os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        m = model or os.environ.get("GEMINI_MODEL")
         return GeminiProvider(api_key=key, model=m)
     elif p_clean in ("claude", "anthropic"):
         m = model or "claude-3-5-haiku-20241022"

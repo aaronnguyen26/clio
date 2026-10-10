@@ -106,4 +106,11 @@ fi
 # Clean staging
 rm -rf "${STAGE_DIR}"
 
+if [ "${CLIO_NO_AUTO_START:-0}" != "1" ]; then
+    echo "==> Starting trusted Clio backend server on port 8765..."
+    nohup python3 -B -m src.main --server --port 8765 >/tmp/clio_server_live.log 2>&1 &
+    sleep 1
+    open "${LOCAL_BUNDLE}" 2>/dev/null || true
+fi
+
 echo "==> Build complete! Clio.app is available at ${LOCAL_BUNDLE} and ${DESKTOP_BUNDLE}."

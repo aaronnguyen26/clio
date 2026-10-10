@@ -200,6 +200,9 @@ class _VirtualCursorNativeBindings:
         self.kCFNumberSInt64Type = 4
         self.key_pid = cf.CFStringCreateWithCString(None, b"kCGWindowOwnerPID", kCFStringEncodingUTF8)
         self.key_num = cf.CFStringCreateWithCString(None, b"kCGWindowNumber", kCFStringEncodingUTF8)
+        self.key_layer = cf.CFStringCreateWithCString(None, b"kCGWindowLayer", kCFStringEncodingUTF8)
+        self._frontmost_pid_cache: Optional[int] = None
+        self._frontmost_pid_ts: float = 0.0
 
         # CGEvent event type constants
         self.kCGEventLeftMouseDown = 1
@@ -261,7 +264,38 @@ class _VirtualCursorNativeBindings:
         return None
 
     def resolve_frontmost_pid(self) -> Optional[int]:
-        """Resolves the PID of the current frontmost application on macOS."""
+        """Resolves the PID of the current frontmost application on macOS in-process without spawning subprocesses."""
+        now = time.time()
+        if self._frontmost_pid_cache is not None and (now - self._frontmost_pid_ts) < 0.25:
+            return self._frontmost_pid_cache
+
+        from ctypes import byref, c_int64
+        # 17 = kCGWindowListOptionOnScreenOnly (1) | kCGWindowListExcludeDesktopElements (16)
+        wlist = self.cg.CGWindowListCopyWindowInfo(17, 0)
+        if wlist:
+            try:
+                count = self.cf.CFArrayGetCount(wlist)
+                for i in range(count):
+                    d = self.cf.CFArrayGetValueAtIndex(wlist, i)
+                    layer_ref = self.cf.CFDictionaryGetValue(d, self.key_layer)
+                    if layer_ref:
+                        layer_val = c_int64(0)
+                        self.cf.CFNumberGetValue(layer_ref, self.kCFNumberSInt64Type, byref(layer_val))
+                        if layer_val.value != 0:
+                            continue
+                    pid_ref = self.cf.CFDictionaryGetValue(d, self.key_pid)
+                    if pid_ref:
+                        pid_val = c_int64(0)
+                        self.cf.CFNumberGetValue(pid_ref, self.kCFNumberSInt64Type, byref(pid_val))
+                        if pid_val.value > 0:
+                            self._frontmost_pid_cache = int(pid_val.value)
+                            self._frontmost_pid_ts = now
+                            return self._frontmost_pid_cache
+            except Exception:
+                pass
+            finally:
+                self.cf.CFRelease(wlist)
+
         import re
         import subprocess
         try:
@@ -274,7 +308,9 @@ class _VirtualCursorNativeBindings:
             )
             m = re.search(r'\bpid\s*=\s*(\d+)', out)
             if m:
-                return int(m.group(1))
+                self._frontmost_pid_cache = int(m.group(1))
+                self._frontmost_pid_ts = now
+                return self._frontmost_pid_cache
         except Exception:
             pass
         return None
@@ -361,6 +397,7 @@ class VirtualCursor:
         self._velocity: Tuple[float, float] = (0.0, 0.0)
         self._speed: float = 0.0
         self.target_pid: Optional[int] = target_pid
+        self._explicit_target_pid: bool = target_pid is not None
         self.target_window_id: Optional[int] = target_window_id
         self.target_bundle_id: Optional[str] = None
         self.background_mode: bool = False
@@ -476,6 +513,7 @@ class VirtualCursor:
         with self._lock:
             if pid is not None:
                 self.target_pid = int(pid)
+                self._explicit_target_pid = True
             if window_id is not None:
                 self.target_window_id = int(window_id)
                 if self.target_pid is None and not self._mock:
@@ -484,6 +522,7 @@ class VirtualCursor:
                         resolved_pid = native.resolve_pid_from_window_id(int(window_id))
                         if resolved_pid:
                             self.target_pid = resolved_pid
+                            self._explicit_target_pid = True
 
     def set_target_window(self, window: WindowInfo) -> None:
         """Sets target window metadata and resolves target PID if available."""
@@ -580,7 +619,8 @@ class VirtualCursor:
                 now = time.time()
                 self._trajectory.append((self._vx, self._vy, now))
 
-                self._dispatch_native_mouse_event(self._vx, self._vy, event_type="move")
+                if getattr(self, "_explicit_target_pid", False):
+                    self._dispatch_native_mouse_event(self._vx, self._vy, event_type="move")
 
                 # Real-time position broadcast at ~40Hz for fluid on-screen cursor motion
                 if now - last_notify >= 0.025:
@@ -610,6 +650,8 @@ class VirtualCursor:
             self._velocity = (0.0, 0.0)
             self._speed = 0.0
             self._state = VirtualCursorState.IDLE
+            if not getattr(self, "_explicit_target_pid", False):
+                self._dispatch_native_mouse_event(self._vx, self._vy, event_type="move")
 
             event = VirtualCursorEvent(
                 event_type="move",
@@ -633,7 +675,7 @@ class VirtualCursor:
         y: Optional[float] = None,
         button: Union[str, MouseButton] = "left",
         click_count: int = 1,
-        interval: float = 0.02,
+        interval: float = 0.12,
     ) -> None:
         """Performs a targeted mouse click without displacing hardware mouse.
 
@@ -871,11 +913,12 @@ class VirtualCursor:
         if not (math.isfinite(x) and math.isfinite(y)):
             raise InputSynthesisError(f"Invalid non-finite wiggle coordinates: ({x}, {y})")
 
-        self.move_to(x, y, duration=0.1, smooth=True)
+        dur = 0.01 if self._mock else 0.03
+        self.move_to(x, y, duration=dur, smooth=True)
         for i in range(oscillations * 2):
             dx = amplitude if (i % 2 == 0) else -amplitude
-            self.move_to(x + dx, y, duration=0.08, smooth=True)
-        self.move_to(x, y, duration=0.08, smooth=True)
+            self.move_to(x + dx, y, duration=dur, smooth=True)
+        self.move_to(x, y, duration=dur, smooth=True)
 
     def pulse_at(self, x: float, y: float, duration: float = 0.4) -> None:
         """Emits a pulsing beacon event at target element location."""
@@ -979,6 +1022,7 @@ class VirtualCursor:
         """Sets target process ID for directed background input dispatch."""
         with self._lock:
             self.target_pid = pid
+            self._explicit_target_pid = pid is not None
 
     def set_target_bundle_id(self, bundle_id: str) -> bool:
         """Resolves and targets a process ID from a bundle identifier."""
@@ -996,7 +1040,7 @@ class VirtualCursor:
         """Ensures a valid target PID is set. Falls back to frontmost application only if not in background mode."""
         if self._mock:
             return None
-        if self.target_pid is not None:
+        if self.target_pid is not None and getattr(self, "_explicit_target_pid", True):
             return self.target_pid
 
         native = _get_native_bindings()
@@ -1149,7 +1193,7 @@ class VirtualCursor:
                     else:
                         primary_code = VK_MAP.get(k_lower, 0)
 
-                # Dispatch to PID if available
+                # Dispatch strictly to target PID (never post to global HID event tap to prevent latched modifier keys)
                 if pid is not None:
                     ev_d = native.cg.CGEventCreateKeyboardEvent(None, primary_code, True)
                     if ev_d:
@@ -1160,30 +1204,9 @@ class VirtualCursor:
 
                     ev_u = native.cg.CGEventCreateKeyboardEvent(None, primary_code, False)
                     if ev_u:
-                        if flags:
-                            native.cg.CGEventSetFlags(ev_u, flags)
+                        native.cg.CGEventSetFlags(ev_u, 0)
                         native.cg.CGEventPostToPid(pid, ev_u)
                         native.cf.CFRelease(ev_u)
-
-                # Only dispatch via HID if not in background mode and (target PID is frontmost or no PID specified)
-                front_pid = native.resolve_frontmost_pid()
-                if not self.background_mode and (pid is None or front_pid == pid) and sys.platform == "darwin":
-                    try:
-                        hid_d = native.cg.CGEventCreateKeyboardEvent(None, primary_code, True)
-                        if hid_d:
-                            if flags:
-                                native.cg.CGEventSetFlags(hid_d, flags)
-                            native.cg.CGEventPost(0, hid_d)
-                            native.cf.CFRelease(hid_d)
-                        time.sleep(0.01)
-                        hid_u = native.cg.CGEventCreateKeyboardEvent(None, primary_code, False)
-                        if hid_u:
-                            if flags:
-                                native.cg.CGEventSetFlags(hid_u, flags)
-                            native.cg.CGEventPost(0, hid_u)
-                            native.cf.CFRelease(hid_u)
-                    except Exception as e:
-                        logger.debug("HID hotkey post error: %s", e)
 
     def paste_text(self, text: str) -> None:
         """Injects text into target process without taking foreground focus."""

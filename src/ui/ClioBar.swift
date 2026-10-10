@@ -552,6 +552,24 @@ struct SlashShortcutCatalog {
             badge: "GUIDE ↵",
             shortcutKey: "⌘8"
         ),
+        SlashShortcutItem(
+            id: "shortcut_limits",
+            command: "/limits",
+            title: "Usage Limits & API Quota",
+            description: "View and configure Walkthrough, Automation, and Gemini Free API key limits",
+            iconName: "speedometer",
+            badge: "QUOTA ↵",
+            shortcutKey: "⌘9"
+        ),
+        SlashShortcutItem(
+            id: "shortcut_settings",
+            command: "/settings",
+            title: "Settings & Preferences",
+            description: "Configure Usage Limits, AI Models, Walkthrough, and Safety",
+            iconName: "gearshape",
+            badge: "CONFIG ↵",
+            shortcutKey: "⌘,"
+        ),
     ]
 
     static func matchingShortcuts(for query: String) -> [SlashShortcutItem] {
@@ -569,6 +587,12 @@ struct SlashShortcutCatalog {
             let desc = item.description.lowercased()
 
             if cmd.hasPrefix(clean) { return true }
+            if item.id == "shortcut_limits" && ("/quota".hasPrefix(clean) || "/usage".hasPrefix(clean)) {
+                return true
+            }
+            if item.id == "shortcut_settings" && ("/preferences".hasPrefix(clean) || "/config".hasPrefix(clean) || "/options".hasPrefix(clean)) {
+                return true
+            }
             if queryWithoutSlash.isEmpty { return true }
 
             if queryWithoutSlash.count >= 3 {
@@ -1453,6 +1477,7 @@ struct VirtualCursorView: View {
 final class VirtualCursorOverlayManager: ObservableObject {
     static let shared = VirtualCursorOverlayManager()
     private var window: NSPanel?
+    private var clickResetWorkItem: DispatchWorkItem?
     @Published var currentX: CGFloat = -200
     @Published var currentY: CGFloat = -200
     @Published var currentState: String = "IDLE"
@@ -1470,7 +1495,7 @@ final class VirtualCursorOverlayManager: ObservableObject {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = .floating
+        panel.level = .screenSaver
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -1488,7 +1513,7 @@ final class VirtualCursorOverlayManager: ObservableObject {
             hide()
             return
         }
-        guard let screen = NSScreen.main else { return }
+        guard let screen = NSScreen.screens.first ?? NSScreen.main else { return }
         let screenH = screen.frame.height
         // In macOS coordinates: tip of arrow is at (2, 2) in panel
         let winX = x - 2
@@ -1497,15 +1522,30 @@ final class VirtualCursorOverlayManager: ObservableObject {
         self.currentX = x
         self.currentY = y
         self.currentState = state
-        self.isClicking = (state.uppercased() == "CLICKING")
+        let upper = state.uppercased()
+        let activeAction = (upper == "CLICKING" || upper == "PULSING" || upper == "DRAGGING" || upper == "HIGHLIGHTING" || upper == "DEMONSTRATING")
+
+        if activeAction {
+            self.isClicking = true
+            clickResetWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.isClicking = false
+            }
+            self.clickResetWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+        } else if clickResetWorkItem == nil {
+            self.isClicking = false
+        }
 
         window?.setFrameOrigin(NSPoint(x: winX, y: winY))
         if window?.isVisible == false {
-            window?.orderFront(nil)
+            window?.orderFrontRegardless()
         }
     }
 
     func hide() {
+        clickResetWorkItem?.cancel()
+        clickResetWorkItem = nil
         window?.orderOut(nil)
         window?.setFrameOrigin(NSPoint(x: -200, y: -200))
         self.isClicking = false
@@ -1604,6 +1644,7 @@ struct WalkthroughCalloutCardView: View {
 final class WalkthroughOverlayManager: ObservableObject {
     static let shared = WalkthroughOverlayManager()
     private var window: NSPanel?
+    private var statusPollTimer: Timer?
 
     @Published var isVisible: Bool = false
     @Published var goal: String = ""
@@ -1641,24 +1682,36 @@ final class WalkthroughOverlayManager: ObservableObject {
         self.window = panel
     }
 
+    private func ensurePollingActive() {
+        guard statusPollTimer == nil else { return }
+        statusPollTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.pollStatusOnce()
+            }
+        }
+    }
+
+    private func pollStatusOnce() {
+        guard self.isVisible, let url = URL(string: "http://127.0.0.1:8765/api/walkthrough/status") else { return }
+        Task {
+            guard let (data, resp) = try? await URLSession.shared.data(from: url),
+                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            await MainActor.run {
+                guard self.isVisible else { return }
+                let status = (json["status"] as? String ?? "").uppercased()
+                if status == "IDLE" { return }
+                self.update(data: json)
+                if let cx = json["cursor_x"] as? Double, let cy = json["cursor_y"] as? Double {
+                    VirtualCursorOverlayManager.shared.updatePosition(x: CGFloat(cx), y: CGFloat(cy), state: status)
+                }
+            }
+        }
+    }
+
     func update(data: [String: Any]) {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        guard let screen = NSScreen.screens.first ?? NSScreen.main else { return }
         let screenRect = screen.visibleFrame
-
-        let curIdx = data["current_step_index"] as? Int ?? 1
-        let total = data["total_steps"] as? Int ?? 1
-        self.currentStepIndex = curIdx
-        self.totalSteps = total
-        self.stepBadge = "STEP \(curIdx) OF \(total)"
-        self.autoAdvance = data["auto_advance"] as? Bool ?? true
-        if let g = data["goal"] as? String, !g.isEmpty {
-            self.goal = g
-        }
-
-        if let step = data["step"] as? [String: Any] {
-            self.instruction = step["instruction"] as? String ?? ""
-            self.explanation = step["explanation"] as? String ?? ""
-        }
 
         if let rawSteps = data["steps"] as? [[String: Any]] {
             self.steps = rawSteps.compactMap { dict in
@@ -1667,6 +1720,27 @@ final class WalkthroughOverlayManager: ObservableObject {
                 let inst = dict["instruction"] as? String ?? ""
                 return WalkthroughStepSummary(id: idx, stepIndex: idx, title: title, instruction: inst)
             }
+        }
+
+        let total = max(1, data["total_steps"] as? Int ?? (self.steps.isEmpty ? 1 : self.steps.count))
+        let rawIdx = data["current_step_index"] as? Int ?? 1
+        let curIdx = max(1, min(rawIdx == 0 ? 1 : rawIdx, total))
+
+        self.currentStepIndex = curIdx
+        self.totalSteps = total
+        self.stepBadge = "STEP \(curIdx) OF \(total)"
+        self.autoAdvance = data["auto_advance"] as? Bool ?? true
+        if let g = data["goal"] as? String, !g.isEmpty {
+            self.goal = g
+        }
+
+        if let step = data["step"] as? [String: Any], let inst = step["instruction"] as? String, !inst.isEmpty {
+            self.instruction = inst
+            self.explanation = step["explanation"] as? String ?? ""
+        } else if let matching = self.steps.first(where: { $0.stepIndex == curIdx }) {
+            self.instruction = matching.instruction
+        } else if let first = self.steps.first, self.instruction.isEmpty {
+            self.instruction = first.instruction
         }
 
         let status = (data["status"] as? String ?? "").uppercased()
@@ -1688,12 +1762,15 @@ final class WalkthroughOverlayManager: ObservableObject {
 
         window?.setFrame(NSRect(x: targetX, y: targetY, width: cardW, height: cardH), display: true)
         if window?.isVisible == false {
-            window?.orderFront(nil)
+            window?.orderFrontRegardless()
         }
         self.isVisible = true
+        ensurePollingActive()
     }
 
     func hide() {
+        statusPollTimer?.invalidate()
+        statusPollTimer = nil
         window?.orderOut(nil)
         window?.setFrameOrigin(NSPoint(x: -600, y: -600))
         self.isVisible = false
@@ -1712,6 +1789,28 @@ final class WalkthroughOverlayManager: ObservableObject {
                 VirtualCursorOverlayManager.shared.hide()
                 AppDelegate.shared?.showPanel()
             }
+        }
+    }
+}
+
+// MARK: - Settings Tab Navigation
+
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case usage = "Usage & Quota"
+    case ai = "AI & Models"
+    case walkthrough = "Walkthrough"
+    case safety = "Automation & Safety"
+    case storage = "Memory & Storage"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .usage: return "speedometer"
+        case .ai: return "sparkles"
+        case .walkthrough: return "graduationcap"
+        case .safety: return "shield.checkered"
+        case .storage: return "cylinder.split.1x2"
         }
     }
 }
@@ -1736,12 +1835,18 @@ final class ClioViewModel: ObservableObject {
                 self.aiCompanionResponse = ""
                 self.aiTriggeredWorkflow = nil
             }
+            if !trimmed.isEmpty && !trimmed.hasPrefix("/settings") && !trimmed.hasPrefix("/preferences") && !trimmed.hasPrefix("/config") && !trimmed.hasPrefix("/limits") && !trimmed.hasPrefix("/quota") && !trimmed.hasPrefix("/usage") {
+                self.isSettingsPanelOpen = false
+                self.isUsageLimitPanelOpen = false
+            }
+            self.isRecommendationExplicitlySelected = false
             updateRecommendationsSynchronously(for: query)
         }
     }
     @Published var workflows: [WorkflowItem] = []
     @Published var recommendations: [WorkflowItem] = []
     @Published var selectedIndex: Int = 0
+    @Published var isRecommendationExplicitlySelected: Bool = false
     @Published var isExecuting: Bool = false
     @Published var isRecording: Bool = false
     @Published var isListening: Bool = false
@@ -1775,9 +1880,58 @@ final class ClioViewModel: ObservableObject {
     @Published var isMemorySpaceOpen: Bool = false
     @Published var isStatusPanelOpen: Bool = false
     @Published var isHelpPanelOpen: Bool = false
+    @Published var isUsageLimitPanelOpen: Bool = false
+    @Published var isSettingsPanelOpen: Bool = false
+    @Published var selectedSettingsTab: SettingsTab = .usage
+
+    // Settings Specific Preferences
+    @Published var aiModelSelection: String = "gemini-2.5-flash"
+    @Published var aiApiKeyInput: String = ""
+    @Published var aiKeyObscured: Bool = true
+    @Published var aiTestStatusText: String = ""
+    @Published var isTestingAIKey: Bool = false
+    @Published var walkthroughDefaultMode: String = "guided_demo"
+    @Published var walkthroughAdvanceDelay: Double = 2.5
+    @Published var virtualCursorSpeed: String = "smooth"
+    @Published var audioChimesEnabled: Bool = true
+    @Published var cornerFailsafeEnabled: Bool = true
+    @Published var requireActionConfirmation: Bool = true
+    @Published var storageMetrics: [String: Any] = [:]
+    @Published var storageStatusSummary: String = "4 Workflows • 12.0MB Storage"
+    @Published var isClearingStorage: Bool = false
+
     @Published var systemAccessibilityGranted: Bool = false
     @Published var aiProviderName: String = "Local Engine"
     @Published var aiProviderStatus: String = "Ready"
+
+    // App Usage Limits & Gemini Free-Tier Quota Telemetry
+    @Published var walkthroughUsed: Int = 0
+    @Published var walkthroughDailyLimit: Int = 25
+    @Published var walkthroughRemaining: Int = 25
+    @Published var walkthroughRpmUsed: Int = 0
+    @Published var walkthroughRpmLimit: Int = 5
+    @Published var walkthroughCloudUsed: Int = 0
+    @Published var walkthroughLocalUsed: Int = 0
+    @Published var walkthroughExhausted: Bool = false
+
+    @Published var automationUsed: Int = 0
+    @Published var automationDailyLimit: Int = 25
+    @Published var automationRemaining: Int = 25
+    @Published var automationRpmUsed: Int = 0
+    @Published var automationRpmLimit: Int = 5
+    @Published var automationCloudUsed: Int = 0
+    @Published var automationLocalUsed: Int = 0
+    @Published var automationExhausted: Bool = false
+
+    @Published var geminiActiveModel: String = "gemini-2.5-flash"
+    @Published var geminiCallsToday: Int = 0
+    @Published var geminiDailyLimit: Int = 250
+    @Published var geminiRpmUsed: Int = 0
+    @Published var geminiRpmLimit: Int = 15
+    @Published var geminiRateLimited: Bool = false
+    @Published var geminiCooldownSeconds: Int = 0
+    @Published var usageResetFormatted: String = "24H 00M"
+    @Published var usageLimitReachedBanner: String? = nil
 
     @Published var aiCompanionPrompt: String = ""
     @Published var aiCompanionResponse: String = ""
@@ -1786,7 +1940,8 @@ final class ClioViewModel: ObservableObject {
 
     var matchingSlashCommands: [SlashShortcutItem] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("/") && !isMemorySpaceOpen && !isStatusPanelOpen && !isHelpPanelOpen else { return [] }
+        guard trimmed.hasPrefix("/"), !isMemorySpaceOpen, !isStatusPanelOpen, !isHelpPanelOpen else { return [] }
+        guard !isUsageLimitPanelOpen && !isSettingsPanelOpen else { return [] }
         return SlashShortcutCatalog.matchingShortcuts(for: trimmed)
     }
 
@@ -1794,11 +1949,29 @@ final class ClioViewModel: ObservableObject {
         guard !isWalkthroughMode, !showSaveModal, inspectWorkflow == nil else { return false }
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("/"), !isMemorySpaceOpen, !isStatusPanelOpen, !isHelpPanelOpen else { return false }
+        guard !isUsageLimitPanelOpen && !isSettingsPanelOpen else { return false }
         let lower = trimmed.lowercased()
-        if lower.hasPrefix("/memory ") || lower.hasPrefix("/recent ") || lower.hasPrefix("/ai ") || lower == "/status" || lower == "/help" {
+        if lower.hasPrefix("/memory ") || lower.hasPrefix("/recent ") || lower.hasPrefix("/ai ") || lower == "/status" || lower == "/help" || lower == "/limits" || lower == "/quota" || lower == "/usage" || lower == "/settings" || lower == "/preferences" || lower == "/config" {
             return false
         }
         return !matchingSlashCommands.isEmpty
+    }
+
+    var isSettingsCommand: Bool {
+        guard !showSaveModal else { return false }
+        if isSettingsPanelOpen {
+            return true
+        }
+        guard !isWalkthroughMode else { return false }
+        let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        if (trimmed == "/settings" || trimmed == "/preferences" || trimmed == "/config" || trimmed == "/limits" || trimmed == "/quota" || trimmed == "/usage") && !isSlashMenuVisible {
+            return true
+        }
+        return false
+    }
+
+    var isUsageLimitCommand: Bool {
+        return isSettingsCommand
     }
 
     var isMemoryCommand: Bool {
@@ -2031,6 +2204,7 @@ final class ClioViewModel: ObservableObject {
         }
         let count = isMemoryCommand ? memoryWorkflows.count : recommendations.count
         guard count > 0 else { return }
+        isRecommendationExplicitlySelected = true
         selectedIndex = min(selectedIndex + 1, count - 1)
     }
 
@@ -2053,6 +2227,7 @@ final class ClioViewModel: ObservableObject {
         }
         let count = isMemoryCommand ? memoryWorkflows.count : recommendations.count
         guard count > 0 else { return }
+        isRecommendationExplicitlySelected = true
         selectedIndex = max(selectedIndex - 1, 0)
     }
 
@@ -2224,11 +2399,250 @@ final class ClioViewModel: ObservableObject {
                     self.vcCoords = "VC (\(Int(vc.x)), \(Int(vc.y))) • \(vc.state.uppercased())"
                 }
                 if let comm = st.recent_commentary { self.commentary = comm }
+                if let rawJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let usageDict = rawJson["usage"] as? [String: Any] {
+                    self.applyUsagePayload(usageDict)
+                }
                 self.statusPillText = self.isExecuting ? "CLIO • BUSY" : "CLIO • READY"
                 self.isConnected = true
             }
         } catch {
             self.isConnected = false
+        }
+    }
+
+    func fetchUsageStatus() async {
+        guard let url = URL(string: "/api/usage", relativeTo: baseURL) else { return }
+        do {
+            let req = makeAuthorizedRequest(url: url)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let usageDict = json["usage"] as? [String: Any] {
+                    self.applyUsagePayload(usageDict)
+                } else {
+                    self.applyUsagePayload(json)
+                }
+            }
+        } catch { }
+    }
+
+    func applyUsagePayload(_ dict: [String: Any]) {
+        if let resetStr = dict["reset_formatted"] as? String {
+            self.usageResetFormatted = resetStr
+        }
+        if let wt = dict["walkthrough"] as? [String: Any] {
+            self.walkthroughUsed = wt["used"] as? Int ?? self.walkthroughUsed
+            self.walkthroughDailyLimit = max(1, wt["daily_limit"] as? Int ?? self.walkthroughDailyLimit)
+            self.walkthroughRemaining = max(0, wt["remaining"] as? Int ?? (self.walkthroughDailyLimit - self.walkthroughUsed))
+            self.walkthroughRpmUsed = wt["rpm_used"] as? Int ?? self.walkthroughRpmUsed
+            self.walkthroughRpmLimit = max(1, wt["rpm_limit"] as? Int ?? self.walkthroughRpmLimit)
+            self.walkthroughCloudUsed = wt["cloud_ai_used"] as? Int ?? self.walkthroughCloudUsed
+            self.walkthroughLocalUsed = wt["local_used"] as? Int ?? self.walkthroughLocalUsed
+            self.walkthroughExhausted = wt["exhausted"] as? Bool ?? (self.walkthroughRemaining <= 0)
+        }
+        if let auto = dict["automation"] as? [String: Any] {
+            self.automationUsed = auto["used"] as? Int ?? self.automationUsed
+            self.automationDailyLimit = max(1, auto["daily_limit"] as? Int ?? self.automationDailyLimit)
+            self.automationRemaining = max(0, auto["remaining"] as? Int ?? (self.automationDailyLimit - self.automationUsed))
+            self.automationRpmUsed = auto["rpm_used"] as? Int ?? self.automationRpmUsed
+            self.automationRpmLimit = max(1, auto["rpm_limit"] as? Int ?? self.automationRpmLimit)
+            self.automationCloudUsed = auto["cloud_ai_used"] as? Int ?? self.automationCloudUsed
+            self.automationLocalUsed = auto["local_used"] as? Int ?? self.automationLocalUsed
+            self.automationExhausted = auto["exhausted"] as? Bool ?? (self.automationRemaining <= 0)
+        }
+        if let gem = dict["gemini_api"] as? [String: Any] {
+            self.geminiActiveModel = gem["active_model"] as? String ?? self.geminiActiveModel
+            self.geminiCallsToday = gem["calls_today"] as? Int ?? self.geminiCallsToday
+            self.geminiDailyLimit = max(1, gem["daily_limit"] as? Int ?? self.geminiDailyLimit)
+            self.geminiRpmUsed = gem["rpm_used"] as? Int ?? self.geminiRpmUsed
+            self.geminiRpmLimit = max(1, gem["rpm_limit"] as? Int ?? self.geminiRpmLimit)
+            self.geminiRateLimited = gem["rate_limited"] as? Bool ?? false
+            self.geminiCooldownSeconds = gem["cooldown_seconds"] as? Int ?? 0
+        }
+        if !self.walkthroughExhausted && !self.automationExhausted {
+            if self.usageLimitReachedBanner != nil {
+                self.usageLimitReachedBanner = nil
+            }
+        }
+    }
+
+    func toggleSettingsPanel(tab: SettingsTab = .usage) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if self.isSettingsPanelOpen && self.selectedSettingsTab == tab {
+                self.isSettingsPanelOpen = false
+                self.isUsageLimitPanelOpen = false
+                self.query = ""
+            } else {
+                self.isMemorySpaceOpen = false
+                self.isStatusPanelOpen = false
+                self.isHelpPanelOpen = false
+                self.isWalkthroughMode = false
+                self.inspectWorkflow = nil
+                self.selectedSettingsTab = tab
+                self.isSettingsPanelOpen = true
+                self.isUsageLimitPanelOpen = (tab == .usage)
+                self.query = ""
+                Task {
+                    await self.fetchUsageStatus()
+                    await self.fetchAIStatus()
+                    await self.fetchStorageStatus()
+                }
+            }
+        }
+    }
+
+    func toggleUsageLimitPanel() {
+        toggleSettingsPanel(tab: .usage)
+    }
+
+    func fetchStorageStatus() async {
+        guard let url = URL(string: "/api/system/storage", relativeTo: baseURL) else { return }
+        do {
+            let req = makeAuthorizedRequest(url: url)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                await MainActor.run {
+                    self.storageMetrics = json
+                    let wfCount = json["workflow_count"] as? Int ?? self.allSavedWorkflows.count
+                    let mbRec = json["recordings_size_mb"] as? Double ?? 0.0
+                    let mbDb = json["db_size_mb"] as? Double ?? 0.0
+                    self.storageStatusSummary = "\(wfCount) Workflows • \(String(format: "%.1f", mbRec + mbDb))MB Storage"
+                }
+            }
+        } catch {
+            await MainActor.run {
+                self.storageStatusSummary = "\(self.allSavedWorkflows.count) Workflows in Memory"
+            }
+        }
+    }
+
+    func clearStorageCache() async {
+        guard let url = URL(string: "/api/system/cache/clear", relativeTo: baseURL) else { return }
+        self.isClearingStorage = true
+        do {
+            var req = makeAuthorizedRequest(url: url, method: "POST")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: [:])
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                await MainActor.run {
+                    if let st = json["storage"] as? [String: Any] {
+                        self.storageMetrics = st
+                    }
+                    self.statusPillText = "CACHE CLEARED"
+                }
+            }
+        } catch {
+            // Suppress or log silently
+        }
+        self.isClearingStorage = false
+        await fetchStorageStatus()
+    }
+
+    func saveAIModelConfig(model: String, apiKey: String? = nil) async {
+        guard let url = URL(string: "/api/ai/config", relativeTo: baseURL) else { return }
+        self.aiModelSelection = model
+        var payload: [String: Any] = ["model": model, "provider": "gemini"]
+        if let key = apiKey, !key.trimmingCharacters(in: .whitespaces).isEmpty {
+            payload["api_key"] = key.trimmingCharacters(in: .whitespaces)
+        }
+        do {
+            var req = makeAuthorizedRequest(url: url, method: "POST")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            let (_, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                await MainActor.run {
+                    self.geminiActiveModel = model
+                }
+                await fetchAIStatus()
+                await fetchUsageStatus()
+            }
+        } catch {
+            // Suppress or log silently
+        }
+    }
+
+    func testAIConnection(apiKey: String? = nil) async {
+        guard let url = URL(string: "/api/ai/test", relativeTo: baseURL) else { return }
+        self.isTestingAIKey = true
+        self.aiTestStatusText = "Testing connection..."
+        var payload: [String: Any] = ["provider": "gemini"]
+        if let key = apiKey, !key.trimmingCharacters(in: .whitespaces).isEmpty {
+            payload["api_key"] = key.trimmingCharacters(in: .whitespaces)
+        }
+        do {
+            var req = makeAuthorizedRequest(url: url, method: "POST")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let valid = json["valid"] as? Bool ?? false
+                await MainActor.run {
+                    self.aiTestStatusText = valid ? "CONNECTED • Key Valid (Gemini API Active)" : "FAILED • Invalid Key or Quota Exhausted"
+                }
+            } else {
+                await MainActor.run {
+                    self.aiTestStatusText = "FAILED • API Connection Error"
+                }
+            }
+        } catch {
+            await MainActor.run {
+                self.aiTestStatusText = "FAILED • Could not connect to engine"
+            }
+        }
+        self.isTestingAIKey = false
+    }
+
+    func resetUsageQuota(feature: String? = nil) {
+        guard let url = URL(string: "/api/usage/reset", relativeTo: baseURL) else { return }
+        var req = makeAuthorizedRequest(url: url, method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [:]
+        if let f = feature {
+            body["feature"] = f
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        self.usageLimitReachedBanner = nil
+        Task {
+            if let (data, resp) = try? await URLSession.shared.data(for: req),
+               let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let usageDict = json["usage"] as? [String: Any] {
+                await MainActor.run {
+                    self.applyUsagePayload(usageDict)
+                    self.usageLimitReachedBanner = nil
+                }
+            }
+        }
+    }
+
+    func adjustFeatureLimit(feature: String, delta: Int) {
+        guard let url = URL(string: "/api/usage/config", relativeTo: baseURL) else { return }
+        var req = makeAuthorizedRequest(url: url, method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [:]
+        if feature == "walkthrough" {
+            let next = max(1, min(500, self.walkthroughDailyLimit + delta))
+            body["walkthrough_daily_limit"] = next
+        } else if feature == "automation" {
+            let next = max(1, min(500, self.automationDailyLimit + delta))
+            body["automation_daily_limit"] = next
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        Task {
+            if let (data, resp) = try? await URLSession.shared.data(for: req),
+               let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let usageDict = json["usage"] as? [String: Any] {
+                await MainActor.run {
+                    self.applyUsagePayload(usageDict)
+                }
+            }
         }
     }
 
@@ -2241,6 +2655,11 @@ final class ClioViewModel: ObservableObject {
             self.inspectWorkflow = nil
             self.selectedIndex = 0
             return
+        }
+        let lowerSearch = text.trimmingCharacters(in: .whitespaces).lowercased()
+        if !lowerSearch.isEmpty && !["/limits", "/quota", "/usage", "/settings", "/preferences", "/config"].contains(lowerSearch) && (isUsageLimitPanelOpen || isSettingsPanelOpen) {
+            self.isUsageLimitPanelOpen = false
+            self.isSettingsPanelOpen = false
         }
         if isSlashMenuVisible || text.trimmingCharacters(in: .whitespaces).hasPrefix("/") {
             self.recommendations = []
@@ -2365,6 +2784,7 @@ final class ClioViewModel: ObservableObject {
             self.workflows = []
             self.inspectWorkflow = nil
             self.isMemorySpaceOpen = false
+            self.isUsageLimitPanelOpen = false
             self.statusPillText = "CLIO • TEACH ME"
         } else {
             self.statusPillText = "CLIO • READY"
@@ -2375,6 +2795,12 @@ final class ClioViewModel: ObservableObject {
     func startWalkthrough(query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
+
+        // Immediately dismiss panel so the desktop and walkthrough are not obstructed
+        self.query = ""
+        self.isWalkthroughMode = false
+        self.statusPillText = "CLIO • TEACHING"
+        AppDelegate.shared?.hidePanel()
 
         guard let url = URL(string: "/api/walkthrough/start", relativeTo: baseURL) else { return }
         var req = makeAuthorizedRequest(url: url, method: "POST")
@@ -2393,11 +2819,38 @@ final class ClioViewModel: ObservableObject {
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
         Task {
-            _ = try? await URLSession.shared.data(for: req)
-            await MainActor.run {
-                self.query = ""
-                self.isWalkthroughMode = false
-                AppDelegate.shared?.hidePanel()
+            if let (data, response) = try? await URLSession.shared.data(for: req),
+               let http = response as? HTTPURLResponse,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                await MainActor.run {
+                    if let usageDict = json["usage"] as? [String: Any] {
+                        self.applyUsagePayload(usageDict)
+                    }
+                    if http.statusCode == 429 || (json["limit_reached"] as? Bool == true) {
+                        self.usageLimitReachedBanner = json["error"] as? String ?? "Daily Walkthrough usage limit reached."
+                        self.statusPillText = "QUOTA LIMIT REACHED"
+                        self.isUsageLimitPanelOpen = true
+                        AppDelegate.shared?.showPanel()
+                        return
+                    }
+                    if (200...299).contains(http.statusCode), !WalkthroughOverlayManager.shared.isVisible {
+                        if let telemetry = json["telemetry"] as? [String: Any] {
+                            WalkthroughOverlayManager.shared.update(data: telemetry)
+                        } else if let plan = json["plan"] as? [String: Any] {
+                            var overlayData: [String: Any] = [
+                                "status": "NAVIGATING",
+                                "goal": plan["goal"] as? String ?? trimmed,
+                                "current_step_index": 1,
+                                "total_steps": (plan["steps"] as? [[String: Any]])?.count ?? 1,
+                                "steps": plan["steps"] ?? []
+                            ]
+                            if let steps = plan["steps"] as? [[String: Any]], let firstStep = steps.first {
+                                overlayData["step"] = firstStep
+                            }
+                            WalkthroughOverlayManager.shared.update(data: overlayData)
+                        }
+                    }
+                }
             }
         }
     }
@@ -2416,9 +2869,37 @@ final class ClioViewModel: ObservableObject {
             return
         }
 
+        // 1a. Settings & Usage Limits Panel Execution
+        if lower == "/limits" || lower == "/quota" || lower == "/usage" || lower == "/settings" || lower == "/preferences" || lower == "/config" {
+            self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
+            self.selectedSettingsTab = (lower == "/settings" || lower == "/preferences" || lower == "/config") ? .usage : .usage
+            self.isSettingsPanelOpen = true
+            self.isUsageLimitPanelOpen = true
+            self.query = ""
+            Task {
+                await fetchUsageStatus()
+                await fetchAIStatus()
+                await fetchStorageStatus()
+            }
+            return
+        }
+
         // 1b. Walkthrough Mode or Trigger Execution
+        var targetWalkthroughQuery = trimmed
+        if lower.hasPrefix("/teach ") {
+            targetWalkthroughQuery = String(trimmed.dropFirst(7)).trimmingCharacters(in: .whitespaces)
+        } else if lower.hasPrefix("/walkthrough ") {
+            targetWalkthroughQuery = String(trimmed.dropFirst(13)).trimmingCharacters(in: .whitespaces)
+        } else if lower == "/teach" || lower == "/walkthrough" {
+            targetWalkthroughQuery = ""
+        }
+
         let isWalkthroughTrigger = lower.hasPrefix("teach ") ||
                                    lower.hasPrefix("teach me") ||
+                                   lower.hasPrefix("help me") ||
+                                   lower.hasPrefix("navigate") ||
                                    lower.hasPrefix("how do i") ||
                                    lower.hasPrefix("how can i") ||
                                    lower.hasPrefix("how to") ||
@@ -2427,9 +2908,21 @@ final class ClioViewModel: ObservableObject {
                                    lower.hasPrefix("walk me through") ||
                                    lower.hasPrefix("walkthrough") ||
                                    lower.hasPrefix("tutorial") ||
-                                   lower.hasPrefix("learn")
+                                   lower.hasPrefix("learn") ||
+                                   lower.hasPrefix("/teach") ||
+                                   lower.hasPrefix("/walkthrough") ||
+                                   lower.contains("command bar") ||
+                                   lower.contains("move between window") ||
+                                   lower.contains("switch between window") ||
+                                   lower.contains("switch window")
         if isWalkthroughMode || isWalkthroughTrigger {
-            startWalkthrough(query: trimmed)
+            if targetWalkthroughQuery.isEmpty {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    self.isWalkthroughMode = true
+                }
+                return
+            }
+            startWalkthrough(query: targetWalkthroughQuery)
             return
         }
 
@@ -2489,6 +2982,7 @@ final class ClioViewModel: ObservableObject {
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
             self.isHelpPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.query = ""
             if let recent = recentWorkflows.first {
                 executeWorkflowOrSystemAction(recent)
@@ -2502,6 +2996,7 @@ final class ClioViewModel: ObservableObject {
         if lower == "/help" || isHelpCommand {
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.isHelpPanelOpen = true
             self.query = "/help"
             return
@@ -2509,6 +3004,7 @@ final class ClioViewModel: ObservableObject {
 
         // Status Diagnostics Selection
         if lower == "/status" || isStatusCommand {
+            self.isUsageLimitPanelOpen = false
             checkSystemHealth()
             return
         }
@@ -2529,8 +3025,8 @@ final class ClioViewModel: ObservableObject {
             return
         }
 
-        // Recommendations selection: executes system actions or inspects matching actions immediately
-        if !recommendations.isEmpty && selectedIndex >= 0 && selectedIndex < recommendations.count {
+        // Recommendations selection: executes system actions or inspects matching actions ONLY IF explicitly selected by user!
+        if isRecommendationExplicitlySelected && !recommendations.isEmpty && selectedIndex >= 0 && selectedIndex < recommendations.count {
             let selectedItem = recommendations[selectedIndex]
             executeWorkflowOrSystemAction(selectedItem)
             return
@@ -2538,8 +3034,7 @@ final class ClioViewModel: ObservableObject {
 
         let normQuery = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
 
-        // When the user types an action in the Clio bar, it shouldn't take any action yet;
-        // it should show the steps in order to perform that action.
+        // When the user types an action matching an existing saved workflow, inspect its steps:
         if let match = (allSavedWorkflows + workflows).first(where: {
             let dName = $0.displayName.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
             let cTrig = $0.canonical_trigger?.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).lowercased()
@@ -2550,13 +3045,22 @@ final class ClioViewModel: ObservableObject {
         }
 
         // Check if there is an explicitly selected workflow from arrow keys
-        if selectedIndex >= 0 && selectedIndex < workflows.count {
+        if isRecommendationExplicitlySelected && selectedIndex >= 0 && selectedIndex < workflows.count {
             inspectWorkflowDetails(workflows[selectedIndex])
             return
         }
 
-        // Novel user instruction fallback: launch Walkthrough Tutor dynamically!
-        startWalkthrough(query: trimmed)
+        // If in walkthrough mode or walkthrough trigger prompt: launch Walkthrough Tutor dynamically!
+        if isWalkthroughMode || isWalkthroughTrigger {
+            startWalkthrough(query: trimmed)
+            return
+        }
+
+        // Direct command bar execution: execute dynamically via autonomous automation engine!
+        executeByQuery(trimmed)
+        self.query = ""
+        self.inspectWorkflow = nil
+        AppDelegate.shared?.hidePanel()
     }
 
     func executeSlashShortcut(_ item: SlashShortcutItem) {
@@ -2564,6 +3068,7 @@ final class ClioViewModel: ObservableObject {
         case "shortcut_memory":
             self.isStatusPanelOpen = false
             self.isHelpPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.isMemorySpaceOpen = true
             self.query = "/memory "
             self.selectedIndex = 0
@@ -2574,6 +3079,7 @@ final class ClioViewModel: ObservableObject {
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
             self.isHelpPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             self.toggleRecording()
@@ -2581,6 +3087,7 @@ final class ClioViewModel: ObservableObject {
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
             self.isHelpPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             withAnimation(.easeInOut(duration: 0.25)) {
@@ -2590,6 +3097,7 @@ final class ClioViewModel: ObservableObject {
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
             self.isHelpPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             if let recent = self.recentWorkflows.first {
@@ -2601,6 +3109,7 @@ final class ClioViewModel: ObservableObject {
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
             self.isHelpPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.query = ""
             self.selectedIndex = 0
             self.cancelTask()
@@ -2615,6 +3124,7 @@ final class ClioViewModel: ObservableObject {
         case "shortcut_status":
             self.isMemorySpaceOpen = false
             self.isHelpPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.isStatusPanelOpen = true
             self.query = "/status"
             self.selectedIndex = 0
@@ -2623,18 +3133,50 @@ final class ClioViewModel: ObservableObject {
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
             self.isHelpPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.query = "/ai "
             self.selectedIndex = 0
         case "shortcut_help":
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
+            self.isUsageLimitPanelOpen = false
             self.isHelpPanelOpen = true
             self.query = "/help"
             self.selectedIndex = 0
+        case "shortcut_limits":
+            self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
+            self.selectedSettingsTab = .usage
+            self.isSettingsPanelOpen = true
+            self.isUsageLimitPanelOpen = true
+            self.query = ""
+            self.selectedIndex = 0
+            Task {
+                await fetchUsageStatus()
+                await fetchAIStatus()
+                await fetchStorageStatus()
+            }
+        case "shortcut_settings":
+            self.isMemorySpaceOpen = false
+            self.isStatusPanelOpen = false
+            self.isHelpPanelOpen = false
+            self.selectedSettingsTab = .usage
+            self.isSettingsPanelOpen = true
+            self.isUsageLimitPanelOpen = true
+            self.query = ""
+            self.selectedIndex = 0
+            Task {
+                await fetchUsageStatus()
+                await fetchAIStatus()
+                await fetchStorageStatus()
+            }
         default:
             self.isMemorySpaceOpen = false
             self.isStatusPanelOpen = false
             self.isHelpPanelOpen = false
+            self.isUsageLimitPanelOpen = false
+            self.isSettingsPanelOpen = false
             self.query = item.command + " "
             self.selectedIndex = 0
         }
@@ -2645,6 +3187,7 @@ final class ClioViewModel: ObservableObject {
         Task {
             await fetchStatus()
             await fetchAIStatus()
+            await fetchUsageStatus()
         }
     }
 
@@ -2659,6 +3202,9 @@ final class ClioViewModel: ObservableObject {
                 let status = json["status"] as? String ?? "Ready"
                 self.aiProviderName = provider.capitalized
                 self.aiProviderStatus = status.capitalized
+                if let usageDict = json["usage"] as? [String: Any] {
+                    self.applyUsagePayload(usageDict)
+                }
             }
         } catch {
             self.aiProviderName = "Local Engine"
@@ -2707,6 +3253,13 @@ final class ClioViewModel: ObservableObject {
     }
 
     func executeWorkflowOrSystemAction(_ item: WorkflowItem) {
+        if self.automationExhausted {
+            self.usageLimitReachedBanner = "Daily Automation limit reached (\(self.automationUsed)/\(self.automationDailyLimit) uses today)."
+            self.statusPillText = "QUOTA LIMIT REACHED"
+            self.isUsageLimitPanelOpen = true
+            AppDelegate.shared?.showPanel()
+            return
+        }
         if item.id.hasPrefix("sys_") {
             executeSystemAction(item.id)
             self.query = ""
@@ -3327,9 +3880,20 @@ final class ClioViewModel: ObservableObject {
         Task {
             do {
                 let (data, response) = try await URLSession.shared.data(for: req)
-                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        if let name = json["name"] as? String {
+                if let http = response as? HTTPURLResponse,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    await MainActor.run {
+                        if let usageDict = json["usage"] as? [String: Any] {
+                            self.applyUsagePayload(usageDict)
+                        }
+                        if http.statusCode == 429 || (json["limit_reached"] as? Bool == true) {
+                            self.usageLimitReachedBanner = json["error"] as? String ?? "Daily Automation usage limit reached."
+                            self.statusPillText = "QUOTA LIMIT REACHED"
+                            self.isUsageLimitPanelOpen = true
+                            AppDelegate.shared?.showPanel()
+                            return
+                        }
+                        if (200...299).contains(http.statusCode), let name = json["name"] as? String {
                             self.currentTaskName = name
                             self.isExecuting = true
                         }
@@ -3352,11 +3916,48 @@ final class ClioViewModel: ObservableObject {
         Task {
             do {
                 let (data, response) = try await URLSession.shared.data(for: req)
-                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        if let name = json["name"] as? String {
-                            self.currentTaskName = name
-                            self.isExecuting = true
+                if let http = response as? HTTPURLResponse,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    await MainActor.run {
+                        if let usageDict = json["usage"] as? [String: Any] {
+                            self.applyUsagePayload(usageDict)
+                        }
+                        if http.statusCode == 429 || (json["limit_reached"] as? Bool == true) {
+                            self.usageLimitReachedBanner = json["error"] as? String ?? "Daily usage limit reached."
+                            self.statusPillText = "QUOTA LIMIT REACHED"
+                            self.isUsageLimitPanelOpen = true
+                            AppDelegate.shared?.showPanel()
+                            return
+                        }
+                        if (200...299).contains(http.statusCode) {
+                            let mode = json["mode"] as? String ?? ""
+                            if mode == "walkthrough", let plan = json["plan"] as? [String: Any] {
+                                self.statusPillText = "CLIO • TEACHING"
+                                AppDelegate.shared?.hidePanel()
+                                if !WalkthroughOverlayManager.shared.isVisible {
+                                    if let telemetry = json["telemetry"] as? [String: Any] {
+                                        WalkthroughOverlayManager.shared.update(data: telemetry)
+                                    } else {
+                                        if let steps = plan["steps"] as? [[String: Any]], let firstStep = steps.first {
+                                            self.currentStepText = firstStep["instruction"] as? String ?? ""
+                                        }
+                                        var overlayData: [String: Any] = [
+                                            "status": "NAVIGATING",
+                                            "goal": plan["goal"] as? String ?? q,
+                                            "current_step_index": 1,
+                                            "total_steps": (plan["steps"] as? [[String: Any]])?.count ?? 1,
+                                            "steps": plan["steps"] ?? []
+                                        ]
+                                        if let steps = plan["steps"] as? [[String: Any]], let firstStep = steps.first {
+                                            overlayData["step"] = firstStep
+                                        }
+                                        WalkthroughOverlayManager.shared.update(data: overlayData)
+                                    }
+                                }
+                            } else if let name = json["name"] as? String {
+                                self.currentTaskName = name
+                                self.isExecuting = true
+                            }
                         }
                     }
                 }
@@ -3477,6 +4078,20 @@ final class ClioViewModel: ObservableObject {
                     }
                 }
             }
+        } else if type == "usage" {
+            Task { @MainActor in
+                if let usageDict = obj["usage"] as? [String: Any] {
+                    self.applyUsagePayload(usageDict)
+                } else {
+                    self.applyUsagePayload(obj)
+                }
+                if obj["limit_reached"] as? Bool == true {
+                    self.usageLimitReachedBanner = obj["error"] as? String ?? "Daily feature usage limit reached."
+                    self.statusPillText = "QUOTA LIMIT REACHED"
+                    self.isUsageLimitPanelOpen = true
+                    AppDelegate.shared?.showPanel()
+                }
+            }
         } else if type == "ui" {
             let action = obj["action"] as? String ?? ""
             Task { @MainActor in
@@ -3534,6 +4149,21 @@ struct ClioBarView: View {
         if vm.isStatusCommand {
             return base + 210
         }
+        if vm.isSettingsCommand || vm.isUsageLimitCommand {
+            switch vm.selectedSettingsTab {
+            case .usage:
+                let hasBanner = (vm.usageLimitReachedBanner != nil || vm.walkthroughExhausted || vm.automationExhausted || vm.geminiRateLimited)
+                return base + (hasBanner ? 315 : 265)
+            case .ai:
+                return base + 295
+            case .walkthrough:
+                return base + 265
+            case .safety:
+                return base + 245
+            case .storage:
+                return base + 235
+            }
+        }
         if vm.isHelpCommand {
             return base + 300
         }
@@ -3563,6 +4193,7 @@ struct ClioBarView: View {
         vm.isMemoryCommand ||
         vm.isRecentCommand ||
         vm.isStatusCommand ||
+        vm.isUsageLimitCommand ||
         vm.isHelpCommand ||
         vm.isAICommand ||
         WalkthroughOverlayManager.shared.isVisible ||
@@ -3652,6 +4283,9 @@ struct ClioBarNotificationModifier: ViewModifier {
                     vm.executeSlashShortcut(item)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ClioBarToggleSettings"))) { _ in
+                vm.toggleSettingsPanel()
+            }
     }
 
     private func handleEscape() {
@@ -3659,6 +4293,14 @@ struct ClioBarNotificationModifier: ViewModifier {
             vm.discardRecording()
         } else if vm.inspectWorkflow != nil {
             vm.dismissInspection()
+        } else if vm.isSettingsPanelOpen {
+            vm.isSettingsPanelOpen = false
+            vm.isUsageLimitPanelOpen = false
+            vm.query = ""
+        } else if vm.isUsageLimitCommand {
+            vm.isUsageLimitPanelOpen = false
+            vm.usageLimitReachedBanner = nil
+            vm.query = ""
         } else if vm.isMemoryCommand {
             vm.isMemorySpaceOpen = false
             vm.query = ""
@@ -3676,10 +4318,12 @@ struct ClioBarNotificationModifier: ViewModifier {
         } else if vm.isSlashMenuVisible {
             vm.isMemorySpaceOpen = false
             vm.isStatusPanelOpen = false
+            vm.isUsageLimitPanelOpen = false
             vm.query = ""
         } else if !vm.query.isEmpty {
             vm.isMemorySpaceOpen = false
             vm.isStatusPanelOpen = false
+            vm.isUsageLimitPanelOpen = false
             vm.query = ""
         } else {
             AppDelegate.shared?.hidePanel()
@@ -3706,6 +4350,15 @@ struct ClioBarHeightModifier: ViewModifier {
                 AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
             }
             .onChange(of: vm.isStatusPanelOpen) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isUsageLimitPanelOpen) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.isSettingsPanelOpen) { _ in
+                AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
+            }
+            .onChange(of: vm.selectedSettingsTab) { _ in
                 AppDelegate.shared?.updatePanelHeight(currentTargetHeight)
             }
             .onChange(of: vm.isMemorySpaceOpen) { _ in
@@ -3774,18 +4427,19 @@ extension ClioBarView {
             // Command Search Input with Smooth Animated Word Transition
             ZStack(alignment: .leading) {
                 if vm.query.isEmpty {
-                    Text(vm.isWalkthroughMode ? "Ask clio to teach you anything..." :
-                         (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." :
-                          (vm.isRecentCommand ? "Search recent automations..." :
-                           (vm.isAICommand ? "Ask Clio AI anything..." :
-                            (vm.isStatusCommand ? "System diagnostics & permissions..." : "Ask clio to do anything...")))))
+                    Text(vm.isSettingsPanelOpen ? "Settings & Preferences..." :
+                         (vm.isWalkthroughMode ? "Ask clio to teach you anything..." :
+                          (vm.isMemoryCommand ? "Filter memory space (e.g. 'youtube', 'notes')..." :
+                           (vm.isRecentCommand ? "Search recent automations..." :
+                            (vm.isAICommand ? "Ask Clio AI anything..." :
+                             (vm.isStatusCommand ? "System diagnostics & permissions..." : "Ask clio to do anything..."))))))
                         .font(.system(size: 16, weight: .regular))
                         .foregroundColor(ObsidianTheme.platinum.opacity(0.45))
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .offset(y: 3)),
                             removal: .opacity.combined(with: .offset(y: -3))
                         ))
-                        .id(vm.isWalkthroughMode ? "teach_placeholder" : (vm.isMemoryCommand ? "memory_placeholder" : (vm.isRecentCommand ? "recent_placeholder" : (vm.isAICommand ? "ai_placeholder" : (vm.isStatusCommand ? "status_placeholder" : "do_placeholder")))))
+                        .id(vm.isSettingsPanelOpen ? "settings_placeholder" : (vm.isWalkthroughMode ? "teach_placeholder" : (vm.isMemoryCommand ? "memory_placeholder" : (vm.isRecentCommand ? "recent_placeholder" : (vm.isAICommand ? "ai_placeholder" : (vm.isStatusCommand ? "status_placeholder" : "do_placeholder"))))))
                 }
 
                 TextField(
@@ -3890,6 +4544,24 @@ extension ClioBarView {
                 .transition(.opacity)
             }
 
+            // Settings Button (on the right side of the REC button)
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    vm.toggleSettingsPanel()
+                }
+            }) {
+                Image(systemName: vm.isSettingsPanelOpen ? "gearshape.fill" : "gearshape")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(vm.isSettingsPanelOpen ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                    .frame(width: 24, height: 24)
+                    .background(vm.isSettingsPanelOpen ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(vm.isSettingsPanelOpen ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Settings & Preferences (Usage Limits, AI Models, Walkthrough, Safety, Storage) (⌘,)")
+
             // Dismiss / Hide Bar Button
             Button(action: {
                 AppDelegate.shared?.hidePanel()
@@ -3955,6 +4627,8 @@ extension ClioBarView {
             inspectedWorkflowView(inspected)
         } else if vm.isSlashMenuVisible {
             slashCommandsMenuView
+        } else if vm.isSettingsCommand || vm.isUsageLimitCommand {
+            settingsPanelView
         } else if vm.isMemoryCommand {
             memorySpaceView
         } else if vm.isRecentCommand {
@@ -4797,6 +5471,946 @@ extension ClioBarView {
     }
 
     @ViewBuilder
+    private var topBarQuotaPillView: some View {
+        let isExhausted = vm.walkthroughExhausted || vm.automationExhausted
+        let isLow = vm.walkthroughRemaining <= 5 || vm.automationRemaining <= 5 || vm.geminiRateLimited
+        let dotColor: Color = isExhausted
+            ? Color.red.opacity(0.9)
+            : (isLow ? Color.orange.opacity(0.9) : Color(red: 0.06, green: 0.73, blue: 0.51))
+
+        Button(action: {
+            vm.toggleUsageLimitPanel()
+            isFieldFocused = true
+        }) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 5.5, height: 5.5)
+
+                Image(systemName: "graduationcap.fill")
+                    .font(.system(size: 8.5, weight: .semibold))
+                Text("\(vm.walkthroughRemaining)/\(vm.walkthroughDailyLimit)")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+
+                Text("•")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(vm.isUsageLimitCommand ? ObsidianTheme.surface.opacity(0.6) : ObsidianTheme.slateDark)
+
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 8.5, weight: .semibold))
+                Text("\(vm.automationRemaining)/\(vm.automationDailyLimit)")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+            }
+            .foregroundColor(vm.isUsageLimitCommand ? ObsidianTheme.surface : ObsidianTheme.platinum)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(vm.isUsageLimitCommand ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+            .overlay(
+                Capsule().stroke(
+                    isExhausted ? Color.red.opacity(0.55) : (vm.isUsageLimitCommand ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle),
+                    lineWidth: 1
+                )
+            )
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("App Usage Limits & Gemini Free-Tier Quota — Walkthrough: \(vm.walkthroughRemaining)/\(vm.walkthroughDailyLimit) left • Automation: \(vm.automationRemaining)/\(vm.automationDailyLimit) left (/limits)")
+    }
+
+    @ViewBuilder
+    private var usageLimitPanelView: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: 6) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("USAGE LIMITS & GEMINI FREE-TIER QUOTA")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+
+                Text("FREE TIER • STRICT DAILY CEILING: 25 USES")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinumDim)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+
+                Spacer()
+
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 9))
+                    Text("RESETS IN \(vm.usageResetFormatted)")
+                        .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                }
+                .foregroundColor(ObsidianTheme.slate)
+
+                HStack(spacing: 3) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 7.5))
+                    Text("NON-NEGOTIABLE")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                }
+                .foregroundColor(ObsidianTheme.platinumDim)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2.5)
+                .background(ObsidianTheme.surfaceElevated.opacity(0.8))
+                .cornerRadius(4)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.35))
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
+
+            if vm.usageLimitReachedBanner != nil || vm.walkthroughExhausted || vm.automationExhausted || vm.geminiRateLimited {
+                usageLimitWarningBannerView
+                Divider().background(ObsidianTheme.borderSubtle.opacity(0.3))
+            }
+
+            // Dual Feature Quota Cards (Walkthrough & Automation)
+            HStack(spacing: 10) {
+                usageFeatureQuotaCard(
+                    featureKey: "walkthrough",
+                    title: "WALKTHROUGH USES",
+                    subtitle: "Interactive Guided Tutor & Step Dissection",
+                    iconName: "graduationcap.fill",
+                    used: vm.walkthroughUsed,
+                    remaining: vm.walkthroughRemaining,
+                    dailyLimit: vm.walkthroughDailyLimit,
+                    rpmUsed: vm.walkthroughRpmUsed,
+                    rpmLimit: vm.walkthroughRpmLimit,
+                    cloudUsed: vm.walkthroughCloudUsed,
+                    localUsed: vm.walkthroughLocalUsed,
+                    exhausted: vm.walkthroughExhausted
+                )
+
+                usageFeatureQuotaCard(
+                    featureKey: "automation",
+                    title: "AUTOMATION USES",
+                    subtitle: "Autonomous Workflow & Command Execution",
+                    iconName: "bolt.fill",
+                    used: vm.automationUsed,
+                    remaining: vm.automationRemaining,
+                    dailyLimit: vm.automationDailyLimit,
+                    rpmUsed: vm.automationRpmUsed,
+                    rpmLimit: vm.automationRpmLimit,
+                    cloudUsed: vm.automationCloudUsed,
+                    localUsed: vm.automationLocalUsed,
+                    exhausted: vm.automationExhausted
+                )
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+
+            // Gemini Free API Key Telemetry Strip
+            HStack(spacing: 10) {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text("GEMINI FREE API:")
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                    Text(vm.geminiActiveModel)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                }
+
+                Text("•")
+                    .font(.system(size: 9))
+                    .foregroundColor(ObsidianTheme.slateDark)
+
+                Text("BURST: \(vm.geminiRpmUsed)/\(vm.geminiRpmLimit) RPM")
+                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinumDim)
+
+                Text("•")
+                    .font(.system(size: 9))
+                    .foregroundColor(ObsidianTheme.slateDark)
+
+                Text("API CALLS TODAY: \(vm.geminiCallsToday)/\(vm.geminiDailyLimit)")
+                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinumDim)
+
+                Spacer()
+
+                Text(vm.geminiRateLimited ? "429 COOLDOWN (\(vm.geminiCooldownSeconds)s)" : "PROTECTED • LOCAL FALLBACK READY")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundColor(vm.geminiRateLimited ? Color.orange : ObsidianTheme.platinum)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background(vm.geminiRateLimited ? Color.orange.opacity(0.15) : ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(ObsidianTheme.surface.opacity(0.85))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
+            )
+            .cornerRadius(7)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
+
+            // Footer
+            HStack {
+                Text("🔒 Non-negotiable API quota. System enforces strict limits to protect your free Gemini key.")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+
+                Spacer()
+
+                Button(action: {
+                    vm.isUsageLimitPanelOpen = false
+                    vm.usageLimitReachedBanner = nil
+                    vm.query = ""
+                }) {
+                    Text("Dismiss (Esc)")
+                        .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+        }
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
+    private var usageLimitWarningBannerView: some View {
+        let message = vm.usageLimitReachedBanner ?? (
+            vm.walkthroughExhausted ? "Daily Walkthrough limit reached (\(vm.walkthroughUsed)/\(vm.walkthroughDailyLimit) uses today)." :
+            (vm.automationExhausted ? "Daily Automation limit reached (\(vm.automationUsed)/\(vm.automationDailyLimit) uses today)." :
+             "Gemini Free API key is in rate-limit cooldown (\(vm.geminiCooldownSeconds)s) — Local deterministic engine active.")
+        )
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(Color.orange)
+
+            Text(message)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundColor(ObsidianTheme.platinum)
+                .lineLimit(1)
+
+            Spacer()
+
+            Text("AUTO-RESETS AT MIDNIGHT")
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .foregroundColor(ObsidianTheme.platinumDim)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2.5)
+                .background(ObsidianTheme.surfaceElevated)
+                .cornerRadius(4)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Color.orange.opacity(0.12))
+    }
+
+    @ViewBuilder
+    private func usageFeatureQuotaCard(
+        featureKey: String,
+        title: String,
+        subtitle: String,
+        iconName: String,
+        used: Int,
+        remaining: Int,
+        dailyLimit: Int,
+        rpmUsed: Int,
+        rpmLimit: Int,
+        cloudUsed: Int,
+        localUsed: Int,
+        exhausted: Bool
+    ) -> some View {
+        let ratio = CGFloat(max(0, min(remaining, dailyLimit))) / CGFloat(max(1, dailyLimit))
+        let isLow = !exhausted && remaining <= 5
+        let barColor: Color = exhausted
+            ? Color.red.opacity(0.85)
+            : (isLow ? Color.orange.opacity(0.9) : ObsidianTheme.platinum)
+        let statusLabel = exhausted ? "LIMIT REACHED" : (isLow ? "LOW QUOTA" : "AVAILABLE")
+
+        VStack(alignment: .leading, spacing: 8) {
+            // Card Header
+            HStack(spacing: 6) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(ObsidianTheme.surfaceElevated)
+                        .frame(width: 24, height: 24)
+                    Image(systemName: iconName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(exhausted ? Color.red.opacity(0.85) : ObsidianTheme.platinum)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text(subtitle)
+                        .font(.system(size: 8.5, weight: .regular))
+                        .foregroundColor(ObsidianTheme.slate)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Text(statusLabel)
+                    .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(exhausted ? Color.white : (isLow ? Color.orange : ObsidianTheme.surface))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(exhausted ? Color.red.opacity(0.8) : (isLow ? Color.orange.opacity(0.18) : ObsidianTheme.platinum))
+                    .cornerRadius(4)
+            }
+
+            // Large Remaining Uses Counter
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text("\(remaining)")
+                    .font(.system(size: 20, weight: .bold, design: .monospaced))
+                    .foregroundColor(exhausted ? Color.red.opacity(0.9) : ObsidianTheme.platinum)
+                Text("/ \(dailyLimit) USES LEFT")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinumDim)
+                Spacer()
+                Text("\(used) USED TODAY")
+                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+            }
+
+            // Progress Bar
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.10))
+                    Capsule()
+                        .fill(barColor)
+                        .frame(width: max(4, geo.size.width * ratio))
+                }
+            }
+            .frame(height: 6)
+
+            // Breakdown & Immutable System Ceiling Badge
+            HStack(spacing: 6) {
+                Text("AI: \(cloudUsed) • Local: \(localUsed) • \(rpmUsed)/\(rpmLimit) RPM")
+                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                    .lineLimit(1)
+
+                Spacer()
+
+                HStack(spacing: 3) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 8))
+                        .foregroundColor(ObsidianTheme.platinumDim)
+
+                    Text("CAP \(dailyLimit) • FIXED")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinumDim)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(ObsidianTheme.surfaceElevated)
+                        .cornerRadius(3)
+                }
+                .help("Strict daily limit of \(dailyLimit) invocations is managed by system policy.")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .background(ObsidianTheme.surface.opacity(0.9))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(exhausted ? Color.red.opacity(0.45) : ObsidianTheme.borderSubtle, lineWidth: 1)
+        )
+        .cornerRadius(9)
+    }
+
+    @ViewBuilder
+    private var settingsPanelView: some View {
+        Divider().background(ObsidianTheme.borderSubtle)
+        VStack(spacing: 0) {
+            // Header & Tab Navigation
+            HStack(spacing: 8) {
+                HStack(spacing: 5) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text("SETTINGS")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                }
+
+                Spacer()
+
+                // Horizontal Tab Buttons (Obsidian Segmented Navigation)
+                HStack(spacing: 4) {
+                    ForEach(SettingsTab.allCases) { tab in
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                vm.selectedSettingsTab = tab
+                                vm.query = ""
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: tab.icon)
+                                    .font(.system(size: 8.5))
+                                Text(tab.rawValue)
+                                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                if vm.selectedSettingsTab == tab {
+                                    Circle()
+                                        .fill(Color.cyan)
+                                        .frame(width: 4, height: 4)
+                                }
+                            }
+                            .foregroundColor(vm.selectedSettingsTab == tab ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(vm.selectedSettingsTab == tab ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                            .cornerRadius(4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Spacer()
+
+                Button(action: {
+                    vm.isSettingsPanelOpen = false
+                    vm.isUsageLimitPanelOpen = false
+                    if ["/settings", "/preferences", "/config", "/limits", "/quota", "/usage"].contains(vm.query.trimmingCharacters(in: .whitespaces).lowercased()) {
+                        vm.query = ""
+                    }
+                }) {
+                    Text("✕")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                        .padding(.horizontal, 4)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.35))
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
+
+            // Body Switcher
+            switch vm.selectedSettingsTab {
+            case .usage:
+                usageLimitPanelView
+            case .ai:
+                settingsAIModelsView
+            case .walkthrough:
+                settingsWalkthroughView
+            case .safety:
+                settingsSafetyView
+            case .storage:
+                settingsStorageView
+            }
+
+            Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
+
+            // Footer
+            HStack {
+                Text("⌘, Toggle Settings • Esc Dismiss • ⌘9 Direct Quota")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                Spacer()
+                Text("SETTINGS & PREFERENCES")
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slateDark)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+        }
+        .background(ObsidianTheme.cardGlass)
+    }
+
+    @ViewBuilder
+    private var settingsAIModelsView: some View {
+        VStack(spacing: 10) {
+            // Active Provider
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("AI PROVIDER & VISION ENGINE")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Spacer()
+                Text("GOOGLE GEMINI • FREE KEY ACTIVE")
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            // Model Selection Cards
+            VStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    modelSelectCard(
+                        modelId: "gemini-2.5-flash",
+                        title: "Gemini 2.5 Flash",
+                        tag: "RECOMMENDED",
+                        desc: "High-speed multimodal video & action dissection (15 RPM / 250 RPD)",
+                        isSelected: vm.geminiActiveModel == "gemini-2.5-flash"
+                    )
+                    modelSelectCard(
+                        modelId: "gemini-2.5-flash-lite",
+                        title: "Gemini 2.5 Flash-Lite",
+                        tag: "LOW LATENCY",
+                        desc: "Fastest response times for lightweight command matching",
+                        isSelected: vm.geminiActiveModel == "gemini-2.5-flash-lite"
+                    )
+                }
+                HStack(spacing: 8) {
+                    modelSelectCard(
+                        modelId: "gemini-1.5-pro",
+                        title: "Gemini 1.5 Pro",
+                        tag: "DEEP REASONING",
+                        desc: "Complex desktop navigation and multi-step plan verification",
+                        isSelected: vm.geminiActiveModel == "gemini-1.5-pro"
+                    )
+                }
+            }
+            .padding(.horizontal, 14)
+
+            // API Key & Test Connection
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text("API KEY:")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                    if vm.aiKeyObscured {
+                        SecureField("Enter Gemini API Key (saved securely in Keychain)...", text: $vm.aiApiKeyInput)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.platinum)
+                    } else {
+                        TextField("Enter Gemini API Key (saved securely in Keychain)...", text: $vm.aiApiKeyInput)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.platinum)
+                    }
+                    Button(action: { vm.aiKeyObscured.toggle() }) {
+                        Image(systemName: vm.aiKeyObscured ? "eye.slash" : "eye")
+                            .font(.system(size: 10))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: {
+                        Task { await vm.testAIConnection(apiKey: vm.aiApiKeyInput) }
+                    }) {
+                        HStack(spacing: 4) {
+                            if vm.isTestingAIKey {
+                                ProgressView().scaleEffect(0.5)
+                            }
+                            Text("Test Connection")
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        }
+                        .foregroundColor(ObsidianTheme.surface)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(ObsidianTheme.platinum)
+                        .cornerRadius(4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(8)
+                .background(ObsidianTheme.surface)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                .cornerRadius(6)
+
+                if !vm.aiTestStatusText.isEmpty {
+                    Text(vm.aiTestStatusText)
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(vm.aiTestStatusText.contains("CONNECTED") ? Color(red: 0.06, green: 0.73, blue: 0.51) : Color.orange)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+        }
+    }
+
+    @ViewBuilder
+    private func modelSelectCard(modelId: String, title: String, tag: String, desc: String, isSelected: Bool) -> some View {
+        Button(action: {
+            Task { await vm.saveAIModelConfig(model: modelId) }
+        }) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(title)
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Spacer()
+                    Text(tag)
+                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(isSelected ? ObsidianTheme.surface : ObsidianTheme.slate)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1.5)
+                        .background(isSelected ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                        .cornerRadius(3)
+                }
+                Text(desc)
+                    .font(.system(size: 8.5))
+                    .foregroundColor(ObsidianTheme.slate)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? ObsidianTheme.surfaceElevated.opacity(0.8) : ObsidianTheme.surface.opacity(0.6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(isSelected ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: isSelected ? 1.5 : 1)
+            )
+            .cornerRadius(7)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var settingsWalkthroughView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Mode Selection
+            HStack(spacing: 8) {
+                Image(systemName: "graduationcap")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("WALKTHROUGH & INTERACTION MODE")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            HStack(spacing: 10) {
+                Button(action: { vm.walkthroughDefaultMode = "guided_demo" }) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text("Guided Demonstration")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.platinum)
+                            Spacer()
+                            if vm.walkthroughDefaultMode == "guided_demo" {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(ObsidianTheme.platinum)
+                            }
+                        }
+                        Text("Clio's Virtual Cursor visibly highlights controls and auto-advances through the steps.")
+                            .font(.system(size: 8.5))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity)
+                    .background(vm.walkthroughDefaultMode == "guided_demo" ? ObsidianTheme.surfaceElevated : ObsidianTheme.surface)
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(vm.walkthroughDefaultMode == "guided_demo" ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1))
+                    .cornerRadius(7)
+                }
+                .buttonStyle(.plain)
+
+                Button(action: { vm.walkthroughDefaultMode = "interactive" }) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text("Interactive Tutor")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(ObsidianTheme.platinum)
+                            Spacer()
+                            if vm.walkthroughDefaultMode == "interactive" {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(ObsidianTheme.platinum)
+                            }
+                        }
+                        Text("Clio points to where you should click and waits for your confirmation on each step.")
+                            .font(.system(size: 8.5))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity)
+                    .background(vm.walkthroughDefaultMode == "interactive" ? ObsidianTheme.surfaceElevated : ObsidianTheme.surface)
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(vm.walkthroughDefaultMode == "interactive" ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1))
+                    .cornerRadius(7)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+
+            // Step Advance Delay & Audio Chimes
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("STEP AUTO-ADVANCE DELAY:")
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                    HStack(spacing: 4) {
+                        ForEach([1.5, 2.5, 4.0], id: \.self) { d in
+                            Button(action: { vm.walkthroughAdvanceDelay = d }) {
+                                Text("\(String(format: "%.1f", d))s")
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundColor(vm.walkthroughAdvanceDelay == d ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(vm.walkthroughAdvanceDelay == d ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                                    .cornerRadius(4)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("AUDIO CHIMES & SPEECH:")
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                    Button(action: { vm.audioChimesEnabled.toggle() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: vm.audioChimesEnabled ? "speaker.wave.2.fill" : "speaker.slash")
+                                .font(.system(size: 9))
+                            Text(vm.audioChimesEnabled ? "CHIMES ON" : "SILENT")
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        }
+                        .foregroundColor(vm.audioChimesEnabled ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(vm.audioChimesEnabled ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                        .cornerRadius(4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+        }
+    }
+
+    @ViewBuilder
+    private var settingsSafetyView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "shield.checkered")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("AUTOMATION SAFETY & INTERRUPTS")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Spacer()
+                Text("PROTECTION ACTIVE")
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(red: 0.06, green: 0.73, blue: 0.51))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color(red: 0.06, green: 0.73, blue: 0.51).opacity(0.12))
+                    .cornerRadius(4)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            VStack(spacing: 6) {
+                // Failsafe Corner
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Corner Emergency Failsafe")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundColor(ObsidianTheme.platinum)
+                        Text("Slamming your mouse cursor into the top-left screen corner instantly terminates any running automation.")
+                            .font(.system(size: 8.5))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                    Spacer()
+                    Button(action: { vm.cornerFailsafeEnabled.toggle() }) {
+                        Text(vm.cornerFailsafeEnabled ? "ENABLED" : "DISABLED")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(vm.cornerFailsafeEnabled ? ObsidianTheme.surface : ObsidianTheme.slate)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3.5)
+                            .background(vm.cornerFailsafeEnabled ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(8)
+                .background(ObsidianTheme.surface)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                .cornerRadius(6)
+
+                // Background Execution
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Background Execution Mode")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundColor(ObsidianTheme.platinum)
+                        Text("Directs actions via AX and synthetic events without stealing mouse or keyboard focus from your active apps.")
+                            .font(.system(size: 8.5))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                    Spacer()
+                    Button(action: { vm.isBackgroundMode.toggle() }) {
+                        Text(vm.isBackgroundMode ? "BACKGROUND: ON" : "STANDARD")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(vm.isBackgroundMode ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3.5)
+                            .background(vm.isBackgroundMode ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(8)
+                .background(ObsidianTheme.surface)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                .cornerRadius(6)
+
+                // Zero Displacement Invariant
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Zero Hardware Cursor Displacement")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundColor(ObsidianTheme.platinum)
+                        Text("Clio never displaces or grabs your physical mouse cursor (strictly 0.0px delta invariant).")
+                            .font(.system(size: 8.5))
+                            .foregroundColor(ObsidianTheme.slate)
+                    }
+                    Spacer()
+                    Text("ENFORCED (0.0px)")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(red: 0.06, green: 0.73, blue: 0.51))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background(Color(red: 0.06, green: 0.73, blue: 0.51).opacity(0.12))
+                        .cornerRadius(4)
+                }
+                .padding(8)
+                .background(ObsidianTheme.surface)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                .cornerRadius(6)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+        }
+    }
+
+    @ViewBuilder
+    private var settingsStorageView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "cylinder.split.1x2")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text("STORAGE & REPOSITORY FOOTPRINT")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
+                Spacer()
+                Text(vm.storageStatusSummary)
+                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("WORKFLOWS IN MEMORY")
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                    Text("\(vm.allSavedWorkflows.count)")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text("Indexed in SQLite database")
+                        .font(.system(size: 8))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ObsidianTheme.surface)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                .cornerRadius(6)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("RECORDING VIDEO CACHE")
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.slate)
+                    let recSize = vm.storageMetrics["recordings_size_mb"] as? Double ?? 0.0
+                    Text("\(String(format: "%.1f", recSize)) MB")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text("~/.clio/recordings")
+                        .font(.system(size: 8))
+                        .foregroundColor(ObsidianTheme.slateDark)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ObsidianTheme.surface)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                .cornerRadius(6)
+            }
+            .padding(.horizontal, 14)
+
+            HStack {
+                Button(action: {
+                    let homeRec = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".clio/recordings")
+                    NSWorkspace.shared.open(homeRec)
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 9))
+                        Text("Open Recordings in Finder")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    }
+                    .foregroundColor(ObsidianTheme.platinum)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button(action: {
+                    Task { await vm.clearStorageCache() }
+                }) {
+                    HStack(spacing: 4) {
+                        if vm.isClearingStorage {
+                            ProgressView().scaleEffect(0.5)
+                        } else {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 9))
+                        }
+                        Text("Re-index & Clear Empty Caches")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundColor(ObsidianTheme.surface)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(ObsidianTheme.platinum)
+                    .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+        }
+    }
+
+    @ViewBuilder
     private var aiCompanionView: some View {
         Divider().background(ObsidianTheme.borderSubtle)
         VStack(spacing: 0) {
@@ -5465,7 +7079,13 @@ final class SpotlightPanel: NSPanel {
                 if NSApp.sendAction(action, to: nil, from: self) {
                     return true
                 }
+            case ",":
+                NotificationCenter.default.post(name: NSNotification.Name("ClioBarToggleSettings"), object: nil)
+                return true
             case "1", "2", "3", "4", "5", "6", "7", "8":
+                NotificationCenter.default.post(name: NSNotification.Name("TriggerNumberedShortcut"), object: chars)
+                return true
+            case "9":
                 NotificationCenter.default.post(name: NSNotification.Name("TriggerNumberedShortcut"), object: chars)
                 return true
             default:
@@ -5520,6 +7140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var carbonEventHandler: EventHandlerRef?
     private var globalKeyMonitor: Any?
     private var localKeyMonitor: Any?
+    private var previousFrontApp: NSRunningApplication?
 
     override init() {
         super.init()
@@ -5528,6 +7149,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func showPanel() {
         guard let panel = panel else { return }
+        if let front = NSWorkspace.shared.frontmostApplication,
+           front.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previousFrontApp = front
+        }
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         NotificationCenter.default.post(name: NSNotification.Name("FocusClioField"), object: nil)
@@ -5535,6 +7160,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func hidePanel() {
         panel?.orderOut(nil)
+        NSApp.deactivate()
+        if let prev = previousFrontApp, !prev.isTerminated {
+            prev.activate(options: [])
+        }
     }
 
     func togglePanel() {
@@ -5597,6 +7226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu(title: "Clio")
         appMenu.addItem(withTitle: "About Clio", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide Clio", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthersItem = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
@@ -5650,6 +7280,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func statusItemClicked() {
         togglePanel()
+    }
+
+    @objc private func openSettingsFromMenu() {
+        showPanel()
+        NotificationCenter.default.post(name: NSNotification.Name("ClioBarToggleSettings"), object: nil)
     }
 
     private func setupGlobalShortcut() {

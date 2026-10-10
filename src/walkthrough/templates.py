@@ -49,11 +49,11 @@ class BuiltinWalkthroughCatalog:
         q = re.sub(r"\s+", " ", query.strip().lower())
         # Strip common conversational phrases
         clean = re.sub(
-            r"^(?:please\s+)?(?:can\s+you\s+)?(?:teach|show|guide|walk)\s+(?:me\s+)?(?:how\s+to\s+|through\s+)?",
+            r"^(?:please\s+)?(?:can\s+you\s+)?(?:teach|show|guide|walk|help)\s+(?:me\s+)?(?:how\s+to\s+|through\s+|navigate\s+to\s+(?:the\s+)?|to\s+)?",
             "",
             q,
         ).strip()
-        clean = re.sub(r"^(?:how\s+(?:do|can)\s+i\s+|tutorial\s+on\s+)", "", clean).strip()
+        clean = re.sub(r"^(?:how\s+(?:do|can)\s+i\s+|tutorial\s+on\s+|navigate\s+to\s+(?:the\s+)?)", "", clean).strip()
 
         if not clean:
             return None
@@ -119,9 +119,42 @@ class BuiltinWalkthroughCatalog:
         if any(_has(kw) for kw in ("do not disturb", "focus mode")):
             return cls._create_do_not_disturb_template()
 
-        # 15. Spotlight
-        if any(_has(kw) for kw in ("spotlight", "search mac")):
+        # 15. System Information / About This Mac / System Report
+        if any(_has(kw) for kw in ("system information", "system info", "about this mac", "system report", "mac specs", "hardware info")):
+            return cls._create_system_information_template()
+
+        # 16. Spotlight / Command Bar / Search
+        if any(_has(kw) for kw in ("spotlight", "command bar", "open command bar", "use command bar", "spotlight search", "search mac", "search", "how to search", "search files", "search web", "finder search")):
             return cls._create_spotlight_template()
+
+        # 17. Window Switching & Moving Between Windows
+        if any(_has(kw) for kw in (
+            "move between windows",
+            "move between window",
+            "move between the windows",
+            "move between the window",
+            "swipe between the window",
+            "swipe window",
+            "swipe windows",
+            "switch window",
+            "switch windows",
+            "switch between windows",
+            "switch between window",
+            "cycle windows",
+            "window switch",
+            "swipe between windows",
+            "swipe desktops",
+            "mission control",
+        )):
+            return cls._create_window_switching_template()
+
+        # 18. Cursor Navigation / Move Cursor
+        if any(_has(kw) for kw in ("move cursor", "move mouse", "cursor", "navigate cursor", "cursor navigation", "pointer", "point cursor")):
+            return cls._create_cursor_navigation_template()
+
+        # 19. Button Clicking & Controls
+        if any(_has(kw) for kw in ("click button", "click buttons", "click", "double click", "right click", "how to click", "press button")):
+            return cls._create_button_click_template()
 
         return None
 
@@ -160,8 +193,8 @@ class BuiltinWalkthroughCatalog:
                     action_type=TeachingAction.DEMONSTRATE_CLICK,
                     target_app="ControlCenter",
                     target_element_query={"ax_role": "AXMenuItem", "ax_title": "System Settings..."},
-                    fallback_screen_coords=(45.0, 60.0),
-                    spotlight_bounds=(12.0, 48.0, 150.0, 24.0),
+                    fallback_screen_coords=(80.0, 86.0),
+                    spotlight_bounds=(6.0, 75.0, 220.0, 22.0),
                     pre_delay_seconds=0.5,
                     post_delay_seconds=1.0,
                 ),
@@ -910,6 +943,7 @@ class BuiltinWalkthroughCatalog:
                     action_type=TeachingAction.DEMONSTRATE_TYPE,
                     text_to_type="Safari\n",
                     target_app="Spotlight",
+                    target_element_query={"ax_role": "AXTextField", "ax_title": "Spotlight Search Field"},
                     fallback_screen_coords=(640.0, 280.0),
                     spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                     pre_delay_seconds=0.5,
@@ -929,3 +963,256 @@ class BuiltinWalkthroughCatalog:
                 ),
             ],
         )
+
+    @classmethod
+    def _create_system_information_template(cls) -> WalkthroughPlan:
+        return WalkthroughPlan(
+            walkthrough_id=f"wt_system_info_{uuid.uuid4().hex[:6]}",
+            goal="Navigate to System Information in macOS",
+            summary="Demonstrates opening the Apple Menu, selecting About This Mac, opening More Info in System Settings, and launching the full System Report.",
+            target_app="System Information",
+            mode=WalkthroughMode.GUIDED_DEMO,
+            source_tier="TIER_1_LOCAL_TEMPLATE",
+            steps=[
+                WalkthroughStep(
+                    step_index=1,
+                    title="Open Apple Menu",
+                    instruction="Click the Apple icon  in the top-left corner of your screen.",
+                    explanation="The Apple menu provides direct access to About This Mac and System Information.",
+                    action_type=TeachingAction.DEMONSTRATE_CLICK,
+                    target_app="ControlCenter",
+                    target_element_query={"ax_role": "AXMenuBarItem", "ax_title": "Apple"},
+                    fallback_screen_coords=(18.0, 12.0),
+                    spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                    pre_delay_seconds=0.4,
+                    post_delay_seconds=1.2,
+                ),
+                WalkthroughStep(
+                    step_index=2,
+                    title="Select About This Mac",
+                    instruction="Click 'About This Mac' from the Apple menu dropdown.",
+                    explanation="Opens the overview window showing your Mac model, chip, memory, and macOS version.",
+                    action_type=TeachingAction.DEMONSTRATE_CLICK,
+                    target_app="ControlCenter",
+                    target_element_query={"ax_role": "AXMenuItem", "ax_title": "About This Mac"},
+                    fallback_screen_coords=(80.0, 40.0),
+                    spotlight_bounds=(6.0, 30.0, 220.0, 22.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=1.2,
+                ),
+                WalkthroughStep(
+                    step_index=3,
+                    title="Click More Info...",
+                    instruction="Click the 'More Info...' button inside the About This Mac window.",
+                    explanation="Opens the detailed About section in System Settings with storage, display, and hardware specs.",
+                    action_type=TeachingAction.DEMONSTRATE_CLICK,
+                    target_app="System Information",
+                    target_element_query={"ax_role": "AXButton", "ax_title": "More Info..."},
+                    fallback_screen_coords=(640.0, 500.0),
+                    spotlight_bounds=(580.0, 480.0, 120.0, 32.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=1.2,
+                ),
+                WalkthroughStep(
+                    step_index=4,
+                    title="Open System Report",
+                    instruction="Scroll down in About settings and click 'System Report...' to open full System Information.",
+                    explanation="Launches the complete System Information utility detailing hardware, network, and software diagnostics.",
+                    action_type=TeachingAction.DEMONSTRATE_CLICK,
+                    target_app="System Settings",
+                    target_element_query={"ax_role": "AXButton", "ax_title": "System Report..."},
+                    fallback_screen_coords=(680.0, 720.0),
+                    spotlight_bounds=(610.0, 700.0, 140.0, 32.0),
+                    pre_delay_seconds=0.6,
+                    post_delay_seconds=1.4,
+                ),
+            ],
+        )
+
+    @classmethod
+    def _create_cursor_navigation_template(cls) -> WalkthroughPlan:
+        return WalkthroughPlan(
+            walkthrough_id=f"wt_cursor_{uuid.uuid4().hex[:6]}",
+            goal="Navigate and Move Cursor on macOS",
+            summary="Demonstrates moving the mouse pointer smoothly across macOS interface landmarks, centering, and precision positioning.",
+            target_app="Finder",
+            mode=WalkthroughMode.GUIDED_DEMO,
+            source_tier="TIER_1_LOCAL_TEMPLATE",
+            steps=[
+                WalkthroughStep(
+                    step_index=1,
+                    title="Center Mouse Pointer",
+                    instruction="Move the mouse pointer to the center of your screen display.",
+                    explanation="Centering the cursor establishes a neutral reference point for screen navigation.",
+                    action_type=TeachingAction.MOVE_AND_HOVER,
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 400.0),
+                    spotlight_bounds=(600.0, 360.0, 80.0, 80.0),
+                    pre_delay_seconds=0.4,
+                    post_delay_seconds=0.8,
+                ),
+                WalkthroughStep(
+                    step_index=2,
+                    title="Navigate to Top Menu Bar",
+                    instruction="Move the cursor smoothly to the top macOS menu bar.",
+                    explanation="The menu bar contains Apple menu controls, application menus, and menu bar extras.",
+                    action_type=TeachingAction.MOVE_AND_HOVER,
+                    target_app="Finder",
+                    fallback_screen_coords=(120.0, 12.0),
+                    spotlight_bounds=(10.0, 0.0, 240.0, 24.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=0.8,
+                ),
+                WalkthroughStep(
+                    step_index=3,
+                    title="Move Pointer Toward Dock",
+                    instruction="Move cursor down toward the bottom of your screen to inspect Dock applications.",
+                    explanation="Hovering over Dock items reveals application titles and active indicators.",
+                    action_type=TeachingAction.MOVE_AND_HOVER,
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 760.0),
+                    spotlight_bounds=(480.0, 720.0, 320.0, 70.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=0.8,
+                ),
+                WalkthroughStep(
+                    step_index=4,
+                    title="Target Lock Beacon",
+                    instruction="Observe the glowing beacon confirming accurate cursor lock.",
+                    explanation="Clio emits a visual beacon ring to confirm the pointer has accurately reached its target.",
+                    action_type=TeachingAction.PULSE_BEACON,
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 760.0),
+                    spotlight_bounds=(600.0, 720.0, 80.0, 80.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=1.0,
+                ),
+            ],
+        )
+
+    @classmethod
+    def _create_window_switching_template(cls) -> WalkthroughPlan:
+        return WalkthroughPlan(
+            walkthrough_id=f"wt_window_switch_{uuid.uuid4().hex[:6]}",
+            goal="Switch and Swipe Between Windows in macOS",
+            summary="Demonstrates switching between app windows using Command + `, switching applications with Command + Tab, and swiping spaces.",
+            target_app="Finder",
+            mode=WalkthroughMode.GUIDED_DEMO,
+            source_tier="TIER_1_LOCAL_TEMPLATE",
+            steps=[
+                WalkthroughStep(
+                    step_index=1,
+                    title="Cycle Windows of Active App",
+                    instruction="Press ⌘ + ` (Command + Backtick) to switch between open windows of the active application.",
+                    explanation="Quickly alternates between multiple document or browser windows within the same app.",
+                    action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                    hotkey_combo=["cmd", "`"],
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 400.0),
+                    spotlight_bounds=(200.0, 150.0, 880.0, 500.0),
+                    pre_delay_seconds=0.4,
+                    post_delay_seconds=0.8,
+                ),
+                WalkthroughStep(
+                    step_index=2,
+                    title="Switch Between Applications",
+                    instruction="Press ⌘ + Tab (Command + Tab) to switch to your most recently used application.",
+                    explanation="Holding Command while tapping Tab opens the App Switcher to jump between running apps.",
+                    action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                    hotkey_combo=["cmd", "tab"],
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 400.0),
+                    spotlight_bounds=(300.0, 350.0, 680.0, 100.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=0.8,
+                ),
+                WalkthroughStep(
+                    step_index=3,
+                    title="Swipe Between Desktops & Spaces",
+                    instruction="Swipe horizontally with three fingers on your trackpad or press Control + Right Arrow.",
+                    explanation="Glides seamlessly between macOS virtual desktops and full-screen applications.",
+                    action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                    hotkey_combo=["ctrl", "right"],
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 400.0),
+                    spotlight_bounds=(100.0, 100.0, 1080.0, 600.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=0.8,
+                ),
+                WalkthroughStep(
+                    step_index=4,
+                    title="Open Mission Control",
+                    instruction="Swipe up with three fingers on trackpad or press Control + Up Arrow.",
+                    explanation="Displays a panoramic overview of all open windows, workspaces, and full-screen apps.",
+                    action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                    hotkey_combo=["ctrl", "up"],
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 200.0),
+                    spotlight_bounds=(100.0, 50.0, 1080.0, 700.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=1.0,
+                ),
+            ],
+        )
+
+    @classmethod
+    def _create_button_click_template(cls) -> WalkthroughPlan:
+        return WalkthroughPlan(
+            walkthrough_id=f"wt_click_button_{uuid.uuid4().hex[:6]}",
+            goal="Click Buttons and Interactive Controls in macOS",
+            summary="Demonstrates standard primary clicks, contextual right-clicks, and double-clicks on interface controls.",
+            target_app="Finder",
+            mode=WalkthroughMode.GUIDED_DEMO,
+            source_tier="TIER_1_LOCAL_TEMPLATE",
+            steps=[
+                WalkthroughStep(
+                    step_index=1,
+                    title="Hover Over Target Button",
+                    instruction="Move your cursor directly over the clickable button or control.",
+                    explanation="Buttons respond with hover states and tooltips indicating their primary action.",
+                    action_type=TeachingAction.MOVE_AND_HOVER,
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 450.0),
+                    spotlight_bounds=(580.0, 430.0, 120.0, 40.0),
+                    pre_delay_seconds=0.4,
+                    post_delay_seconds=0.8,
+                ),
+                WalkthroughStep(
+                    step_index=2,
+                    title="Perform Primary Left Click",
+                    instruction="Click the left mouse button (or press down on trackpad) to trigger the action.",
+                    explanation="The primary click selects items, confirms dialogs, and activates buttons.",
+                    action_type=TeachingAction.DEMONSTRATE_CLICK,
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 450.0),
+                    spotlight_bounds=(580.0, 430.0, 120.0, 40.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=0.8,
+                ),
+                WalkthroughStep(
+                    step_index=3,
+                    title="Perform Contextual Right Click",
+                    instruction="Click with two fingers on trackpad or hold Control and click to open the context menu.",
+                    explanation="Reveals context-sensitive menus and secondary options for the clicked element.",
+                    action_type=TeachingAction.DEMONSTRATE_RIGHT_CLICK,
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 450.0),
+                    spotlight_bounds=(580.0, 430.0, 180.0, 140.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=0.8,
+                ),
+                WalkthroughStep(
+                    step_index=4,
+                    title="Execute Double Click",
+                    instruction="Click twice rapidly to trigger default document opening or word selection.",
+                    explanation="Double clicking activates items or expands selection without opening a menu.",
+                    action_type=TeachingAction.DEMONSTRATE_DOUBLE_CLICK,
+                    target_app="Finder",
+                    fallback_screen_coords=(640.0, 450.0),
+                    spotlight_bounds=(580.0, 430.0, 120.0, 40.0),
+                    pre_delay_seconds=0.5,
+                    post_delay_seconds=1.0,
+                ),
+            ],
+        )
+

@@ -1006,15 +1006,22 @@ class AutonomousWorkflowExecutor:
             btn = normalize_mouse_button(payload.get("button", MouseButton.LEFT))
             click_count = int(payload.get("click_count", 1))
 
+            explicit_move = (coords is not None)
             if coords is not None:
                 sx, sy = coords
             else:
-                win = getattr(self.virtual_cursor, "target_window", None) if self.virtual_cursor else None
-                if win:
-                    sx = max(50.0, win.x + 200.0)
-                    sy = max(50.0, win.y + 150.0)
+                if step_use_vc and self.virtual_cursor is not None:
+                    sx, sy = self.virtual_cursor.position
                 else:
-                    sx, sy = 400.0, 300.0
+                    try:
+                        sx, sy = self.actuator.get_mouse_position()
+                    except Exception:
+                        win = getattr(self.virtual_cursor, "target_window", None) if self.virtual_cursor else None
+                        if win:
+                            sx = max(50.0, win.x + 200.0)
+                            sy = max(50.0, win.y + 150.0)
+                        else:
+                            sx, sy = 400.0, 300.0
 
             # 1. Check if this click targets an item in the macOS Dock
             dock_app = self._detect_dock_app_at(sx, sy)
@@ -1053,10 +1060,12 @@ class AutonomousWorkflowExecutor:
                 target_bundle = target.get("bundle_id") or payload.get("bundle_id")
                 if target_bundle and hasattr(self.virtual_cursor, "set_target_bundle_id"):
                     self.virtual_cursor.set_target_bundle_id(target_bundle)
-                self.virtual_cursor.move_to(sx, sy, duration=0.25, smooth=True)
+                if explicit_move:
+                    self.virtual_cursor.move_to(sx, sy, duration=0.25, smooth=True)
                 self.virtual_cursor.click(x=sx, y=sy, button=btn, click_count=click_count)
             else:
-                self.actuator.move_mouse(sx, sy, smooth=True, duration=0.20)
+                if explicit_move:
+                    self.actuator.move_mouse(sx, sy, smooth=True, duration=0.20)
                 self.actuator.click(x=sx, y=sy, button=MouseButton(btn), click_count=click_count)
 
         # ---------------------------------------------------------------------
@@ -1066,16 +1075,25 @@ class AutonomousWorkflowExecutor:
             coords = self._resolve_optional_screen_coordinates(step, spec, effective_params)
             btn = normalize_mouse_button(payload.get("button", MouseButton.LEFT))
 
+            explicit_move = (coords is not None)
             if coords is not None:
                 sx, sy = coords
             else:
-                sx, sy = 400.0, 300.0
+                if step_use_vc and self.virtual_cursor is not None:
+                    sx, sy = self.virtual_cursor.position
+                else:
+                    try:
+                        sx, sy = self.actuator.get_mouse_position()
+                    except Exception:
+                        sx, sy = 400.0, 300.0
 
             if step_use_vc and self.virtual_cursor is not None:
-                self.virtual_cursor.move_to(sx, sy, duration=0.25, smooth=True)
+                if explicit_move:
+                    self.virtual_cursor.move_to(sx, sy, duration=0.25, smooth=True)
                 self.virtual_cursor.click(x=sx, y=sy, button=btn, click_count=2)
             else:
-                self.actuator.move_mouse(sx, sy, smooth=True, duration=0.20)
+                if explicit_move:
+                    self.actuator.move_mouse(sx, sy, smooth=True, duration=0.20)
                 self.actuator.click(x=sx, y=sy, button=MouseButton(btn), click_count=2)
 
         # ---------------------------------------------------------------------
@@ -1083,16 +1101,25 @@ class AutonomousWorkflowExecutor:
         # ---------------------------------------------------------------------
         elif action_name == "right_click":
             coords = self._resolve_optional_screen_coordinates(step, spec, effective_params)
+            explicit_move = (coords is not None)
             if coords is not None:
                 sx, sy = coords
             else:
-                sx, sy = 400.0, 300.0
+                if step_use_vc and self.virtual_cursor is not None:
+                    sx, sy = self.virtual_cursor.position
+                else:
+                    try:
+                        sx, sy = self.actuator.get_mouse_position()
+                    except Exception:
+                        sx, sy = 400.0, 300.0
 
             if step_use_vc and self.virtual_cursor is not None:
-                self.virtual_cursor.move_to(sx, sy, duration=0.25, smooth=True)
+                if explicit_move:
+                    self.virtual_cursor.move_to(sx, sy, duration=0.25, smooth=True)
                 self.virtual_cursor.click(x=sx, y=sy, button="right", click_count=1)
             else:
-                self.actuator.move_mouse(sx, sy, smooth=True, duration=0.20)
+                if explicit_move:
+                    self.actuator.move_mouse(sx, sy, smooth=True, duration=0.20)
                 self.actuator.click(x=sx, y=sy, button=MouseButton.RIGHT, click_count=1)
 
         # ---------------------------------------------------------------------
@@ -1596,12 +1623,27 @@ class AutonomousWorkflowExecutor:
             if elem is not None:
                 return elem
 
+        def _norm_ax_str(s: Optional[str]) -> str:
+            if not s:
+                return ""
+            return (
+                s.replace("\u2026", "...")
+                .replace("\u2011", "-")
+                .replace("\u2013", "-")
+                .replace("\u2014", "-")
+                .strip()
+                .lower()
+            )
+
+        target_title_clean = _norm_ax_str(ax_title)
+        target_role_clean = _norm_ax_str(ax_role)
+
         # 2. Live macOS accessibility query via ctypes if on Darwin
-        if sys.platform == "darwin" and threading.current_thread() is threading.main_thread():
+        if sys.platform == "darwin":
             try:
                 import ctypes
                 import subprocess
-                from ctypes import c_void_p, c_int, c_char_p, c_bool, byref, c_double, Structure
+                from ctypes import c_void_p, c_int, c_float, c_char_p, c_bool, byref, c_double, Structure
 
                 class CGPoint(Structure):
                     _fields_ = [("x", c_double), ("y", c_double)]
@@ -1612,10 +1654,18 @@ class AutonomousWorkflowExecutor:
                 hiservices = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
                 cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
 
+                hiservices.AXUIElementCreateSystemWide.argtypes = []
+                hiservices.AXUIElementCreateSystemWide.restype = c_void_p
+                hiservices.AXUIElementCopyElementAtPosition.argtypes = [c_void_p, c_float, c_float, ctypes.POINTER(c_void_p)]
+                hiservices.AXUIElementCopyElementAtPosition.restype = c_int
                 hiservices.AXUIElementCreateApplication.argtypes = [c_int]
                 hiservices.AXUIElementCreateApplication.restype = c_void_p
                 hiservices.AXUIElementCopyAttributeValue.argtypes = [c_void_p, c_void_p, ctypes.POINTER(c_void_p)]
                 hiservices.AXUIElementCopyAttributeValue.restype = c_int
+                hiservices.AXUIElementPerformAction.argtypes = [c_void_p, c_void_p]
+                hiservices.AXUIElementPerformAction.restype = c_int
+                hiservices.AXUIElementSetAttributeValue.argtypes = [c_void_p, c_void_p, c_void_p]
+                hiservices.AXUIElementSetAttributeValue.restype = c_int
                 hiservices.AXValueGetValue.argtypes = [c_void_p, c_int, c_void_p]
                 hiservices.AXValueGetValue.restype = c_bool
 
@@ -1623,67 +1673,291 @@ class AutonomousWorkflowExecutor:
                 cf.CFStringCreateWithCString.restype = c_void_p
                 cf.CFStringGetCString.argtypes = [c_void_p, c_char_p, c_int, c_int]
                 cf.CFStringGetCString.restype = c_bool
+                cf.CFGetTypeID.argtypes = [c_void_p]
+                cf.CFGetTypeID.restype = ctypes.c_ulong
+                cf.CFStringGetTypeID.argtypes = []
+                cf.CFStringGetTypeID.restype = ctypes.c_ulong
                 cf.CFArrayGetCount.argtypes = [c_void_p]
                 cf.CFArrayGetCount.restype = c_int
                 cf.CFArrayGetValueAtIndex.argtypes = [c_void_p, c_int]
                 cf.CFArrayGetValueAtIndex.restype = c_void_p
+                cf.CFNumberCreate.argtypes = [c_void_p, c_int, c_void_p]
+                cf.CFNumberCreate.restype = c_void_p
                 cf.CFRelease.argtypes = [c_void_p]
-
-                # Resolve PID
-                pids_out = subprocess.check_output(["pgrep", "-f", app_name_or_bundle]).decode().strip().splitlines()
-                if not pids_out:
-                    return None
-                pid = int(pids_out[0].strip())
-                app_elem = hiservices.AXUIElementCreateApplication(pid)
-                if not app_elem:
-                    return None
 
                 cf_windows = cf.CFStringCreateWithCString(None, b"AXWindows", 0x08000100)
                 cf_children = cf.CFStringCreateWithCString(None, b"AXChildren", 0x08000100)
                 cf_title = cf.CFStringCreateWithCString(None, b"AXTitle", 0x08000100)
+                cf_desc = cf.CFStringCreateWithCString(None, b"AXDescription", 0x08000100)
+                cf_val = cf.CFStringCreateWithCString(None, b"AXValue", 0x08000100)
                 cf_role = cf.CFStringCreateWithCString(None, b"AXRole", 0x08000100)
                 cf_pos = cf.CFStringCreateWithCString(None, b"AXPosition", 0x08000100)
                 cf_size = cf.CFStringCreateWithCString(None, b"AXSize", 0x08000100)
+                cf_scroll = cf.CFStringCreateWithCString(None, b"AXScrollToVisible", 0x08000100)
+                cf_vsb = cf.CFStringCreateWithCString(None, b"AXVerticalScrollBar", 0x08000100)
+                string_type_id = cf.CFStringGetTypeID()
 
-                target_title_clean = (ax_title or "").lower().strip()
-                target_role_clean = (ax_role or "").lower().strip()
+                def _release_cf_attrs() -> None:
+                    for attr_ref in (cf_windows, cf_children, cf_title, cf_desc, cf_val, cf_role, cf_pos, cf_size, cf_scroll, cf_vsb):
+                        if attr_ref:
+                            cf.CFRelease(attr_ref)
 
-                def _inspect_node(node: Any, depth: int = 0) -> Optional[Tuple[float, float, float, float]]:
-                    if depth > 4:
-                        return None
-                    t_val = c_void_p()
-                    t_str = ""
-                    if hiservices.AXUIElementCopyAttributeValue(node, cf_title, byref(t_val)) == 0 and t_val.value:
-                        buf = ctypes.create_string_buffer(256)
-                        if cf.CFStringGetCString(t_val, buf, 256, 0x08000100):
-                            t_str = buf.value.decode("utf-8").lower().strip()
-                        cf.CFRelease(t_val)
+                def _get_node_bounds(node: Any) -> Optional[Tuple[float, float, float, float]]:
+                    pos_v = c_void_p()
+                    pt = CGPoint()
+                    has_pos = False
+                    if hiservices.AXUIElementCopyAttributeValue(node, cf_pos, byref(pos_v)) == 0 and pos_v.value:
+                        has_pos = bool(hiservices.AXValueGetValue(pos_v, 1, byref(pt)))
+                        cf.CFRelease(pos_v)
 
+                    sz_v = c_void_p()
+                    sz = CGSize()
+                    has_sz = False
+                    if hiservices.AXUIElementCopyAttributeValue(node, cf_size, byref(sz_v)) == 0 and sz_v.value:
+                        has_sz = bool(hiservices.AXValueGetValue(sz_v, 2, byref(sz)))
+                        cf.CFRelease(sz_v)
+
+                    if has_pos and has_sz and sz.width > 1.0 and sz.height > 1.0 and pt.x >= 0.0 and pt.y >= 0.0:
+                        return (float(pt.x), float(pt.y), float(sz.width), float(sz.height))
+                    return None
+
+                def _get_node_text(node: Any) -> str:
+                    for attr in (cf_title, cf_desc, cf_val):
+                        t_val = c_void_p()
+                        if hiservices.AXUIElementCopyAttributeValue(node, attr, byref(t_val)) == 0 and t_val.value:
+                            raw = ""
+                            if cf.CFGetTypeID(t_val) == string_type_id:
+                                buf = ctypes.create_string_buffer(512)
+                                if cf.CFStringGetCString(t_val, buf, 512, 0x08000100):
+                                    raw = _norm_ax_str(buf.value.decode("utf-8", errors="ignore"))
+                            cf.CFRelease(t_val)
+                            if raw:
+                                return raw
+                    return ""
+
+                def _get_node_role(node: Any) -> str:
                     r_val = c_void_p()
                     r_str = ""
                     if hiservices.AXUIElementCopyAttributeValue(node, cf_role, byref(r_val)) == 0 and r_val.value:
-                        buf2 = ctypes.create_string_buffer(256)
-                        if cf.CFStringGetCString(r_val, buf2, 256, 0x08000100):
-                            r_str = buf2.value.decode("utf-8").lower().strip()
+                        if cf.CFGetTypeID(r_val) == string_type_id:
+                            buf2 = ctypes.create_string_buffer(256)
+                            if cf.CFStringGetCString(r_val, buf2, 256, 0x08000100):
+                                r_str = _norm_ax_str(buf2.value.decode("utf-8", errors="ignore"))
                         cf.CFRelease(r_val)
+                    return r_str
 
-                    matches_title = (not target_title_clean) or (target_title_clean == t_str) or (target_title_clean in t_str)
-                    matches_role = (not target_role_clean) or (target_role_clean == r_str)
-                    if matches_title and matches_role and (t_str or r_str):
-                        pos_v = c_void_p()
-                        pt = CGPoint()
-                        if hiservices.AXUIElementCopyAttributeValue(node, cf_pos, byref(pos_v)) == 0 and pos_v.value:
-                            hiservices.AXValueGetValue(pos_v, 1, byref(pt))
-                            cf.CFRelease(pos_v)
+                app_lower = (app_name_or_bundle or "").strip().lower()
 
-                        sz_v = c_void_p()
-                        sz = CGSize()
-                        if hiservices.AXUIElementCopyAttributeValue(node, cf_size, byref(sz_v)) == 0 and sz_v.value:
-                            hiservices.AXValueGetValue(sz_v, 2, byref(sz))
-                            cf.CFRelease(sz_v)
+                def _get_apple_menubar_elem() -> Optional[int]:
+                    sys_elem = hiservices.AXUIElementCreateSystemWide()
+                    if sys_elem:
+                        for px, py in ((14.0, 8.0), (18.0, 12.0)):
+                            apple_elem = c_void_p()
+                            if hiservices.AXUIElementCopyElementAtPosition(sys_elem, px, py, byref(apple_elem)) == 0 and apple_elem.value:
+                                if _get_node_role(apple_elem.value) == "axmenubaritem":
+                                    cf.CFRelease(sys_elem)
+                                    return int(apple_elem.value)
+                                cf.CFRelease(apple_elem)
+                        cf.CFRelease(sys_elem)
+                    try:
+                        f_pids = subprocess.check_output(["pgrep", "-x", "Finder"], stderr=subprocess.DEVNULL).decode().strip().splitlines()
+                        if f_pids:
+                            f_app = hiservices.AXUIElementCreateApplication(int(f_pids[0].strip()))
+                            if f_app:
+                                cf_mb = cf.CFStringCreateWithCString(None, b"AXMenuBar", 0x08000100)
+                                mb_v = c_void_p()
+                                res_elem = None
+                                if hiservices.AXUIElementCopyAttributeValue(f_app, cf_mb, byref(mb_v)) == 0 and mb_v.value:
+                                    ch_v = c_void_p()
+                                    if hiservices.AXUIElementCopyAttributeValue(mb_v.value, cf_children, byref(ch_v)) == 0 and ch_v.value:
+                                        if cf.CFArrayGetCount(ch_v.value) > 0:
+                                            item0 = cf.CFArrayGetValueAtIndex(ch_v.value, 0)
+                                            cf.CFRetain.argtypes = [c_void_p]
+                                            cf.CFRetain.restype = c_void_p
+                                            cf.CFRetain(item0)
+                                            res_elem = int(item0)
+                                        cf.CFRelease(ch_v)
+                                    cf.CFRelease(mb_v)
+                                cf.CFRelease(cf_mb)
+                                cf.CFRelease(f_app)
+                                if res_elem:
+                                    return res_elem
+                    except Exception:
+                        pass
+                    return None
 
-                        if sz.width > 0 and sz.height > 0:
-                            return (pt.x, pt.y, sz.width, sz.height)
+                # 2a. Special handling for Apple Menu Bar icon or open Apple Menu dropdown items
+                if target_title_clean in ("apple", "", "apple menu", "apple icon") and target_role_clean in (
+                    "",
+                    "axmenubaritem",
+                    "axmenubutton",
+                    "axbutton",
+                ):
+                    apple_ptr = _get_apple_menubar_elem()
+                    if apple_ptr:
+                        b = _get_node_bounds(c_void_p(apple_ptr))
+                        cf.CFRelease(c_void_p(apple_ptr))
+                        if b:
+                            _release_cf_attrs()
+                            return b
+                    _release_cf_attrs()
+                    return (14.0, 0.0, 26.0, 36.0)
+
+                if target_role_clean == "axmenuitem" and target_title_clean:
+                    apple_ptr = _get_apple_menubar_elem()
+                    if apple_ptr:
+                        ch_val = c_void_p()
+                        found_bounds = None
+                        if hiservices.AXUIElementCopyAttributeValue(c_void_p(apple_ptr), cf_children, byref(ch_val)) == 0 and ch_val.value:
+                            if cf.CFArrayGetCount(ch_val.value) > 0:
+                                menu_node = cf.CFArrayGetValueAtIndex(ch_val.value, 0)
+                                m_ch = c_void_p()
+                                if hiservices.AXUIElementCopyAttributeValue(menu_node, cf_children, byref(m_ch)) == 0 and m_ch.value:
+                                    m_cnt = cf.CFArrayGetCount(m_ch.value)
+                                    target_base = target_title_clean.rstrip(".")
+                                    for idx in range(m_cnt):
+                                        mi = cf.CFArrayGetValueAtIndex(m_ch.value, idx)
+                                        mi_title = _get_node_text(mi)
+                                        if mi_title and (target_title_clean == mi_title or target_base in mi_title):
+                                            b = _get_node_bounds(mi)
+                                            if b:
+                                                found_bounds = b
+                                                break
+                                    cf.CFRelease(m_ch)
+                            cf.CFRelease(ch_val)
+                        cf.CFRelease(c_void_p(apple_ptr))
+                        if found_bounds:
+                            _release_cf_attrs()
+                            return found_bounds
+                    if app_lower in ("controlcenter", "control center", "systemuiserver"):
+                        _release_cf_attrs()
+                        return None
+
+                # Resolve PID with priority: exact -> case-insensitive -> substring
+                pid = None
+                for flag in ["-x", "-xi", "-f", "-fi"]:
+                    try:
+                        pids_out = subprocess.check_output(["pgrep", flag, app_name_or_bundle], stderr=subprocess.DEVNULL).decode().strip().splitlines()
+                        if pids_out:
+                            pid = int(pids_out[0].strip())
+                            break
+                    except Exception:
+                        pass
+
+                if not pid:
+                    _release_cf_attrs()
+                    return None
+
+                app_elem = hiservices.AXUIElementCreateApplication(pid)
+                if not app_elem:
+                    _release_cf_attrs()
+                    return None
+
+                is_menu_query = "menu" in target_role_clean
+                visited = [0]
+                fallback_candidate: List[Optional[Tuple[float, float, float, float]]] = [None]
+                current_win_bottom: List[float] = [720.0]
+                current_scroll_area: List[Any] = [None]
+
+                def _scroll_enclosing_area_into_view(node: Any) -> None:
+                    hiservices.AXUIElementPerformAction(node, cf_scroll)
+                    sa = current_scroll_area[0]
+                    if sa:
+                        vsb = c_void_p()
+                        one_val = c_double(1.0)
+                        num_one = cf.CFNumberCreate(None, 6, byref(one_val))
+                        if num_one:
+                            if hiservices.AXUIElementCopyAttributeValue(sa, cf_vsb, byref(vsb)) == 0 and vsb.value:
+                                hiservices.AXUIElementSetAttributeValue(vsb.value, cf_val, num_one)
+                                cf.CFRelease(vsb)
+                            else:
+                                sa_ch = c_void_p()
+                                if hiservices.AXUIElementCopyAttributeValue(sa, cf_children, byref(sa_ch)) == 0 and sa_ch.value:
+                                    sa_cnt = cf.CFArrayGetCount(sa_ch.value)
+                                    for s_idx in range(sa_cnt):
+                                        sc = cf.CFArrayGetValueAtIndex(sa_ch.value, s_idx)
+                                        if _get_node_role(sc) == "axscrollbar":
+                                            hiservices.AXUIElementSetAttributeValue(sc, cf_val, num_one)
+                                    cf.CFRelease(sa_ch)
+                            cf.CFRelease(num_one)
+
+                def _role_is_compatible(r_str: str, has_title_match: bool) -> bool:
+                    if not is_menu_query and r_str in ("axmenuitem", "axmenu", "axmenubar", "axmenubaritem"):
+                        return False
+                    if not target_role_clean:
+                        return True
+                    if target_role_clean == r_str or target_role_clean in r_str:
+                        return True
+                    if has_title_match and target_title_clean:
+                        if target_role_clean == "axrow" and r_str in ("axstatictext", "axcell", "axgroup", "axbutton"):
+                            return True
+                        if target_role_clean in ("axradiobutton", "axbutton", "axcheckbox") and r_str in (
+                            "axradiobutton",
+                            "axbutton",
+                            "axcheckbox",
+                            "axswitch",
+                            "axpopupbutton",
+                        ):
+                            return True
+                    return False
+
+                def _inspect_node(node: Any, depth: int = 0) -> Optional[Tuple[float, float, float, float]]:
+                    if depth > 15 or visited[0] > 1500:
+                        return None
+                    visited[0] += 1
+
+                    t_str = _get_node_text(node)
+                    r_str = _get_node_role(node)
+                    prev_sa = current_scroll_area[0]
+                    if r_str == "axscrollarea":
+                        current_scroll_area[0] = node
+
+                    if app_lower == "spotlight" and r_str in ("axtextfield", "axsearchfield"):
+                        b = _get_node_bounds(node)
+                        if b:
+                            current_scroll_area[0] = prev_sa
+                            return b
+
+                    exact_title = bool(target_title_clean and (target_title_clean == t_str or t_str.startswith(target_title_clean + ",")))
+                    substr_title = bool((not target_title_clean) or exact_title or (target_title_clean in t_str))
+
+                    if substr_title and _role_is_compatible(r_str, has_title_match=bool(t_str)) and (t_str or r_str):
+                        b = _get_node_bounds(node)
+                        if b:
+                            if (b[1] + b[3] > current_win_bottom[0] - 12.0 or b[1] > 660.0) and r_str in (
+                                "axbutton",
+                                "axrow",
+                                "axradiobutton",
+                                "axcheckbox",
+                                "axpopupbutton",
+                            ):
+                                _scroll_enclosing_area_into_view(node)
+                                time.sleep(0.08)
+                                b = _get_node_bounds(node) or b
+                            if exact_title or not target_title_clean:
+                                current_scroll_area[0] = prev_sa
+                                return b
+                            if fallback_candidate[0] is None:
+                                fallback_candidate[0] = b
+
+                    # At root application node for non-menu queries, inspect AXWindows first to avoid menu bar overhead
+                    if depth == 0 and not is_menu_query:
+                        w_val = c_void_p()
+                        if hiservices.AXUIElementCopyAttributeValue(node, cf_windows, byref(w_val)) == 0 and w_val.value:
+                            w_cnt = cf.CFArrayGetCount(w_val)
+                            w_res = None
+                            for k in range(w_cnt):
+                                win_child = cf.CFArrayGetValueAtIndex(w_val, k)
+                                wb = _get_node_bounds(win_child)
+                                if wb:
+                                    current_win_bottom[0] = wb[1] + wb[3]
+                                w_res = _inspect_node(win_child, depth + 1)
+                                if w_res:
+                                    break
+                            cf.CFRelease(w_val)
+                            if w_res:
+                                current_scroll_area[0] = prev_sa
+                                return w_res
 
                     # Recurse children
                     c_val = c_void_p()
@@ -1696,16 +1970,13 @@ class AutonomousWorkflowExecutor:
                             if res:
                                 break
                         cf.CFRelease(c_val)
+                        current_scroll_area[0] = prev_sa
                         return res
+                    current_scroll_area[0] = prev_sa
                     return None
 
-                result = _inspect_node(app_elem)
-                cf.CFRelease(cf_windows)
-                cf.CFRelease(cf_children)
-                cf.CFRelease(cf_title)
-                cf.CFRelease(cf_role)
-                cf.CFRelease(cf_pos)
-                cf.CFRelease(cf_size)
+                result = _inspect_node(app_elem) or fallback_candidate[0]
+                _release_cf_attrs()
                 cf.CFRelease(app_elem)
                 return result
             except Exception as e:
@@ -1801,18 +2072,24 @@ class AutonomousWorkflowExecutor:
             logger.warning("Could not record execution telemetry to TaskMemoryEngine: %s", e)
 
 
+_LIVE_QUERY_EXECUTOR: Optional[AutonomousWorkflowExecutor] = None
+
+
 def _query_live_element_bounds(
     app_name_or_bundle: str,
     ax_title: Optional[str] = None,
     ax_role: Optional[str] = None,
 ) -> Optional[Tuple[float, float, float, float]]:
     """Standalone helper to query on-screen accessibility element bounds via Darwin AX."""
-    from src.actuators.macos_actuator import MacOSActuator
-    actuator = MacOSActuator()
-    executor = WorkflowExecutor(actuator=actuator)
-    return executor._query_accessibility_element(
+    global _LIVE_QUERY_EXECUTOR
+    if _LIVE_QUERY_EXECUTOR is None:
+        inst = object.__new__(AutonomousWorkflowExecutor)
+        inst.actuator = None
+        _LIVE_QUERY_EXECUTOR = inst
+    return _LIVE_QUERY_EXECUTOR._query_accessibility_element(
         app_name_or_bundle=app_name_or_bundle,
         ax_role=ax_role,
         ax_title=ax_title,
     )
+
 

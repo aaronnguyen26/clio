@@ -46,7 +46,7 @@
 		</data>
 		<key>Resources/src/actuators/virtual_cursor.py</key>
 		<data>
-		+vFFIy+Lc+osUYW+gS2D/rvOVg4=
+		GHFfZO7xrq6zsMXFK8qWpB+Sv+Y=
 		</data>
 		<key>Resources/src/ai/__init__.py</key>
 		<data>
@@ -62,7 +62,11 @@
 		</data>
 		<key>Resources/src/ai/providers.py</key>
 		<data>
-		JWIK/DsGCTFpMw1zisxHEIoU6Xw=
+		7PSbnGvjViGNZS7hISfm+j1vfOU=
+		</data>
+		<key>Resources/src/ai/usage_tracker.py</key>
+		<data>
+		WSprWmfSPpjezXeWf3zLqwIx7C0=
 		</data>
 		<key>Resources/src/benchmark/__init__.py</key>
 		<data>
@@ -106,11 +110,11 @@
 		</data>
 		<key>Resources/src/executor/executor.py</key>
 		<data>
-		VTBKLX3JgIsW9NC2vS3RVQrC78A=
+		XGAhaGsi0xa7dcUnG/wr+kovBsY=
 		</data>
 		<key>Resources/src/executor/intent_synthesizer.py</key>
 		<data>
-		0PrL8FBT8xHXQ+giQDJsZ7dV2Bo=
+		lzX88HI1vYKAkVWldf7lb2Bh89Y=
 		</data>
 		<key>Resources/src/executor/poller.py</key>
 		<data>
@@ -170,15 +174,15 @@
 		</data>
 		<key>Resources/src/server/server.py</key>
 		<data>
-		Yotxq78+ZsyMwUKkDn5HTyUR+s8=
+		iy3/bud8tt7/bu4svV31c/avHlE=
 		</data>
 		<key>Resources/src/server/web/index.html</key>
 		<data>
-		hm7+1qBb02DkI1JxUSSz9cTO24M=
+		ATcPsAcVaYSGLwpQVzYWMxWFlJY=
 		</data>
 		<key>Resources/src/ui/ClioBar.swift</key>
 		<data>
-		D68LaVNVJg1gdvSDRdfTbmQNc14=
+		cBHwhHUTylnAM1wu9jvTq0utavw=
 		</data>
 		<key>Resources/src/ui/Info.plist</key>
 		<data>
@@ -190,7 +194,7 @@
 		</data>
 		<key>Resources/src/walkthrough/ai_gateway.py</key>
 		<data>
-		jx/2kt1KBRmM/MrzmXPb7KDLLJQ=
+		uUv+cwvtLhNXKWWIKM3/qjoGEJY=
 		</data>
 		<key>Resources/src/walkthrough/cloud_ai/__init__.py</key>
 		<data>
@@ -202,31 +206,31 @@
 		</data>
 		<key>Resources/src/walkthrough/cloud_ai/cloud_gateway.py</key>
 		<data>
-		r60U0GCvJ9JM0bJmKRjKsuAYugI=
+		J3sdnwLtcsTI1kK6CMFBMdEEfB8=
 		</data>
 		<key>Resources/src/walkthrough/dissector.py</key>
 		<data>
-		UhuXjZtIIRoJhEmlSlx0JPAWrA8=
+		TJngN3EaEbiBaaFERgsKArZk4Fs=
 		</data>
 		<key>Resources/src/walkthrough/grounder.py</key>
 		<data>
-		CLN6nG4Qy5H/4Gf3/MKuhIQ1PaE=
+		BSsoIhYt2lPr5VDBBrCTjlV52W0=
 		</data>
 		<key>Resources/src/walkthrough/models.py</key>
 		<data>
-		aK+AwdlNYzvwAZ2aXsspdhCoYIw=
+		TzVsOTK/e7Kursayou9yyPNCSus=
 		</data>
 		<key>Resources/src/walkthrough/router.py</key>
 		<data>
-		lilpestK5D4MQj+VzQyghz+r7To=
+		BDXykcTumhhR/R34ZV7tk5yPqt4=
 		</data>
 		<key>Resources/src/walkthrough/templates.py</key>
 		<data>
-		Wo5MIZ8Icb//utdoHqLdTtZ3CIw=
+		GsNPMIDBwv4ibnOxz9wIyRURzoc=
 		</data>
 		<key>Resources/src/walkthrough/tutor.py</key>
 		<data>
-		ecaKFVaUgpmZ/4U4c5J+94/8l/Y=
+		PXJgft8QsZAI5HyUmyuILYlFD/c=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -235,7 +239,7 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			pRIkAVz1RWkDPJ5myk8Q+5pfOH0=
+			nJLZZhXuNHT1D2XGN4HJIylHk7I=
 			</data>
 			<key>requirement</key>
 			<string>identifier "clio-bar" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: min.aaronnguyen@gmail.com (48CU82S8GW)" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */</string>
@@ -341,7 +345,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			JU1fTgenuK93xlm6JMPw+oT9QF0wmYz1lefDALFwG7A=
+			bkpjZvUrSg3ztApFywTd6UCaiK8dQ2jUIpeeyP5ZR6M=
 			</data>
 		</dict>
 		<key>Resources/src/ai/__init__.py</key>
@@ -369,7 +373,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			B06vPuRsC9+Jt6nwYM5fKS0aAO7LQZFbmefjZ/IlBQo=
+			S0PwYrozx2sJ9pQC1hJcLVDNVdqcpjWlVhlsS98iT/s=
+			</data>
+		</dict>
+		<key>Resources/src/ai/usage_tracker.py</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			o8g7rBv+pd8elkZIppeTauhRZDiNvIg1M65At3E6Tj8=
 			</data>
 		</dict>
 		<key>Resources/src/benchmark/__init__.py</key>
@@ -446,14 +457,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			8QyGSylsjP4EIJ3VBiCO86UTu8KuJvhBZErKkItUGgs=
+			5Nt2GXn67La6FoR/og25swEStQYjRNQMyT8JMdnZCNM=
 			</data>
 		</dict>
 		<key>Resources/src/executor/intent_synthesizer.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			4KkGdOkTDIU3/bt0a45Y6msw5BLeyy9WJePREc4TGXA=
+			yUwroYdCgmbIERp8cYNmguHevAaoHtFZjujm72OKXmI=
 			</data>
 		</dict>
 		<key>Resources/src/executor/poller.py</key>
@@ -558,21 +569,21 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			5L2y4NTLvQJnpJcBVzGBE/iR8q4F1FZ0ZywBtnY/sFE=
+			GrVRaFc1krp+aExB+qX/G4LJJ3dq3ipiObrc6F32E+0=
 			</data>
 		</dict>
 		<key>Resources/src/server/web/index.html</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			fJ/qxn8Huxq/Dayjmn78o8TqZccnELSzxpJ15y/lLFc=
+			VyXLdI87N30Kv0OUxLP0FdQkCGo4nWZ+ynV0pw9bURw=
 			</data>
 		</dict>
 		<key>Resources/src/ui/ClioBar.swift</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			H4IW/p+4TLf7Ar3rbrYF4ZkDxbOSILmXz8gIUslkwfw=
+			tU33Q76Gmq1tpld7sLg6BQUxeLxOWYSviX+rSPBg/Lc=
 			</data>
 		</dict>
 		<key>Resources/src/ui/Info.plist</key>
@@ -593,7 +604,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			7RhIUA9fylxgoef3zREr0PlcHFmj1ARPw1gYJho9b9I=
+			gPySAVl/nW41jvracSoDbJsMZ3NzzLv7pRDtUDz6wZY=
 			</data>
 		</dict>
 		<key>Resources/src/walkthrough/cloud_ai/__init__.py</key>
@@ -614,49 +625,49 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			X5Cn9sD/m0m9l9zdd95gAAapke6KmUnZW8iGtJLyUpI=
+			L/zTSBSULrWllSjXKKoKU7jUV9A2UUD2+NE3Zh7aY7s=
 			</data>
 		</dict>
 		<key>Resources/src/walkthrough/dissector.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			YoTzi7K43lGtzfQQkFvfdIwas6rIMvYQQYyLWFnWPow=
+			P8wJ0nAxiXMtzWIJRTTU2w+wwTX5MYvPKT6zXut9v5A=
 			</data>
 		</dict>
 		<key>Resources/src/walkthrough/grounder.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			J3NKuO/33d19ZutIOCVDWBCFk3brU+IB9t6vhNmSH/w=
+			yrX4ZJck2iVSl8mIrm/7zlylShnXts+nf7CzJKFPba4=
 			</data>
 		</dict>
 		<key>Resources/src/walkthrough/models.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			5qKDlDtYxHMpUPRvCQO9PCu30zJq7NDCJezuA5QUe+M=
+			Ad35B4YvHdcPuY9gJ7S9+On1vZ26yCE7auMighoiQsw=
 			</data>
 		</dict>
 		<key>Resources/src/walkthrough/router.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			e6wiOsJfB4TtV+0qb10aOO1rmBG36SdSl8GaRmCxmFA=
+			F6qYbxszChNmE0DfU1GKNP+Dxrc0zoiLaNKU3AZcOXI=
 			</data>
 		</dict>
 		<key>Resources/src/walkthrough/templates.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			puH486xDEH1/T2gc6FHMqKNwaK7Hp6JADYLYUS93SOk=
+			9wJG0AIFed7X56LqKOSBDZ1BxwoOYxpkFWuNA87EFSg=
 			</data>
 		</dict>
 		<key>Resources/src/walkthrough/tutor.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			WHohbZ7cVEWU18C10w2q+PVxqOMTGZWwwjS4fGqpovg=
+			CzLZqHeViCbUtNtkcouhX2Boxfxce6wIjZ5dzTRXsnI=
 			</data>
 		</dict>
 	</dict>

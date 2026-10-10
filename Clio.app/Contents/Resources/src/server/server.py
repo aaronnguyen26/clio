@@ -28,6 +28,7 @@ from src.actuators.base import BaseActuator
 from src.actuators.types import ActuatorMode
 from src.actuators.factory import get_actuator
 from src.actuators.virtual_cursor import VirtualCursor, VirtualCursorEvent
+from src.ai.usage_tracker import AppUsageLimitTracker, get_usage_tracker
 from src.companion.commentary import CommentaryEngine
 from src.companion.dialogue import CompanionDialogueEngine, DialogueState
 from src.executor.events import EventType, ExecutionEvent, ExecutionEventBus
@@ -80,6 +81,7 @@ class ClioServer:
         zero_delay: bool = False,
         auth_token: Optional[str] = None,
         require_auth: bool = False,
+        usage_tracker: Optional[AppUsageLimitTracker] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -101,6 +103,19 @@ class ClioServer:
         )
         if sys.platform != "darwin":
             is_mock = True
+
+        if usage_tracker is not None:
+            self.usage_tracker = usage_tracker
+        elif is_mock:
+            self.usage_tracker = AppUsageLimitTracker(
+                in_memory=True,
+                walkthrough_daily_limit=25,
+                walkthrough_rpm_limit=15,
+                automation_daily_limit=25,
+                automation_rpm_limit=15,
+            )
+        else:
+            self.usage_tracker = get_usage_tracker()
 
         self.virtual_cursor = VirtualCursor(
             initial_x=0.0,
@@ -171,7 +186,8 @@ class ClioServer:
         def _on_execution_event(ev: ExecutionEvent) -> None:
             with self._lock:
                 if ev.event_type == EventType.TASK_STARTED:
-                    self._is_executing = True
+                    if not (hasattr(self.executor, "_cancel_requested") and self.executor._cancel_requested.is_set()):
+                        self._is_executing = True
                     self._current_step_index = 0
                     self._total_steps = ev.total_steps
                 elif ev.event_type in (EventType.TASK_COMPLETED, EventType.TASK_FAILED, EventType.EMERGENCY_STOP):
@@ -305,6 +321,7 @@ class ClioServer:
                 "last_recorded_workflow_id": self._last_recorded_workflow_id,
                 "accessibility_trusted": self.check_accessibility_permission(),
                 "recent_commentary": list(self._recent_commentary),
+                "usage": self.usage_tracker.get_status(),
             }
 
     def check_accessibility_permission(self) -> bool:
@@ -954,40 +971,153 @@ class ClioServer:
         return {"success": success, "workflow_id": workflow_id, "deleted_directories": deleted_dirs}
 
     def get_ai_status(self) -> Dict[str, Any]:
-        """Returns the status of AI dissection providers and offline mode status."""
+        """Returns the status of AI dissection providers, offline mode status, and usage limits."""
         from src.ai.credentials import get_credential_manager
         cred_mgr = get_credential_manager()
         active_prov, _ = cred_mgr.get_active_provider()
         providers = cred_mgr.get_configured_providers()
+        usage = self.usage_tracker.get_status()
         return {
             "active_provider": active_prov,
             "offline_mode": active_prov is None,
             "providers": providers,
             "supported_providers": ["gemini", "claude"],
+            "usage": usage,
         }
 
+    def get_usage_status(self) -> Dict[str, Any]:
+        """Returns the current Walkthrough and Automation usage quota status."""
+        return self.usage_tracker.get_status()
+
+    def reset_usage(self, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Resets daily and per-minute usage counters for walkthrough, automation, or all."""
+        feature = str((data or {}).get("feature") or "all").strip().lower()
+        usage = self.usage_tracker.reset_usage(feature=feature)
+        self._broadcast_sse({"type": "usage", **usage})
+        return {"success": True, "usage": usage}
+
+    def configure_usage_limits(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Updates daily and per-minute usage limits for Walkthrough and Automation features."""
+        wt_daily = data.get("walkthrough_daily_limit")
+        auto_daily = data.get("automation_daily_limit")
+        wt_rpm = data.get("walkthrough_rpm_limit")
+        auto_rpm = data.get("automation_rpm_limit")
+        gem_rpd = data.get("gemini_rpd_limit")
+        gem_rpm = data.get("gemini_rpm_limit")
+        usage = self.usage_tracker.update_limits(
+            walkthrough_daily_limit=int(wt_daily) if wt_daily is not None else None,
+            automation_daily_limit=int(auto_daily) if auto_daily is not None else None,
+            walkthrough_rpm_limit=int(wt_rpm) if wt_rpm is not None else None,
+            automation_rpm_limit=int(auto_rpm) if auto_rpm is not None else None,
+            gemini_rpd_limit=int(gem_rpd) if gem_rpd is not None else None,
+            gemini_rpm_limit=int(gem_rpm) if gem_rpm is not None else None,
+        )
+        self._broadcast_sse({"type": "usage", **usage})
+        return {"success": True, "usage": usage}
+
     def configure_ai(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Configures and persists API keys for multimodal AI dissection."""
+        """Configures and persists API keys and active models for multimodal AI dissection."""
         from src.ai.credentials import get_credential_manager
         cred_mgr = get_credential_manager()
         provider = str(data.get("provider", "")).lower().strip()
         api_key = str(data.get("api_key", "")).strip()
+        model = str(data.get("model", "")).strip()
         persist_keychain = bool(data.get("persist_keychain", True))
         persist_config = bool(data.get("persist_config", False))
 
-        if not provider or not api_key:
+        if model:
+            self.usage_tracker.active_model = model
+            self.usage_tracker._save()
+
+        if not api_key:
+            if model:
+                return {
+                    "success": True,
+                    "model": model,
+                    "message": f"Updated active model to {model}.",
+                }
             return {"success": False, "error": "Both 'provider' and 'api_key' are required."}
 
         success = cred_mgr.set_api_key(
-            provider=provider,
+            provider=provider or "gemini",
             api_key=api_key,
             persist_keychain=persist_keychain,
             persist_config=persist_config,
         )
         return {
             "success": success,
-            "provider": provider,
-            "message": f"Successfully configured API key for {provider}." if success else "Failed to persist API key.",
+            "provider": provider or "gemini",
+            "model": model or self.usage_tracker.active_model,
+            "message": f"Successfully configured API key for {provider or 'gemini'}." if success else "Failed to persist API key.",
+        }
+
+    def get_storage_status(self) -> Dict[str, Any]:
+        """Returns storage metrics: workflow counts, database size, and recording footprint."""
+        workflows = self.memory.list_workflows()
+        rec_dir = getattr(self.demonstration_capture, "_recordings_base_dir", Path.home() / ".clio" / "recordings")
+        home_rec_dir = Path.home() / ".clio" / "recordings"
+        total_rec_bytes = 0
+        total_rec_folders = 0
+        for d in set([rec_dir, home_rec_dir]):
+            if d.exists():
+                for p in d.rglob("*"):
+                    if p.is_file():
+                        total_rec_bytes += p.stat().st_size
+                    elif p.is_dir() and p != d:
+                        total_rec_folders += 1
+
+        db_path = getattr(self.memory, "db_path", None)
+        db_bytes = 0
+        if db_path and isinstance(db_path, (str, Path)) and str(db_path) != ":memory:":
+            p_db = Path(db_path)
+            if p_db.exists():
+                db_bytes = p_db.stat().st_size
+
+        mb_rec = round(total_rec_bytes / (1024 * 1024), 1)
+        mb_db = round(db_bytes / (1024 * 1024), 2)
+
+        return {
+            "success": True,
+            "workflow_count": len(workflows),
+            "recording_folders": total_rec_folders,
+            "recordings_bytes": total_rec_bytes,
+            "recordings_size_mb": mb_rec,
+            "db_bytes": db_bytes,
+            "db_size_mb": mb_db,
+            "recordings_path": str(rec_dir),
+            "db_path": str(db_path) if db_path else ":memory:",
+        }
+
+    def clear_cache(self, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Cleans empty recording folders, compacts SQLite database, and re-indexes memory workflows."""
+        cleaned_folders = 0
+        rec_dir = getattr(self.demonstration_capture, "_recordings_base_dir", Path.home() / ".clio" / "recordings")
+        if rec_dir.exists():
+            for folder in list(rec_dir.iterdir()):
+                if folder.is_dir() and folder.name not in (".", ".."):
+                    try:
+                        items = list(folder.iterdir())
+                        if not items:
+                            folder.rmdir()
+                            cleaned_folders += 1
+                    except Exception:
+                        pass
+        try:
+            if hasattr(self.memory, "vacuum"):
+                self.memory.vacuum()
+        except Exception:
+            pass
+
+        self._broadcast_sse({
+            "type": "storage_cleaned",
+            "cleaned_folders": cleaned_folders,
+            "timestamp": time.time(),
+        })
+        return {
+            "success": True,
+            "cleaned_folders": cleaned_folders,
+            "message": f"Storage cache refreshed. {cleaned_folders} empty folders pruned.",
+            "storage": self.get_storage_status(),
         }
 
     def test_ai_provider(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1054,11 +1184,37 @@ class ClioServer:
                     return {"success": False, "error": f"Workflow '{workflow_id}' not found."}
             elif query:
                 # Walkthrough Intent Detection
-                walkthrough_pattern = r"^(?:please\s+)?(?:teach|show|guide|walk)\s+(?:me\s+)?(?:how\s+to\s+|through\s+)?|^(?:how\s+(?:do|can|to)\s+(?:i\s+)?)|^tutorial\s+(?:on\s+)?|^(?:learn\s+(?:how\s+to\s+|to\s+)?)|^walkthrough\s+"
-                if re.search(walkthrough_pattern, query.strip(), re.IGNORECASE):
+                clean_query = query.strip()
+                if clean_query.lower().startswith("/teach "):
+                    clean_query = clean_query[7:].strip()
+                elif clean_query.lower().startswith("/walkthrough "):
+                    clean_query = clean_query[13:].strip()
+                elif clean_query.lower() in ("/teach", "/walkthrough"):
+                    clean_query = "macOS Navigation"
+
+                walkthrough_pattern = r"^(?:/)?(?:please\s+)?(?:teach|show|guide|walk)\s+(?:me\s+)?(?:how\s+to\s+|through\s+)?|^(?:how\s+(?:do|can|to)\s+(?:i\s+)?)|^tutorial\s+(?:on\s+)?|^(?:learn\s+(?:how\s+to\s+|to\s+)?)|^(?:/)?walkthrough\s+"
+                is_wt_intent = bool(re.search(walkthrough_pattern, clean_query, re.IGNORECASE))
+                if not is_wt_intent:
+                    from src.walkthrough.templates import BuiltinWalkthroughCatalog
+                    is_wt_intent = BuiltinWalkthroughCatalog.find_match(clean_query) is not None
+
+                if is_wt_intent:
                     with self._lock:
                         self._is_executing = False
-                    plan, tier = self.walkthrough_router.resolve_plan(query)
+                    allowed, reason = self.usage_tracker.can_use("walkthrough")
+                    if not allowed:
+                        usage_snap = self.usage_tracker.get_status()
+                        self._broadcast_sse({"type": "usage", **usage_snap})
+                        return {
+                            "success": False,
+                            "limit_reached": True,
+                            "feature": "walkthrough",
+                            "error": reason or "Walkthrough usage limit reached.",
+                            "usage": usage_snap,
+                        }
+                    plan, tier = self.walkthrough_router.resolve_plan(clean_query)
+                    usage_snap = self.usage_tracker.consume("walkthrough", is_cloud_ai=(tier == "cloud_ai"))
+                    self._broadcast_sse({"type": "usage", **usage_snap})
                     self.walkthrough_tutor.load_plan(plan)
                     self.walkthrough_tutor.start()
                     return {
@@ -1067,6 +1223,8 @@ class ClioServer:
                         "mode": "walkthrough",
                         "tier": tier,
                         "plan": plan.to_dict(),
+                        "telemetry": self.walkthrough_tutor.get_telemetry(),
+                        "usage": usage_snap,
                         "message": f"Starting walkthrough: {plan.goal}",
                     }
 
@@ -1115,6 +1273,23 @@ class ClioServer:
                 with self._lock:
                     self._is_executing = False
                 return {"success": False, "error": "Either workflow_id or query must be provided."}
+
+            # Enforce Automation usage limit before launching execution worker
+            allowed, reason = self.usage_tracker.can_use("automation")
+            if not allowed:
+                with self._lock:
+                    self._is_executing = False
+                usage_snap = self.usage_tracker.get_status()
+                self._broadcast_sse({"type": "usage", **usage_snap})
+                return {
+                    "success": False,
+                    "limit_reached": True,
+                    "feature": "automation",
+                    "error": reason or "Automation usage limit reached.",
+                    "usage": usage_snap,
+                }
+            usage_snap = self.usage_tracker.consume("automation", is_cloud_ai=False)
+            self._broadcast_sse({"type": "usage", **usage_snap})
         except Exception:
             with self._lock:
                 self._is_executing = False
@@ -1142,12 +1317,14 @@ class ClioServer:
                 with self._lock:
                     self._is_executing = False
                     self._current_workflow = None
+                    self._worker_thread = None
 
         worker_thread = threading.Thread(
             target=_run_worker,
             name=f"ClioWorker-{spec.id}",
             daemon=True,
         )
+        self._worker_thread = worker_thread
         worker_thread.start()
 
         return {
@@ -1157,6 +1334,7 @@ class ClioServer:
             "name": spec.name,
             "total_steps": len(spec.steps),
             "background": background,
+            "usage": usage_snap,
         }
 
     def cancel_execution(self) -> Dict[str, Any]:
@@ -1171,10 +1349,16 @@ class ClioServer:
         except Exception as e:
             logger.warning(f"Error resetting actuators during cancel: {e}")
 
+        # 3. Wait for worker thread to exit cleanly
+        thread_to_join = getattr(self, "_worker_thread", None)
+        if thread_to_join and thread_to_join.is_alive() and threading.current_thread() != thread_to_join:
+            thread_to_join.join(timeout=1.0)
+
         with self._lock:
             was_running = self._is_executing
             self._is_executing = False
             self._current_workflow = None
+            self._worker_thread = None
 
         if was_running:
             self._broadcast_sse(
@@ -1320,32 +1504,34 @@ class ClioServer:
                 # 2. SSE Stream
                 if path == "/api/stream":
                     self.send_response(HTTPStatus.OK)
-                    self.send_header("Content-Type", "text/event-stream")
-                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache, no-transform")
                     self.send_header("Connection", "keep-alive")
+                    self.send_header("X-Accel-Buffering", "no")
                     origin = self._get_allowed_origin()
                     if origin:
                         self.send_header("Access-Control-Allow-Origin", origin)
                     self.end_headers()
 
+                    sse_pad = ": " + (" " * 2048) + "\n"
                     client_q = server_instance.register_sse_client()
                     try:
                         # Send initial connection event
                         init_payload = json.dumps(
                             {"type": "connected", "status": server_instance.get_status()}
                         )
-                        self.wfile.write(f"data: {init_payload}\n\n".encode("utf-8"))
+                        self.wfile.write(f"data: {init_payload}\n{sse_pad}\n".encode("utf-8"))
                         self.wfile.flush()
 
                         while True:
                             try:
                                 msg = client_q.get(timeout=10.0)
                                 payload = json.dumps(msg)
-                                self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                                self.wfile.write(f"data: {payload}\n{sse_pad}\n".encode("utf-8"))
                                 self.wfile.flush()
                             except queue.Empty:
                                 # Heartbeat ping
-                                self.wfile.write(b": ping\n\n")
+                                self.wfile.write(f": ping\n{sse_pad}\n".encode("utf-8"))
                                 self.wfile.flush()
                     except (BrokenPipeError, ConnectionResetError):
                         pass
@@ -1431,6 +1617,16 @@ class ClioServer:
                     self._send_json(HTTPStatus.OK, server_instance.walkthrough_tutor.get_telemetry())
                     return
 
+                # 6f. Usage Limit & Gemini Free-Tier Quota Status
+                if path in ("/api/usage", "/api/quota"):
+                    self._send_json(HTTPStatus.OK, server_instance.get_usage_status())
+                    return
+
+                # 6g. System Storage & Memory Status
+                if path in ("/api/system/storage", "/api/storage"):
+                    self._send_json(HTTPStatus.OK, server_instance.get_storage_status())
+                    return
+
                 # Unknown GET
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
@@ -1467,7 +1663,10 @@ class ClioServer:
                         query=query,
                         background=background,
                     )
-                    status_code = HTTPStatus.OK if res.get("success") else HTTPStatus.BAD_REQUEST
+                    if res.get("limit_reached"):
+                        status_code = HTTPStatus.TOO_MANY_REQUESTS
+                    else:
+                        status_code = HTTPStatus.OK if res.get("success") else HTTPStatus.BAD_REQUEST
                     self._send_json(status_code, res)
                     return
 
@@ -1477,14 +1676,32 @@ class ClioServer:
                     mode_str = body.get("mode", "guided_demo")
                     mode = WalkthroughMode.INTERACTIVE_TUTOR if mode_str == "interactive" else WalkthroughMode.GUIDED_DEMO
                     context = body.get("context") if isinstance(body.get("context"), dict) else None
+                    allowed, reason = server_instance.usage_tracker.can_use("walkthrough")
+                    if not allowed:
+                        usage_snap = server_instance.usage_tracker.get_status()
+                        server_instance._broadcast_sse({"type": "usage", **usage_snap})
+                        self._send_json(HTTPStatus.TOO_MANY_REQUESTS, {
+                            "success": False,
+                            "limit_reached": True,
+                            "feature": "walkthrough",
+                            "error": reason or "Walkthrough usage limit reached.",
+                            "usage": usage_snap,
+                        })
+                        return
                     plan, tier = server_instance.walkthrough_router.resolve_plan(query, mode=mode, context=context)
+                    usage_snap = server_instance.usage_tracker.consume("walkthrough", is_cloud_ai=(tier == "cloud_ai"))
+                    server_instance._broadcast_sse({"type": "usage", **usage_snap})
                     server_instance.walkthrough_tutor.load_plan(plan)
-                    server_instance.walkthrough_tutor.start()
+                    if server_instance.walkthrough_tutor.mock:
+                        server_instance.walkthrough_tutor.start()
+                    else:
+                        server_instance.walkthrough_tutor.start_async()
                     self._send_json(HTTPStatus.OK, {
                         "success": True,
                         "tier": tier,
                         "plan": plan.to_dict(),
                         "telemetry": server_instance.walkthrough_tutor.get_telemetry(),
+                        "usage": usage_snap,
                     })
                     return
 
@@ -1689,6 +1906,23 @@ class ClioServer:
                     res = server_instance.test_ai_provider(body)
                     status_code = HTTPStatus.OK if res.get("success") else HTTPStatus.BAD_REQUEST
                     self._send_json(status_code, res)
+                    return
+
+                # 10. Usage Limits & Quota Management
+                if path in ("/api/usage/reset", "/api/quota/reset"):
+                    res = server_instance.reset_usage(body)
+                    self._send_json(HTTPStatus.OK, res)
+                    return
+
+                if path in ("/api/usage/config", "/api/quota/config"):
+                    res = server_instance.configure_usage_limits(body)
+                    self._send_json(HTTPStatus.OK, res)
+                    return
+
+                # 11. Storage Cache Cleanup & Re-indexing
+                if path in ("/api/system/cache/clear", "/api/storage/clear"):
+                    res = server_instance.clear_cache(body)
+                    self._send_json(HTTPStatus.OK, res)
                     return
 
                 # Unknown POST

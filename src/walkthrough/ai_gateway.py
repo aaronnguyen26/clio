@@ -40,11 +40,16 @@ MANDATORY RULES:
    - 'title' (short headline, e.g. "Open System Settings")
    - 'instruction' (imperative command, e.g. "Click the Apple icon  in the menu bar")
    - 'explanation' (pedagogical reason, e.g. "This opens system-wide preferences")
-   - 'action_type' ("move_and_hover", "demonstrate_click", "wait_for_user_click", "demonstrate_hotkey", "demonstrate_type", "pulse_beacon")
+   - 'action_type' ("move_and_hover", "demonstrate_click", "demonstrate_double_click", "demonstrate_right_click", "demonstrate_drag", "demonstrate_scroll", "wait_for_user_click", "demonstrate_hotkey", "demonstrate_type", "pulse_beacon")
    - 'target_app' (e.g. "System Settings", "Finder", "Safari")
    - 'target_element' (object with 'role' and 'title', e.g. {"role": "AXButton", "title": "Done"})
    - optional 'hotkey' (array of strings, e.g. ["cmd", "q"])
-2. Output strictly valid JSON matching the schema. No markdown prose outside JSON.
+   - optional 'text_to_type' (string if action_type is 'demonstrate_type')
+2. CRITICAL GRANULARITY RULES:
+   - Never skip intermediate UI menus or dialogs. Each step must represent ONE visible UI action:
+     * When using the Apple menu (), Step 1 MUST click the Apple icon (role="AXMenuBarItem", title="Apple"), and Step 2 MUST click the dropdown item (role="AXMenuItem", e.g. title="System Settings..." or title="About This Mac").
+     * When using Spotlight (Command + Space), Step 1 MUST press ["command", "space"] (action_type="demonstrate_hotkey", target_app="Spotlight"), Step 2 MUST type the search text (action_type="demonstrate_type", text_to_type="...", target_app="Spotlight"), and Step 3 MUST press Return or select the result.
+3. Output strictly valid JSON matching the schema. No markdown prose outside JSON.
 """
 
 WALKTHROUGH_RESPONSE_SCHEMA = {
@@ -72,6 +77,7 @@ WALKTHROUGH_RESPONSE_SCHEMA = {
                         },
                     },
                     "hotkey": {"type": "array", "items": {"type": "string"}},
+                    "text_to_type": {"type": "string"},
                 },
                 "required": ["step_index", "title", "instruction", "action_type"],
             },
@@ -173,11 +179,25 @@ class AIWalkthroughGateway:
                 act_type = TeachingAction.MOVE_AND_HOVER
 
             elem_query = s.get("target_element") or {}
-            hotkey = s.get("hotkey")
+            hotkey = s.get("hotkey") or s.get("hotkey_combo")
+
+            step_title = str(s.get("title", f"Step {idx}"))
+            step_inst = str(s.get("instruction", ""))
+            combined_l = f"{step_title} {step_inst}".lower()
+            elem_title_l = str((elem_query.get("title") or elem_query.get("ax_title") or "") if isinstance(elem_query, dict) else "").lower()
+            elem_role_l = str((elem_query.get("role") or elem_query.get("ax_role") or "") if isinstance(elem_query, dict) else "").lower()
 
             coords = s.get("fallback_screen_coords")
             if coords and isinstance(coords, (list, tuple)) and len(coords) == 2:
                 t_coords = (float(coords[0]), float(coords[1]))
+            elif "about this mac" in combined_l or "about this mac" in elem_title_l:
+                t_coords = (80.0, 40.0)
+            elif "system settings" in elem_title_l and elem_role_l == "axmenuitem":
+                t_coords = (80.0, 86.0)
+            elif ("apple" in combined_l or "" in combined_l) and idx == 1:
+                t_coords = (18.0, 12.0)
+            elif "spotlight" in combined_l or str(s.get("target_app", "")).lower() == "spotlight":
+                t_coords = (640.0, 280.0)
             else:
                 base_x = 420.0 + (idx * 55.0) % 320.0
                 base_y = 220.0 + (idx * 65.0) % 260.0
@@ -192,13 +212,16 @@ class AIWalkthroughGateway:
             steps.append(
                 WalkthroughStep(
                     step_index=int(s.get("step_index", idx)),
-                    title=str(s.get("title", f"Step {idx}")),
-                    instruction=str(s.get("instruction", "")),
+                    title=step_title,
+                    instruction=step_inst,
                     explanation=str(s.get("explanation", "")),
                     action_type=act_type,
                     target_app=str(s.get("target_app", target_app)),
                     target_element_query=elem_query if isinstance(elem_query, dict) else {},
                     hotkey_combo=list(hotkey) if isinstance(hotkey, list) else None,
+                    text_to_type=s.get("text_to_type"),
+                    drag_target_coords=tuple(s.get("drag_target_coords")) if s.get("drag_target_coords") and len(s.get("drag_target_coords")) == 2 else None,
+                    scroll_delta=tuple(s.get("scroll_delta")) if s.get("scroll_delta") and len(s.get("scroll_delta")) == 2 else None,
                     fallback_screen_coords=t_coords,
                     spotlight_bounds=t_bounds,
                 )

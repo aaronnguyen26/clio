@@ -32,6 +32,10 @@ class TeachingAction(str, Enum):
     MOVE_AND_HOVER = "move_and_hover"
     PULSE_BEACON = "pulse_beacon"
     DEMONSTRATE_CLICK = "demonstrate_click"
+    DEMONSTRATE_DOUBLE_CLICK = "demonstrate_double_click"
+    DEMONSTRATE_RIGHT_CLICK = "demonstrate_right_click"
+    DEMONSTRATE_DRAG = "demonstrate_drag"
+    DEMONSTRATE_SCROLL = "demonstrate_scroll"
     WAIT_FOR_USER_CLICK = "wait_for_user_click"
     DEMONSTRATE_HOTKEY = "demonstrate_hotkey"
     DEMONSTRATE_TYPE = "demonstrate_type"
@@ -53,6 +57,8 @@ class WalkthroughStep:
     spotlight_bounds: Optional[Tuple[float, float, float, float]] = None # (x, y, w, h)
     hotkey_combo: Optional[List[str]] = None
     text_to_type: Optional[str] = None
+    drag_target_coords: Optional[Tuple[float, float]] = None           # (target_x, target_y) for drag
+    scroll_delta: Optional[Tuple[int, int]] = None                     # (dx, dy) for scroll
     pre_delay_seconds: float = 0.5
     post_delay_seconds: float = 1.0
 
@@ -86,6 +92,18 @@ class WalkthroughStep:
         else:
             bounds = None
 
+        drag_coords = data.get("drag_target_coords")
+        if drag_coords and isinstance(drag_coords, (list, tuple)) and len(drag_coords) == 2:
+            drag_coords = (float(drag_coords[0]), float(drag_coords[1]))
+        else:
+            drag_coords = None
+
+        scroll = data.get("scroll_delta")
+        if scroll and isinstance(scroll, (list, tuple)) and len(scroll) == 2:
+            scroll = (int(scroll[0]), int(scroll[1]))
+        else:
+            scroll = None
+
         return cls(
             step_index=int(data.get("step_index", 1)),
             title=str(data.get("title", "")),
@@ -99,6 +117,8 @@ class WalkthroughStep:
             spotlight_bounds=bounds,
             hotkey_combo=list(data["hotkey_combo"]) if data.get("hotkey_combo") else None,
             text_to_type=data.get("text_to_type"),
+            drag_target_coords=drag_coords,
+            scroll_delta=scroll,
             pre_delay_seconds=float(data.get("pre_delay_seconds", 0.5)),
             post_delay_seconds=float(data.get("post_delay_seconds", 1.0)),
         )
@@ -161,6 +181,14 @@ class WalkthroughPlan:
             payload: Dict[str, Any] = {}
             if s.action_type == TeachingAction.DEMONSTRATE_CLICK or s.action_type == TeachingAction.WAIT_FOR_USER_CLICK:
                 action = ActionType.CLICK
+            elif s.action_type == TeachingAction.DEMONSTRATE_DOUBLE_CLICK:
+                action = ActionType.DOUBLE_CLICK
+            elif s.action_type == TeachingAction.DEMONSTRATE_RIGHT_CLICK:
+                action = ActionType.RIGHT_CLICK
+            elif s.action_type == TeachingAction.DEMONSTRATE_DRAG:
+                action = ActionType.DRAG
+            elif s.action_type == TeachingAction.DEMONSTRATE_SCROLL:
+                action = ActionType.SCROLL
             elif s.action_type == TeachingAction.DEMONSTRATE_HOTKEY:
                 action = ActionType.PRESS_HOTKEY
                 if s.hotkey_combo:
@@ -211,6 +239,14 @@ class WalkthroughPlan:
             action_type = TeachingAction.MOVE_AND_HOVER
             if w_step.action == ActionType.CLICK:
                 action_type = TeachingAction.DEMONSTRATE_CLICK
+            elif w_step.action == ActionType.DOUBLE_CLICK:
+                action_type = TeachingAction.DEMONSTRATE_DOUBLE_CLICK
+            elif w_step.action == ActionType.RIGHT_CLICK:
+                action_type = TeachingAction.DEMONSTRATE_RIGHT_CLICK
+            elif w_step.action == ActionType.DRAG:
+                action_type = TeachingAction.DEMONSTRATE_DRAG
+            elif w_step.action == ActionType.SCROLL:
+                action_type = TeachingAction.DEMONSTRATE_SCROLL
             elif w_step.action == ActionType.PRESS_HOTKEY:
                 action_type = TeachingAction.DEMONSTRATE_HOTKEY
             elif w_step.action in (ActionType.TYPE_TEXT, ActionType.PASTE_TEXT):

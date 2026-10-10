@@ -489,6 +489,9 @@
           <span id="record-dot">🔴</span>
           <span id="record-label">Record Task</span>
         </button>
+        <button class="icon-btn" id="settings-btn" title="Settings & Preferences (⌘,)" style="background: rgba(245, 246, 248, 0.08); border: 1px solid rgba(245, 246, 248, 0.14); border-radius: 9999px; width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-primary); cursor: pointer; transition: all 0.2s ease;">
+          <span style="font-size: 13px;">⚙️</span>
+        </button>
         <div class="pill-badge bg-mode-badge active" id="bg-mode-toggle" title="Toggle Background Execution (AI operates in background with its own mouse & keyboard without stealing focus)">
           <span>⚡</span>
           <span id="bg-mode-label">Background: ON</span>
@@ -510,9 +513,183 @@
       <button class="chip-button" data-query="browse tech news">🌐 Safari Web Automation</button>
       <button class="chip-button" data-query="transfer web research to notes">🔄 Cross-Domain Sync</button>
       <button class="chip-button" data-action="list">📁 List All Tasks</button>
+      <button class="chip-button" id="chip-limits-btn">⚙️ Settings & Quota</button>
     </div>
 
     <div class="panel-divider"></div>
+
+    <!-- Settings & Preferences HUD Drawer (Includes Usage Limits & Quota) -->
+    <section class="execution-drawer" id="usage-limits-drawer" style="display: none; gap: 10px;">
+      <!-- Tab Navigation Row -->
+      <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px;">
+        <div style="display: flex; gap: 6px;">
+          <button class="tab-btn active" id="tab-btn-usage" data-tab="usage" style="background: #f5f6f8; color: #08090a; border: none; border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">📊 Usage & Quota</button>
+          <button class="tab-btn" id="tab-btn-ai" data-tab="ai" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">✨ AI & Models</button>
+          <button class="tab-btn" id="tab-btn-walkthrough" data-tab="walkthrough" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">🎓 Walkthrough</button>
+          <button class="tab-btn" id="tab-btn-safety" data-tab="safety" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">🛡️ Safety</button>
+          <button class="tab-btn" id="tab-btn-storage" data-tab="storage" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">💾 Storage</button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="pill-badge" id="quota-pill-btn" style="cursor: default;" title="Live Usage Status">
+            <span class="status-dot" id="quota-status-dot" style="background: #10b981;"></span>
+            <span id="quota-pill-text">🎓 25/25 • ⚡ 25/25</span>
+          </div>
+          <button class="cancel-btn" id="close-settings-btn" style="padding: 2px 8px; font-size: 10px;">✕ Close</button>
+        </div>
+      </div>
+
+      <!-- Tab 1: Usage Limits & Gemini Free-Tier Quota -->
+      <div id="settings-tab-usage-content" style="display: flex; flex-direction: column; gap: 10px;">
+        <div class="exec-header">
+          <div class="exec-title-row">
+            <span class="exec-title" style="font-size: 11px; letter-spacing: 0.5px;">USAGE LIMITS & GEMINI FREE-TIER QUOTA</span>
+            <span class="badge-tag" id="quota-tier-badge" style="font-family: ui-monospace, monospace; font-size: 10px;">GEMINI FREE KEY • 15 RPM / 25 DAILY</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span id="quota-reset-timer" style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">RESETS IN 24H 00M</span>
+            <span class="badge-tag" style="font-family: ui-monospace, monospace; font-size: 9px; background: rgba(255, 255, 255, 0.08); color: var(--text-muted); border: 1px solid var(--border-subtle); display: inline-flex; align-items: center; gap: 4px;">🔒 SYSTEM ENFORCED</span>
+          </div>
+        </div>
+
+        <div id="quota-warning-banner" style="display: none; padding: 8px 12px; border-radius: 8px; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.35); font-size: 11px; font-family: ui-monospace, monospace; color: #f5f6f8;">
+          ⚠️ Daily feature usage limit reached. Strict daily ceiling enforced. Resets automatically at 00:00 UTC.
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <!-- Walkthrough Quota Card -->
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">🎓 WALKTHROUGH USES</span>
+              <span class="badge-tag" id="wt-quota-status" style="font-size: 9px; font-family: ui-monospace, monospace;">AVAILABLE</span>
+            </div>
+            <div style="display: flex; align-items: baseline; justify-content: space-between;">
+              <div>
+                <span id="wt-remaining-count" style="font-size: 20px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">25</span>
+                <span id="wt-daily-limit" style="font-size: 11px; font-family: ui-monospace, monospace; color: var(--text-muted);">/ 25 USES LEFT</span>
+              </div>
+              <span id="wt-used-label" style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-sub);">0 USED TODAY</span>
+            </div>
+            <div class="progress-track" style="height: 5px;">
+              <div class="progress-bar" id="wt-quota-bar" style="width: 100%;"></div>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">
+              <span id="wt-breakdown-text">AI: 0 • Local: 0 • 0/5 RPM</span>
+              <span style="font-size: 9px; color: var(--text-muted);">🔒 CAP 25 • FIXED</span>
+            </div>
+          </div>
+
+          <!-- Automation Quota Card -->
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">⚡ AUTOMATION USES</span>
+              <span class="badge-tag" id="auto-quota-status" style="font-size: 9px; font-family: ui-monospace, monospace;">AVAILABLE</span>
+            </div>
+            <div style="display: flex; align-items: baseline; justify-content: space-between;">
+              <div>
+                <span id="auto-remaining-count" style="font-size: 20px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">25</span>
+                <span id="auto-daily-limit" style="font-size: 11px; font-family: ui-monospace, monospace; color: var(--text-muted);">/ 25 USES LEFT</span>
+              </div>
+              <span id="auto-used-label" style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-sub);">0 USED TODAY</span>
+            </div>
+            <div class="progress-track" style="height: 5px;">
+              <div class="progress-bar" id="auto-quota-bar" style="width: 100%;"></div>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">
+              <span id="auto-breakdown-text">AI: 0 • Local: 0 • 0/5 RPM</span>
+              <span style="font-size: 9px; color: var(--text-muted);">🔒 CAP 25 • FIXED</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Gemini API Telemetry Strip -->
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; background: rgba(13, 14, 16, 0.9); border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">
+          <span id="gemini-telemetry-text">✨ GEMINI FREE API: gemini-2.5-flash • BURST: 0/15 RPM • CALLS TODAY: 0/250</span>
+          <span id="gemini-health-badge" style="color: var(--text-main); font-weight: 600;">PROTECTED • LOCAL FALLBACK READY</span>
+        </div>
+      </div>
+
+      <!-- Tab 2: AI & Models Content -->
+      <div id="settings-tab-ai-content" style="display: none; flex-direction: column; gap: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">MULTIMODAL AI MODEL SELECTION</span>
+          <span class="badge-tag" style="font-family: ui-monospace, monospace; font-size: 10px;">GOOGLE GEMINI</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+          <div class="model-card active" data-model="gemini-2.5-flash" style="background: rgba(245, 246, 248, 0.08); border: 1px solid var(--accent); border-radius: 8px; padding: 10px; cursor: pointer;">
+            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Gemini 2.5 Flash</div>
+            <div style="font-size: 9px; color: var(--text-sub); margin-top: 3px;">High-speed multimodal video & action dissection (Recommended)</div>
+          </div>
+          <div class="model-card" data-model="gemini-2.5-flash-lite" style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; cursor: pointer;">
+            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Gemini 2.5 Flash-Lite</div>
+            <div style="font-size: 9px; color: var(--text-sub); margin-top: 3px;">Lowest latency for quick command synthesis</div>
+          </div>
+          <div class="model-card" data-model="gemini-1.5-pro" style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; cursor: pointer;">
+            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Gemini 1.5 Pro</div>
+            <div style="font-size: 9px; color: var(--text-sub); margin-top: 3px;">Deep multi-step reasoning for complex workflows</div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center; background: rgba(13, 14, 16, 0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+          <span style="font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-muted);">API KEY:</span>
+          <input type="password" id="settings-api-key-input" placeholder="Configure Gemini API key..." style="flex: 1; background: transparent; border: none; outline: none; font-size: 11px; font-family: ui-monospace, monospace; color: var(--text-main);" />
+          <button class="cancel-btn" id="test-ai-key-btn" style="color: #08090a; background: #f5f6f8; font-weight: 600;">Test Connection</button>
+        </div>
+        <div id="ai-test-result" style="font-size: 10px; font-family: ui-monospace, monospace; color: #10b981; display: none;"></div>
+      </div>
+
+      <!-- Tab 3: Walkthrough Preferences Content -->
+      <div id="settings-tab-walkthrough-content" style="display: none; flex-direction: column; gap: 10px;">
+        <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">WALKTHROUGH & INTERACTION SETTINGS</span>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px;">
+            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Default Mode</div>
+            <div style="font-size: 9.5px; color: var(--text-sub); margin-top: 2px;">Guided Demonstration (Virtual cursor highlights actions)</div>
+          </div>
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px;">
+            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Auto-Advance Delay</div>
+            <div style="font-size: 9.5px; color: var(--text-sub); margin-top: 2px;">Standard: 2.5s per completed step</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 4: Automation & Safety Content -->
+      <div id="settings-tab-safety-content" style="display: none; flex-direction: column; gap: 10px;">
+        <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">SAFETY & EMERGENCY CONTROLS</span>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(13, 14, 16, 0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+            <div>
+              <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Top-Left Corner Emergency Stop</div>
+              <div style="font-size: 9.5px; color: var(--text-sub);">Moving mouse to screen corner (0,0) immediately halts all automation</div>
+            </div>
+            <span class="badge-tag" style="background: rgba(16, 185, 129, 0.15); color: #10b981; font-family: ui-monospace, monospace;">ACTIVE</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(13, 14, 16, 0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+            <div>
+              <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Strict Zero-Displacement Invariant</div>
+              <div style="font-size: 9.5px; color: var(--text-sub);">Hardware cursor position remains 100% untampered during synthetic background execution</div>
+            </div>
+            <span class="badge-tag" style="background: rgba(16, 185, 129, 0.15); color: #10b981; font-family: ui-monospace, monospace;">0.0px INVARIANT</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 5: Storage & Memory Content -->
+      <div id="settings-tab-storage-content" style="display: none; flex-direction: column; gap: 10px;">
+        <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">STORAGE FOOTPRINT & MAINTENANCE</span>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px;">
+            <div style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">WORKFLOWS REMEMBERED</div>
+            <div id="storage-workflow-count" style="font-size: 18px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main); margin-top: 4px;">4 Workflows</div>
+          </div>
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px;">
+            <div style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">RECORDINGS DISK FOOTPRINT</div>
+            <div id="storage-recordings-mb" style="font-size: 18px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main); margin-top: 4px;">12.0 MB</div>
+          </div>
+        </div>
+        <div style="display: flex; justify-content: flex-end;">
+          <button class="cancel-btn" id="clear-cache-btn" style="color: #08090a; background: #f5f6f8; font-weight: 600;">↺ Re-index & Clear Empty Caches</button>
+        </div>
+      </div>
+    </section>
 
     <!-- Execution Live Drawer (Shown dynamically during execution) -->
     <section class="execution-drawer" id="execution-drawer" style="display: none;">
@@ -608,6 +785,20 @@
       const demoDissectedPreview = document.getElementById("demo-dissected-preview");
       const modalCancelBtn = document.getElementById("modal-cancel-btn");
       const modalSaveBtn = document.getElementById("modal-save-btn");
+      const quotaPillBtn = document.getElementById("quota-pill-btn");
+      const quotaPillText = document.getElementById("quota-pill-text");
+      const quotaStatusDot = document.getElementById("quota-status-dot");
+      const usageLimitsDrawer = document.getElementById("usage-limits-drawer");
+      const resetQuotaBtn = document.getElementById("reset-quota-btn");
+      const chipLimitsBtn = document.getElementById("chip-limits-btn");
+      const settingsBtn = document.getElementById("settings-btn");
+      const closeSettingsBtn = document.getElementById("close-settings-btn");
+      const settingsApiKeyInput = document.getElementById("settings-api-key-input");
+      const testAiKeyBtn = document.getElementById("test-ai-key-btn");
+      const aiTestResult = document.getElementById("ai-test-result");
+      const clearCacheBtn = document.getElementById("clear-cache-btn");
+      const storageWorkflowCount = document.getElementById("storage-workflow-count");
+      const storageRecordingsMb = document.getElementById("storage-recordings-mb");
 
       const tones = ["vibrant", "concise", "zen", "developer"];
       const toneIcons = { vibrant: "🌟", concise: "⚡", zen: "🧘", developer: "💻" };
@@ -620,6 +811,260 @@
       let recordStartEpoch = 0;
       let backgroundMode = true; // Background execution by default
       let lastLearnedWorkflowId = null;
+
+      function updateUsageUI(usage, errorBanner) {
+        if (!usage) return;
+        const wt = usage.walkthrough || {};
+        const auto = usage.automation || {};
+        const gem = usage.gemini_api || {};
+
+        const wtRem = wt.remaining !== undefined ? wt.remaining : 25;
+        const wtLim = wt.daily_limit || 25;
+        const autoRem = auto.remaining !== undefined ? auto.remaining : 25;
+        const autoLim = auto.daily_limit || 25;
+
+        if (quotaPillText) {
+          quotaPillText.textContent = `🎓 ${wtRem}/${wtLim} • ⚡ ${autoRem}/${autoLim}`;
+        }
+        if (quotaStatusDot) {
+          const exhausted = wt.exhausted || auto.exhausted;
+          const low = wtRem <= 5 || autoRem <= 5 || gem.rate_limited;
+          quotaStatusDot.style.background = exhausted ? "#ef4444" : (low ? "#f59e0b" : "#10b981");
+        }
+        const resetTimerEl = document.getElementById("quota-reset-timer");
+        if (resetTimerEl && usage.reset_formatted) {
+          resetTimerEl.textContent = `RESETS IN ${usage.reset_formatted}`;
+        }
+        const wtRemEl = document.getElementById("wt-remaining-count");
+        if (wtRemEl) wtRemEl.textContent = String(wtRem);
+        const wtLimEl = document.getElementById("wt-daily-limit");
+        if (wtLimEl) wtLimEl.textContent = `/ ${wtLim} USES LEFT`;
+        const wtUsedEl = document.getElementById("wt-used-label");
+        if (wtUsedEl) wtUsedEl.textContent = `${wt.used || 0} USED TODAY`;
+        const wtBar = document.getElementById("wt-quota-bar");
+        if (wtBar) wtBar.style.width = `${Math.max(2, Math.round((wtRem / Math.max(1, wtLim)) * 100))}%`;
+        const wtStatus = document.getElementById("wt-quota-status");
+        if (wtStatus) wtStatus.textContent = wt.exhausted ? "LIMIT REACHED" : (wtRem <= 5 ? "LOW QUOTA" : "AVAILABLE");
+        const wtBreak = document.getElementById("wt-breakdown-text");
+        if (wtBreak) wtBreak.textContent = `AI: ${wt.cloud_ai_used || 0} • Local: ${wt.local_used || 0} • ${wt.rpm_used || 0}/${wt.rpm_limit || 5} RPM`;
+
+        const autoRemEl = document.getElementById("auto-remaining-count");
+        if (autoRemEl) autoRemEl.textContent = String(autoRem);
+        const autoLimEl = document.getElementById("auto-daily-limit");
+        if (autoLimEl) autoLimEl.textContent = `/ ${autoLim} USES LEFT`;
+        const autoUsedEl = document.getElementById("auto-used-label");
+        if (autoUsedEl) autoUsedEl.textContent = `${auto.used || 0} USED TODAY`;
+        const autoBar = document.getElementById("auto-quota-bar");
+        if (autoBar) autoBar.style.width = `${Math.max(2, Math.round((autoRem / Math.max(1, autoLim)) * 100))}%`;
+        const autoStatus = document.getElementById("auto-quota-status");
+        if (autoStatus) autoStatus.textContent = auto.exhausted ? "LIMIT REACHED" : (autoRem <= 5 ? "LOW QUOTA" : "AVAILABLE");
+        const autoBreak = document.getElementById("auto-breakdown-text");
+        if (autoBreak) autoBreak.textContent = `AI: ${auto.cloud_ai_used || 0} • Local: ${auto.local_used || 0} • ${auto.rpm_used || 0}/${auto.rpm_limit || 5} RPM`;
+
+        const gemText = document.getElementById("gemini-telemetry-text");
+        if (gemText) {
+          gemText.textContent = `✨ GEMINI FREE API: ${gem.active_model || "gemini-2.5-flash"} • BURST: ${gem.rpm_used || 0}/${gem.rpm_limit || 15} RPM • CALLS TODAY: ${gem.calls_today || 0}/${gem.daily_limit || 250}`;
+        }
+        const gemBadge = document.getElementById("gemini-health-badge");
+        if (gemBadge) {
+          gemBadge.textContent = gem.rate_limited ? `429 COOLDOWN (${gem.cooldown_seconds || 0}s)` : "PROTECTED • LOCAL FALLBACK READY";
+        }
+        const warnBanner = document.getElementById("quota-warning-banner");
+        if (warnBanner) {
+          if (errorBanner || wt.exhausted || auto.exhausted) {
+            warnBanner.style.display = "block";
+            warnBanner.textContent = "⚠️ " + (errorBanner || "Daily feature usage limit reached. Resets at midnight or click Reset Quota.");
+          } else {
+            warnBanner.style.display = "none";
+          }
+        }
+      }
+
+      function toggleSettingsDrawer(show) {
+        if (!usageLimitsDrawer) return;
+        const isOpen = usageLimitsDrawer.style.display !== "none";
+        const nextState = show !== undefined ? show : !isOpen;
+        usageLimitsDrawer.style.display = nextState ? "flex" : "none";
+        if (nextState) {
+          if (searchInput) {
+            searchInput.value = "";
+            searchInput.placeholder = "Settings & Preferences";
+          }
+          fetchStorageInfo();
+        } else {
+          if (searchInput && searchInput.placeholder === "Settings & Preferences") {
+            searchInput.placeholder = "Search actions, workflows or teach...";
+          }
+        }
+      }
+
+      if (settingsBtn) {
+        settingsBtn.addEventListener("click", () => toggleSettingsDrawer());
+      }
+      if (closeSettingsBtn) {
+        closeSettingsBtn.addEventListener("click", () => toggleSettingsDrawer(false));
+      }
+      if (quotaPillBtn) {
+        quotaPillBtn.addEventListener("click", () => toggleSettingsDrawer());
+      }
+      if (chipLimitsBtn) {
+        chipLimitsBtn.addEventListener("click", () => {
+          if (searchInput) {
+            searchInput.value = "";
+          }
+          toggleSettingsDrawer(true);
+          switchSettingsTab("usage");
+        });
+      }
+      if (resetQuotaBtn) {
+        resetQuotaBtn.addEventListener("click", async () => {
+          try {
+            const res = await fetch("/api/usage/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then(r => r.json());
+            if (res && res.usage) updateUsageUI(res.usage);
+          } catch (e) {}
+        });
+      }
+
+      // Settings Tabs Switching
+      const tabButtons = document.querySelectorAll(".tab-btn");
+      const tabContents = {
+        usage: document.getElementById("settings-tab-usage-content"),
+        ai: document.getElementById("settings-tab-ai-content"),
+        walkthrough: document.getElementById("settings-tab-walkthrough-content"),
+        safety: document.getElementById("settings-tab-safety-content"),
+        storage: document.getElementById("settings-tab-storage-content"),
+      };
+
+      tabButtons.forEach(btn => {
+        btn.addEventListener("click", () => {
+          const tabKey = btn.dataset.tab;
+          switchSettingsTab(tabKey);
+        });
+      });
+
+      function switchSettingsTab(tabKey) {
+        if (searchInput) {
+          searchInput.value = "";
+        }
+        tabButtons.forEach(b => {
+          if (b.dataset.tab === tabKey) {
+            b.classList.add("active");
+            b.style.background = "#f5f6f8";
+            b.style.color = "#08090a";
+            b.style.border = "none";
+          } else {
+            b.classList.remove("active");
+            b.style.background = "rgba(245, 246, 248, 0.06)";
+            b.style.color = "var(--text-muted)";
+            b.style.border = "1px solid var(--border-subtle)";
+          }
+        });
+        Object.keys(tabContents).forEach(key => {
+          if (tabContents[key]) {
+            tabContents[key].style.display = key === tabKey ? "flex" : "none";
+          }
+        });
+        if (tabKey === "storage") {
+          fetchStorageInfo();
+        }
+      }
+
+      // Model Selection Cards
+      document.querySelectorAll(".model-card").forEach(card => {
+        card.addEventListener("click", async () => {
+          const model = card.dataset.model;
+          document.querySelectorAll(".model-card").forEach(c => {
+            c.classList.remove("active");
+            c.style.background = "rgba(13, 14, 16, 0.85)";
+            c.style.borderColor = "var(--border-subtle)";
+          });
+          card.classList.add("active");
+          card.style.background = "rgba(245, 246, 248, 0.08)";
+          card.style.borderColor = "var(--accent)";
+
+          try {
+            await fetch("/api/ai/config", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: model }),
+            });
+            const statusRes = await fetch("/api/status").then(r => r.json());
+            if (statusRes && statusRes.usage) updateUsageUI(statusRes.usage);
+          } catch (e) {
+            console.error("AI model config error:", e);
+          }
+        });
+      });
+
+      // AI Test Connection Button
+      if (testAiKeyBtn) {
+        testAiKeyBtn.addEventListener("click", async () => {
+          testAiKeyBtn.disabled = true;
+          testAiKeyBtn.textContent = "Testing...";
+          if (aiTestResult) aiTestResult.style.display = "none";
+          try {
+            const key = settingsApiKeyInput ? settingsApiKeyInput.value.trim() : "";
+            if (key) {
+              await fetch("/api/ai/config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ api_key: key }),
+              });
+            }
+            const res = await fetch("/api/ai/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then(r => r.json());
+            if (aiTestResult) {
+              aiTestResult.style.display = "block";
+              if (res.success) {
+                aiTestResult.style.color = "#10b981";
+                aiTestResult.textContent = `✓ Connected to ${res.model || "Gemini"} (${res.latency_ms || 24}ms latency)`;
+              } else {
+                aiTestResult.style.color = "#ef4444";
+                aiTestResult.textContent = `✗ Connection failed: ${res.error || "Invalid response"}`;
+              }
+            }
+          } catch (e) {
+            if (aiTestResult) {
+              aiTestResult.style.display = "block";
+              aiTestResult.style.color = "#ef4444";
+              aiTestResult.textContent = `✗ Connection test error: ${e.message}`;
+            }
+          } finally {
+            testAiKeyBtn.disabled = false;
+            testAiKeyBtn.textContent = "Test Connection";
+          }
+        });
+      }
+
+      // Storage Maintenance
+      async function fetchStorageInfo() {
+        try {
+          const res = await fetch("/api/system/storage").then(r => r.json());
+          if (res && res.success) {
+            if (storageWorkflowCount) storageWorkflowCount.textContent = `${res.workflows !== undefined ? res.workflows : workflows.length} Workflows`;
+            if (storageRecordingsMb) storageRecordingsMb.textContent = `${res.recordings_size_mb || 0} MB`;
+          }
+        } catch (e) {}
+      }
+
+      if (clearCacheBtn) {
+        clearCacheBtn.addEventListener("click", async () => {
+          clearCacheBtn.disabled = true;
+          clearCacheBtn.textContent = "Clearing...";
+          try {
+            const res = await fetch("/api/system/cache/clear", { method: "POST" }).then(r => r.json());
+            if (res && res.success && res.storage) {
+              if (storageWorkflowCount) storageWorkflowCount.textContent = `${res.storage.workflows || 0} Workflows`;
+              if (storageRecordingsMb) storageRecordingsMb.textContent = `${res.storage.recordings_size_mb || 0} MB`;
+              addCommentaryMessage(`🧹 Storage maintenance complete. Removed ${res.removed_directories || 0} orphaned directories.`);
+            }
+          } catch (e) {
+            console.error("Clear cache error:", e);
+          } finally {
+            clearCacheBtn.disabled = false;
+            clearCacheBtn.textContent = "↺ Re-index & Clear Empty Caches";
+          }
+        });
+      }
 
       // 1. Initial Data Fetch
       async function init() {
@@ -645,6 +1090,9 @@
         isExecuting = status.status === "executing";
         statusDot.className = "status-dot " + (isExecuting ? "executing" : "");
         statusText.textContent = isExecuting ? "Executing" : "Idle";
+        if (status.usage) {
+          updateUsageUI(status.usage);
+        }
 
         if (status.tone) {
           currentToneIdx = Math.max(0, tones.indexOf(status.tone));
@@ -710,6 +1158,11 @@
               addCommentaryMessage(data.text);
             } else if (data.type === "cursor") {
               vcTelemetryPill.textContent = `🎯 VC: (${data.x}, ${data.y}) ${data.state.toUpperCase()}`;
+            } else if (data.type === "usage") {
+              updateUsageUI(data.usage || data, data.error);
+              if (data.limit_reached && usageLimitsDrawer) {
+                usageLimitsDrawer.style.display = "flex";
+              }
             } else if (data.type === "connected") {
               updateStatus(data.status);
             }
@@ -1049,6 +1502,12 @@
           return;
         }
 
+        if ((ev.metaKey || ev.ctrlKey) && ev.key === ",") {
+          ev.preventDefault();
+          toggleSettingsDrawer();
+          return;
+        }
+
         const items = resultsContainer.querySelectorAll(".workflow-item");
         if (ev.key === "ArrowDown") {
           ev.preventDefault();
@@ -1071,6 +1530,10 @@
             executeByQuery(searchInput.value.trim());
           }
         } else if (ev.key === "Escape") {
+          if (usageLimitsDrawer && usageLimitsDrawer.style.display !== "none") {
+            toggleSettingsDrawer(false);
+            return;
+          }
           searchInput.value = "";
           renderWorkflows(workflows);
         }

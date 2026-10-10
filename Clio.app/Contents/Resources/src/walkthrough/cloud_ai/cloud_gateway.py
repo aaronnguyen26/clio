@@ -29,13 +29,17 @@ Each step must specify:
 1. title: Short title of the instructional step.
 2. instruction: Clear, imperative pedagogical instruction.
 3. explanation: Why this step is taken.
-4. action_type: One of 'move_and_hover', 'demonstrate_click', 'wait_for_user_click', 'demonstrate_hotkey', 'demonstrate_type', 'pulse_beacon', 'highlight_region'.
+4. action_type: One of 'move_and_hover', 'demonstrate_click', 'demonstrate_double_click', 'demonstrate_right_click', 'demonstrate_drag', 'demonstrate_scroll', 'wait_for_user_click', 'demonstrate_hotkey', 'demonstrate_type', 'pulse_beacon', 'highlight_region'.
 5. target_app: Target macOS application name.
 6. target_element: Optional dict with 'role' and 'title'.
 7. hotkey_combo: Optional list of strings for keyboard shortcuts (e.g. ['command', 'space']).
 8. text_to_type: Optional string if text is entered.
 9. fallback_screen_coords: Approximate screen (x, y) if known.
 10. spotlight_bounds: Approximate (x, y, width, height) bounding box.
+CRITICAL GRANULARITY RULES:
+- Never skip intermediate UI menus or dialogs. Each step must represent ONE visible UI action:
+  * When using the Apple menu (), Step 1 MUST click the Apple icon (role='AXMenuBarItem', title='Apple', fallback_screen_coords=[18, 12]), and Step 2 MUST click the dropdown item (role='AXMenuItem', e.g. title='System Settings...' at [80, 86] or title='About This Mac' at [80, 40]).
+  * When using Spotlight (Command + Space), Step 1 MUST press ['command', 'space'] (action_type='demonstrate_hotkey', target_app='Spotlight'), Step 2 MUST type the query (action_type='demonstrate_type', text_to_type='...', target_app='Spotlight'), and Step 3 MUST press Return or select the result.
 Return strictly valid JSON conforming to the schema."""
 
 WALKTHROUGH_RESPONSE_SCHEMA: Dict[str, Any] = {
@@ -164,8 +168,24 @@ class CloudAIWalkthroughGateway:
                     "ax_title": step_elem.get("title", ""),
                 }
 
+            step_title = s.get("title", f"Step {idx}")
+            step_inst = s.get("instruction", "")
+            combined_l = f"{step_title} {step_inst}".lower()
+            elem_title_l = (elem_query.get("ax_title", "") if elem_query else "").lower()
+
             coords = s.get("fallback_screen_coords")
-            t_coords = tuple(coords) if coords and len(coords) == 2 else (640.0, 400.0)
+            if coords and len(coords) == 2:
+                t_coords = (float(coords[0]), float(coords[1]))
+            elif "about this mac" in combined_l or "about this mac" in elem_title_l:
+                t_coords = (80.0, 40.0)
+            elif "system settings" in elem_title_l and (elem_query or {}).get("ax_role", "").lower() == "axmenuitem":
+                t_coords = (80.0, 86.0)
+            elif ("apple" in combined_l or "" in combined_l) and idx == 1:
+                t_coords = (18.0, 12.0)
+            elif "spotlight" in combined_l or (s.get("target_app") or "").lower() == "spotlight":
+                t_coords = (640.0, 280.0)
+            else:
+                t_coords = (640.0, 400.0)
 
             bounds = s.get("spotlight_bounds")
             t_bounds = tuple(bounds) if bounds and len(bounds) == 4 else None
@@ -173,14 +193,16 @@ class CloudAIWalkthroughGateway:
             steps.append(
                 WalkthroughStep(
                     step_index=idx,
-                    title=s.get("title", f"Step {idx}"),
-                    instruction=s.get("instruction", ""),
+                    title=step_title,
+                    instruction=step_inst,
                     explanation=s.get("explanation", ""),
                     action_type=action_type,
                     target_app=s.get("target_app", target_app),
                     target_element_query=elem_query,
-                    hotkey_combo=s.get("hotkey_combo"),
+                    hotkey_combo=s.get("hotkey_combo") or s.get("hotkey"),
                     text_to_type=s.get("text_to_type"),
+                    drag_target_coords=tuple(s.get("drag_target_coords")) if s.get("drag_target_coords") and len(s.get("drag_target_coords")) == 2 else None,
+                    scroll_delta=tuple(s.get("scroll_delta")) if s.get("scroll_delta") and len(s.get("scroll_delta")) == 2 else None,
                     fallback_screen_coords=t_coords,
                     spotlight_bounds=t_bounds,
                 )

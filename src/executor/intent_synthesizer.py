@@ -577,29 +577,342 @@ class DynamicIntentSynthesizer:
             steps=steps,
         )
 
+    # -------------------------------------------------------------------------
+    # Cursor Movement Intent
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def is_cursor_move_intent(cls, query: str) -> bool:
+        """Determines if query represents moving the mouse / virtual cursor."""
+        q = query.strip().lower()
+        return bool(re.search(r"\b(?:move cursor|move mouse|cursor to|mouse to|center cursor|center mouse|reset cursor|cursor|mouse pointer)\b", q))
+
+    @classmethod
+    def synthesize_cursor_move_workflow(cls, query: str) -> WorkflowSpec:
+        """Builds a WorkflowSpec to smoothly navigate the cursor to coordinates or screen positions."""
+        q = query.strip().lower()
+        target_x, target_y = 720.0, 450.0  # Default screen center
+        desc = "Move cursor to screen center"
+
+        # Check explicit coordinates (e.g. "move cursor to 500, 300" or "(500, 300)")
+        coord_match = re.search(r"(\d{1,5})\s*[,x\s]\s*(\d{1,5})", q)
+        if coord_match:
+            target_x = float(coord_match.group(1))
+            target_y = float(coord_match.group(2))
+            desc = f"Move cursor to ({int(target_x)}, {int(target_y)})"
+        elif "top left" in q or "top-left" in q:
+            target_x, target_y = 60.0, 60.0
+            desc = "Move cursor to top-left"
+        elif "top right" in q or "top-right" in q:
+            target_x, target_y = 1380.0, 60.0
+            desc = "Move cursor to top-right"
+        elif "bottom left" in q or "bottom-left" in q:
+            target_x, target_y = 60.0, 840.0
+            desc = "Move cursor to bottom-left"
+        elif "bottom right" in q or "bottom-right" in q:
+            target_x, target_y = 1380.0, 840.0
+            desc = "Move cursor to bottom-right"
+        elif "top" in q:
+            target_x, target_y = 720.0, 60.0
+            desc = "Move cursor to top"
+        elif "bottom" in q:
+            target_x, target_y = 720.0, 840.0
+            desc = "Move cursor to bottom"
+
+        spec_id = f"move_cursor_{uuid.uuid4().hex[:8]}"
+        steps = [
+            WorkflowStep(
+                step_id="step_move_cursor",
+                order=1,
+                description=desc,
+                action=ActionType.MOVE_MOUSE,
+                coordinates=TargetCoordinates(mode=CoordMode.SCREEN_ABSOLUTE, abs_x=target_x, abs_y=target_y),
+                timing={"pre_delay_ms": 50, "post_delay_ms": 150},
+            )
+        ]
+        return WorkflowSpec(
+            id=spec_id,
+            name=desc,
+            description=f"Smoothly guides the cursor to ({int(target_x)}, {int(target_y)}).",
+            triggers={"canonical": "move cursor", "aliases": [q]},
+            steps=steps,
+        )
+
+    # -------------------------------------------------------------------------
+    # Window Switching & Swiping Intent
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def is_window_switch_intent(cls, query: str) -> bool:
+        """Determines if query represents switching or swiping between windows/spaces."""
+        q = query.strip().lower()
+        return bool(re.search(r"\b(?:swipe between (?:the )?windows?|switch windows?|switch between windows?|cycle windows?|next window|previous window|swipe window|swipe spaces?|switch space|swipe desktops?|switch apps?|switch applications?|switch between apps?|mission control|show all windows)\b", q))
+
+    @classmethod
+    def synthesize_window_switch_workflow(cls, query: str) -> WorkflowSpec:
+        """Builds a WorkflowSpec to switch or swipe between windows/spaces using native shortcuts."""
+        q = query.strip().lower()
+        spec_id = f"window_switch_{uuid.uuid4().hex[:8]}"
+
+        if "mission control" in q or "show all windows" in q or "all windows" in q:
+            hotkey = ["ctrl", "up"]
+            desc = "Activate Mission Control"
+        elif ("left" in q and ("swipe" in q or "space" in q or "desktop" in q)) or "previous space" in q:
+            hotkey = ["ctrl", "left"]
+            desc = "Swipe to previous desktop space"
+        elif ("right" in q and ("swipe" in q or "space" in q or "desktop" in q)) or "next space" in q:
+            hotkey = ["ctrl", "right"]
+            desc = "Swipe to next desktop space"
+        elif "switch app" in q or "switch application" in q or "switch between apps" in q or "app" in q or "cmd tab" in q:
+            hotkey = ["cmd", "tab"]
+            desc = "Switch to next application via Cmd+Tab"
+        elif "previous window" in q or "back" in q:
+            hotkey = ["cmd", "shift", "`"]
+            desc = "Switch to previous window"
+        else:
+            # Default "swipe between the window" / "switch window"
+            hotkey = ["cmd", "`"]
+            desc = "Switch between windows via Cmd+`"
+
+        steps = [
+            WorkflowStep(
+                step_id="step_window_switch_hotkey",
+                order=1,
+                description=desc,
+                action=ActionType.PRESS_HOTKEY,
+                payload={"keys": hotkey},
+                timing={"pre_delay_ms": 100, "post_delay_ms": 300},
+            )
+        ]
+        return WorkflowSpec(
+            id=spec_id,
+            name=desc,
+            description=f"Performs macOS window switching using {hotkey}.",
+            triggers={"canonical": "switch window", "aliases": [q]},
+            steps=steps,
+        )
+
+    # -------------------------------------------------------------------------
+    # Mouse & Button Click Intent
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def is_click_intent(cls, query: str) -> bool:
+        """Determines if query is requesting to click a button or click the mouse."""
+        q = query.strip().lower()
+        if re.search(r"\b(?:double\s+click|right\s+click|left\s+click)\b", q):
+            return True
+        if re.match(r"^(?:please\s+)?(?:click|press|tap)\s*(?:the\s+)?(?:button|here|mouse)?\s*$", q):
+            return True
+        if re.search(r"^(?:please\s+)?(?:click|press)\s+(?:the\s+)?([a-zA-Z0-9\s_\-\.]{1,30}?)(?:\s+button)?$", q):
+            return True
+        return False
+
+    @classmethod
+    def synthesize_click_workflow(cls, query: str) -> WorkflowSpec:
+        """Builds a WorkflowSpec to click at current position or target a specific UI button."""
+        q = query.strip()
+        q_lower = q.lower()
+        spec_id = f"click_{uuid.uuid4().hex[:8]}"
+
+        if "double click" in q_lower:
+            action = ActionType.DOUBLE_CLICK
+            desc = "Double click at current position"
+            target = None
+        elif "right click" in q_lower:
+            action = ActionType.RIGHT_CLICK
+            desc = "Right click at current position"
+            target = None
+        else:
+            action = ActionType.CLICK
+            # Check for button name
+            btn_match = re.search(r"^(?:please\s+)?(?:click|press)\s+(?:the\s+)?(?:button\s+)?(.+?)(?:\s+button)?$", q, re.IGNORECASE)
+            btn_name = ""
+            if btn_match:
+                candidate = btn_match.group(1).strip()
+                if candidate.lower() not in ("here", "mouse", "button", "now", "it"):
+                    btn_name = candidate
+
+            if btn_name:
+                desc = f"Click button '{btn_name}'"
+                target = {
+                    "tri_factor_anchor": {
+                        "factor_1_ax": {
+                            "ax_role": "AXButton",
+                            "ax_title": btn_name,
+                        }
+                    }
+                }
+            else:
+                desc = "Click at current position"
+                target = None
+
+        step = WorkflowStep(
+            step_id="step_click_action",
+            order=1,
+            description=desc,
+            action=action,
+            target=target,
+            timing={"pre_delay_ms": 50, "post_delay_ms": 150},
+        )
+        return WorkflowSpec(
+            id=spec_id,
+            name=desc,
+            description=f"Executes {desc} using Clio's actuator.",
+            triggers={"canonical": "click", "aliases": [q_lower]},
+            steps=[step],
+        )
+
+    # -------------------------------------------------------------------------
+    # Spotlight & Finder Search Intents
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def is_spotlight_search_intent(cls, query: str) -> bool:
+        """Determines if query is requesting Spotlight search on macOS."""
+        q = query.strip().lower()
+        return bool(re.search(r"\b(?:spotlight|search spotlight|spotlight search|search mac)\b", q))
+
+    @classmethod
+    def synthesize_spotlight_workflow(cls, query: str) -> WorkflowSpec:
+        """Builds a WorkflowSpec to invoke Spotlight and perform system search."""
+        clean = query.strip()
+        clean = re.sub(r"^(?:please\s+)?(?:search\s+(?:spotlight\s+for|mac\s+for)?|spotlight\s+(?:search\s+for|search)?)\s*", "", clean, flags=re.IGNORECASE).strip()
+        clean = clean.strip("'\"")
+        spec_id = f"spotlight_{uuid.uuid4().hex[:8]}"
+        steps = [
+            WorkflowStep(
+                step_id="step_spotlight_hotkey",
+                order=1,
+                description="Invoke Spotlight via Cmd+Space",
+                action=ActionType.PRESS_HOTKEY,
+                payload={"keys": ["cmd", "space"]},
+                timing={"pre_delay_ms": 50, "post_delay_ms": 300},
+            ),
+        ]
+        if clean:
+            steps.append(
+                WorkflowStep(
+                    step_id="step_spotlight_type",
+                    order=2,
+                    description=f"Type '{clean}' into Spotlight",
+                    action=ActionType.TYPE_TEXT,
+                    payload={"text": clean, "interval": 0.02},
+                    timing={"pre_delay_ms": 100, "post_delay_ms": 200},
+                )
+            )
+            steps.append(
+                WorkflowStep(
+                    step_id="step_spotlight_enter",
+                    order=3,
+                    description="Press Return to open top result",
+                    action=ActionType.PRESS_HOTKEY,
+                    payload={"keys": ["enter"]},
+                    timing={"pre_delay_ms": 100, "post_delay_ms": 100},
+                )
+            )
+        return WorkflowSpec(
+            id=spec_id,
+            name=f"Spotlight Search: {clean or 'Open'}",
+            description=f"Invokes macOS Spotlight and searches for '{clean}'.",
+            triggers={"canonical": f"spotlight {clean.lower()}", "aliases": [query.lower()]},
+            steps=steps,
+        )
+
+    @classmethod
+    def is_finder_search_intent(cls, query: str) -> bool:
+        """Determines if query is requesting to search for files in Finder."""
+        q = query.strip().lower()
+        return bool(re.search(r"\b(?:search finder|finder search|find file|find files|search for file|search for files|search file|search files|in finder)\b", q))
+
+    @classmethod
+    def synthesize_finder_search_workflow(cls, query: str) -> WorkflowSpec:
+        """Builds a WorkflowSpec to search files in macOS Finder."""
+        clean = query.strip()
+        clean = re.sub(r"^(?:please\s+)?(?:search\s+(?:finder\s+for|for\s+files?|files?\s+for)?|find\s+files?\s+(?:named|called)?)\s*", "", clean, flags=re.IGNORECASE).strip()
+        clean = re.sub(r"\s+in\s+finder$", "", clean, flags=re.IGNORECASE).strip()
+        clean = clean.strip("'\"")
+        spec_id = f"finder_search_{uuid.uuid4().hex[:8]}"
+        steps = [
+            WorkflowStep(
+                step_id="step_launch_finder",
+                order=1,
+                description="Activate Finder",
+                action=ActionType.LAUNCH_APP,
+                payload={"app": "Finder", "bundle_id": "com.apple.finder"},
+                timing={"pre_delay_ms": 50, "post_delay_ms": 300},
+            ),
+            WorkflowStep(
+                step_id="step_finder_search_hotkey",
+                order=2,
+                description="Trigger Finder search via Cmd+F",
+                action=ActionType.PRESS_HOTKEY,
+                payload={"keys": ["cmd", "f"]},
+                timing={"pre_delay_ms": 100, "post_delay_ms": 200},
+            ),
+        ]
+        if clean:
+            steps.append(
+                WorkflowStep(
+                    step_id="step_finder_type",
+                    order=3,
+                    description=f"Type '{clean}' into Finder search field",
+                    action=ActionType.TYPE_TEXT,
+                    payload={"text": clean, "interval": 0.02},
+                    timing={"pre_delay_ms": 100, "post_delay_ms": 200},
+                )
+            )
+        return WorkflowSpec(
+            id=spec_id,
+            name=f"Finder Search: {clean or 'Files'}",
+            description=f"Searches files in Finder for '{clean}'.",
+            triggers={"canonical": f"search finder {clean.lower()}", "aliases": [query.lower()]},
+            steps=steps,
+        )
+
     @classmethod
     def parse_intent(cls, query: str) -> Optional[WorkflowSpec]:
         """Main entry point: translates query into an on-the-fly executable WorkflowSpec."""
         if not query or not query.strip():
             return None
 
-        # 1. Search intent (Google, YouTube, GitHub, Reddit, Wikipedia, web search)
+        # 1. Cursor movement intent (e.g. "move cursor to center", "move cursor to 500, 300")
+        if cls.is_cursor_move_intent(query):
+            return cls.synthesize_cursor_move_workflow(query)
+
+        # 2. Window switching / swiping intent (e.g. "swipe between the window", "switch window")
+        if cls.is_window_switch_intent(query):
+            return cls.synthesize_window_switch_workflow(query)
+
+        # 3. Mouse & Button clicking intent (e.g. "click", "click button Submit", "double click")
+        if cls.is_click_intent(query):
+            return cls.synthesize_click_workflow(query)
+
+        # 4. Spotlight search intent (e.g. "spotlight search notes", "search mac for...")
+        if cls.is_spotlight_search_intent(query):
+            return cls.synthesize_spotlight_workflow(query)
+
+        # 5. Finder search intent (e.g. "search finder for documents", "find files...")
+        if cls.is_finder_search_intent(query):
+            return cls.synthesize_finder_search_workflow(query)
+
+        # 6. Web Search intent (Google, YouTube, GitHub, Reddit, Wikipedia, web search)
         if cls.is_search_intent(query):
             return cls.synthesize_search_workflow(query)
 
-        # 2. Writing intent (Notes, TextEdit, text typing/drafting)
+        # 7. Writing intent (Notes, TextEdit, text typing/drafting)
         if cls.is_write_intent(query):
             return cls.synthesize_writing_workflow(query)
 
-        # 3. Browser tab intent
+        # 8. Browser tab intent
         if cls.is_browser_tab_intent(query):
             return cls.synthesize_browser_tab_workflow(query)
 
-        # 4. App open intent
+        # 9. App open intent
         if cls.is_app_open_intent(query):
             return cls.synthesize_app_open_workflow(query)
 
-        # 5. Direct app name (e.g. user just types "Safari", "Chrome", "Notes", "Calculator")
+        # 10. Direct app name (e.g. user just types "Safari", "Chrome", "Notes", "Calculator")
         resolved = SystemAppRegistry.resolve_app(query)
         if resolved:
             return cls.synthesize_app_open_workflow(f"open {resolved['name']}")

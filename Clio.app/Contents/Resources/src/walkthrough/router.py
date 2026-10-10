@@ -24,11 +24,19 @@ from src.walkthrough.templates import BuiltinWalkthroughCatalog
 logger = logging.getLogger(__name__)
 
 
+_last_desktop_ctx: Tuple[float, Dict[str, Any]] = (0.0, {})
+
 def get_desktop_context() -> Dict[str, Any]:
     """Sniffs lean, non-sensitive desktop context for local plan tailoring.
 
     Never extracts screen pixels or PII. Provides OS version and active application.
+    Caches active app for 0.5s to provide instant 0ms responses.
     """
+    global _last_desktop_ctx
+    now = time.time()
+    if now - _last_desktop_ctx[0] < 0.5 and _last_desktop_ctx[1]:
+        return dict(_last_desktop_ctx[1])
+
     ctx: Dict[str, Any] = {
         "os_version": platform.mac_ver()[0] if sys.platform == "darwin" else "macOS",
         "active_app": "Finder",
@@ -37,11 +45,12 @@ def get_desktop_context() -> Dict[str, Any]:
     if sys.platform == "darwin":
         try:
             script = 'tell application "System Events" to get name of first process whose frontmost is true'
-            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=1.0)
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=0.25)
             if res.returncode == 0 and res.stdout.strip():
                 ctx["active_app"] = res.stdout.strip()
         except Exception as e:
             logger.debug("Failed to detect active app via osascript: %s", e)
+    _last_desktop_ctx = (now, ctx)
     return ctx
 
 

@@ -66,12 +66,20 @@ class OfflineWalkthroughDissector:
             steps = cls._generate_disk_utility_steps(clean_q, target_app)
         elif app_category == "textedit":
             steps = cls._generate_textedit_steps(clean_q, target_app)
+        elif app_category == "system_information":
+            steps = cls._generate_system_information_steps(clean_q, target_app)
         elif app_category == "system_settings":
             steps = cls._generate_settings_steps(clean_q, target_app)
         elif app_category == "finder":
             steps = cls._generate_finder_steps(clean_q, target_app)
         elif app_category == "system_utility":
             steps = cls._generate_system_utility_steps(clean_q, target_app)
+        elif app_category == "cursor_navigation":
+            steps = cls._generate_cursor_navigation_steps(clean_q, target_app)
+        elif app_category == "window_management":
+            steps = cls._generate_window_management_steps(clean_q, target_app)
+        elif app_category == "button_click":
+            steps = cls._generate_button_click_steps(clean_q, target_app)
         else:
             steps = cls._generate_general_app_steps(clean_q, target_app)
 
@@ -157,7 +165,7 @@ class OfflineWalkthroughDissector:
             return "Music", "music"
 
         # 9. Maps
-        if has(q, ("maps", "directions", "route", "navigate to", "location", "address", "map")):
+        if has(q, ("maps", "directions", "route", "location", "address", "map")):
             return "Maps", "maps"
 
         # 10. Calendar
@@ -172,7 +180,41 @@ class OfflineWalkthroughDissector:
         if has(q, ("textedit", "word processor", "draft document", "text file", "notepad")):
             return "TextEdit", "textedit"
 
-        # 13. System Settings & Subpanes
+        # 12b. System Information / About This Mac
+        if has(q, ("system information", "system info", "about this mac", "system report", "mac specs", "hardware info")):
+            return "System Information", "system_information"
+
+        # 13. Cursor & Pointer Navigation
+        if has(q, ("cursor", "mouse pointer", "move cursor", "move mouse", "pointer", "cursor navigation")):
+            return "Finder", "cursor_navigation"
+
+        # 14. Window Management, Moving & Switching Between Windows
+        if has(
+            q,
+            (
+                "move between windows",
+                "move between window",
+                "move between the windows",
+                "switch between windows",
+                "switch between window",
+                "swipe window",
+                "swipe between",
+                "switch window",
+                "switch windows",
+                "cycle window",
+                "cycle windows",
+                "swipe desktop",
+                "swipe spaces",
+                "swipe between the window",
+            ),
+        ):
+            return "Finder", "window_management"
+
+        # 15. Interactive Controls & Button Clicking
+        if has(q, ("click button", "click buttons", "click", "double click", "right click", "how to click")):
+            return "Finder", "button_click"
+
+        # 16. System Settings & Subpanes
         settings_keywords = (
             "settings", "preference", "preferences", "battery", "display", "displays", "screen resolution",
             "sound", "audio output", "volume", "trackpad", "mouse speed", "keyboard", "bluetooth",
@@ -182,12 +224,12 @@ class OfflineWalkthroughDissector:
         if has(q, settings_keywords):
             return "System Settings", "system_settings"
 
-        # 14. Finder / Files
+        # 17. Finder / Files
         if has(q, ("finder", "file", "files", "folder", "folders", "desktop", "downloads", "documents", "trash", "bin", "directory", "external disk", "external drive")):
             return "Finder", "finder"
 
-        # 15. System utilities
-        if has(q, ("mission control", "stage manager", "spotlight", "dock", "menu bar", "screenshot", "screen capture", "force quit", "sleep", "restart", "lock")):
+        # 18. System utilities & Command Bar
+        if has(q, ("mission control", "stage manager", "spotlight", "command bar", "open command bar", "use command bar", "dock", "menu bar", "screenshot", "screen capture", "force quit", "sleep", "restart", "lock")):
             return "System Utilities", "system_utility"
 
         # Check desktop context
@@ -210,13 +252,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Launch Terminal",
-                instruction="Open Terminal via Spotlight (Cmd+Space) or from Applications > Utilities.",
-                explanation="Terminal gives you direct command-line access to the underlying macOS UNIX core.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                title="Launch Terminal via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) to open Spotlight, or click Terminal in the Dock.",
+                explanation="Spotlight gives you instantaneous keyboard access to launch Terminal or any utility.",
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -270,13 +313,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Open Calculator",
-                instruction="Launch Calculator from Applications or Spotlight Search.",
+                title="Open Calculator via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) to search for and launch Calculator.",
                 explanation="Brings macOS Calculator to the front for quick mathematical operations.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -319,13 +363,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Open Notes",
-                instruction="Launch Apple Notes from your Dock or Spotlight.",
+                title="Open Notes via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) or click Notes in the Dock.",
                 explanation="Access your synced iCloud and local notes notebooks.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -367,13 +412,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Open Safari",
-                instruction="Focus Safari from the Dock or Cmd+Space Spotlight.",
+                title="Focus Safari",
+                instruction="Click Safari in your Dock or press ⌘ + Space (Command + Space).",
                 explanation="Brings the native macOS web browser to the foreground.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -410,13 +456,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Open Apple Mail",
-                instruction="Launch Mail from the Dock or Applications folder.",
+                title="Open Apple Mail via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) or click Mail in the Dock.",
                 explanation="Access unified mailboxes and email accounts.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -452,13 +499,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Launch Music",
-                instruction="Open the Music app from the Dock or Launchpad.",
+                title="Launch Music via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) or click Music in the Dock.",
                 explanation="Brings your Apple Music library and playlists into focus.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -499,13 +547,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Launch Apple Maps",
-                instruction="Open Maps from Applications or Spotlight.",
+                title="Launch Apple Maps via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) or click Maps in the Dock.",
                 explanation="Provides turn-by-turn routing and geographic exploration.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -543,13 +592,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Open Calendar",
-                instruction="Launch Calendar from your Dock or Applications folder.",
+                title="Open Calendar via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) or click Calendar in the Dock.",
                 explanation="Displays month, week, and day calendar schedules.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -585,13 +635,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Open Weather",
-                instruction="Launch Weather from the Applications folder or Spotlight.",
+                title="Open Weather via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) or click Weather in Applications.",
                 explanation="Displays current climate conditions, radar maps, and 10-day forecasts.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -627,13 +678,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Launch Activity Monitor",
-                instruction="Open Activity Monitor via Spotlight (Cmd+Space) or Applications > Utilities.",
+                title="Launch Activity Monitor via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) or open Activity Monitor from Utilities.",
                 explanation="Activity Monitor reveals real-time macOS resource utilization.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -670,13 +722,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Launch Disk Utility",
-                instruction="Open Disk Utility from Applications > Utilities or Spotlight.",
+                title="Launch Disk Utility via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) or open Disk Utility from Utilities.",
                 explanation="Disk Utility manages APFS containers, partitions, and storage health.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -713,13 +766,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Open TextEdit",
-                instruction="Launch TextEdit from Applications or Spotlight.",
+                title="Open TextEdit via Spotlight",
+                instruction="Press ⌘ + Space (Command + Space) or launch TextEdit from Applications.",
                 explanation="Standard macOS lightweight rich-text and plaintext editor.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -752,6 +806,63 @@ class OfflineWalkthroughDissector:
         ]
 
     @classmethod
+    def _generate_system_information_steps(cls, query: str, app: str) -> List[WalkthroughStep]:
+        return [
+            WalkthroughStep(
+                step_index=1,
+                title="Open Apple Menu ",
+                instruction="Click the Apple icon  in the top-left corner of your screen.",
+                explanation="The Apple menu provides direct access to About This Mac and System Information.",
+                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                target_app=app,
+                target_element_query={"ax_role": "AXMenuBarItem", "ax_title": "Apple"},
+                fallback_screen_coords=(18.0, 12.0),
+                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                pre_delay_seconds=0.4,
+                post_delay_seconds=1.2,
+            ),
+            WalkthroughStep(
+                step_index=2,
+                title="Select About This Mac",
+                instruction="Click 'About This Mac' from the Apple menu dropdown.",
+                explanation="Opens the overview window showing your Mac model, chip, memory, and macOS version.",
+                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                target_app=app,
+                target_element_query={"ax_role": "AXMenuItem", "ax_title": "About This Mac"},
+                fallback_screen_coords=(80.0, 40.0),
+                spotlight_bounds=(6.0, 30.0, 220.0, 22.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=1.2,
+            ),
+            WalkthroughStep(
+                step_index=3,
+                title="Click More Info...",
+                instruction="Click the 'More Info...' button inside the About This Mac window.",
+                explanation="Opens the detailed About section in System Settings with storage, display, and hardware specs.",
+                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                target_app=app,
+                target_element_query={"ax_role": "AXButton", "ax_title": "More Info..."},
+                fallback_screen_coords=(640.0, 500.0),
+                spotlight_bounds=(580.0, 480.0, 120.0, 32.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=1.2,
+            ),
+            WalkthroughStep(
+                step_index=4,
+                title="Open System Report",
+                instruction="Scroll down in About settings and click 'System Report...' to open full System Information.",
+                explanation="Launches the complete System Information utility detailing hardware, network, and software diagnostics.",
+                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                target_app=app,
+                target_element_query={"ax_role": "AXButton", "ax_title": "System Report..."},
+                fallback_screen_coords=(680.0, 720.0),
+                spotlight_bounds=(610.0, 700.0, 140.0, 32.0),
+                pre_delay_seconds=0.6,
+                post_delay_seconds=1.4,
+            ),
+        ]
+
+    @classmethod
     def _generate_settings_steps(cls, query: str, app: str) -> List[WalkthroughStep]:
         pane = "General"
         q_low = query.lower()
@@ -775,11 +886,12 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title="Open System Settings",
-                instruction="Click the Apple menu () > System Settings or open from the Dock.",
-                explanation="Access macOS system configuration preferences.",
+                title="Open Apple Menu ",
+                instruction="Click the Apple icon () in the top-left menu bar corner.",
+                explanation="Access macOS system configuration preferences directly from the system menu.",
                 action_type=TeachingAction.DEMONSTRATE_CLICK,
                 target_app="System Settings",
+                target_element_query={"ax_role": "AXMenuBarItem", "ax_title": "Apple"},
                 fallback_screen_coords=(18.0, 12.0),
                 spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
                 pre_delay_seconds=0.4,
@@ -787,6 +899,19 @@ class OfflineWalkthroughDissector:
             ),
             WalkthroughStep(
                 step_index=2,
+                title="Select System Settings",
+                instruction=f"Click 'System Settings...' in the Apple menu dropdown to open {pane} preferences.",
+                explanation="Launches the macOS System Settings window.",
+                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                target_app="System Settings",
+                target_element_query={"ax_role": "AXMenuItem", "ax_title": "System Settings..."},
+                fallback_screen_coords=(80.0, 86.0),
+                spotlight_bounds=(6.0, 75.0, 220.0, 22.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=3,
                 title=f"Select {pane} in Sidebar",
                 instruction=f"Scroll through the left navigation pane and click '{pane}'.",
                 explanation=f"Opens the '{pane}' preference panel.",
@@ -799,7 +924,7 @@ class OfflineWalkthroughDissector:
                 post_delay_seconds=0.8,
             ),
             WalkthroughStep(
-                step_index=3,
+                step_index=4,
                 title=f"Adjust {pane} Settings",
                 instruction=f"Configure options for '{query}' in the main details view.",
                 explanation="Applies immediate preference adjustments to your macOS user profile.",
@@ -827,12 +952,12 @@ class OfflineWalkthroughDissector:
             WalkthroughStep(
                 step_index=1,
                 title="Focus Finder",
-                instruction="Click anywhere on the Desktop or click the Finder icon in the Dock.",
-                explanation="Makes macOS Finder active for file management.",
+                instruction="Click anywhere on the Desktop background to make Finder the active application.",
+                explanation="Focusing Finder activates file operations and Desktop menu bars.",
                 action_type=TeachingAction.DEMONSTRATE_CLICK,
                 target_app="Finder",
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(300.0, 300.0),
+                spotlight_bounds=(100.0, 100.0, 400.0, 400.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -898,13 +1023,14 @@ class OfflineWalkthroughDissector:
         return [
             WalkthroughStep(
                 step_index=1,
-                title=f"Open {app}",
-                instruction=f"Open or switch to {app} via Spotlight or Dock.",
+                title=f"Open {app} via Spotlight",
+                instruction=f"Press ⌘ + Space (Command + Space) to search for and launch {app}.",
                 explanation=f"Brings {app} into active foreground focus.",
-                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "space"],
                 target_app=app,
-                fallback_screen_coords=(18.0, 12.0),
-                spotlight_bounds=(10.0, 2.0, 30.0, 20.0),
+                fallback_screen_coords=(640.0, 280.0),
+                spotlight_bounds=(400.0, 250.0, 480.0, 60.0),
                 pre_delay_seconds=0.4,
                 post_delay_seconds=0.8,
             ),
@@ -929,6 +1055,169 @@ class OfflineWalkthroughDissector:
                 target_app=app,
                 fallback_screen_coords=(520.0, 340.0),
                 spotlight_bounds=(420.0, 280.0, 220.0, 120.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=1.0,
+            ),
+        ]
+
+    @classmethod
+    def _generate_cursor_navigation_steps(cls, query: str, app: str) -> List[WalkthroughStep]:
+        return [
+            WalkthroughStep(
+                step_index=1,
+                title="Center Mouse Pointer",
+                instruction="Move the mouse pointer to the center of your screen display.",
+                explanation="Centering the cursor establishes a neutral reference point for screen navigation.",
+                action_type=TeachingAction.MOVE_AND_HOVER,
+                target_app=app,
+                fallback_screen_coords=(640.0, 400.0),
+                spotlight_bounds=(600.0, 360.0, 80.0, 80.0),
+                pre_delay_seconds=0.4,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=2,
+                title="Navigate to Top Menu Bar",
+                instruction="Move the cursor smoothly to the top macOS menu bar.",
+                explanation="The menu bar contains Apple menu controls, application menus, and menu bar extras.",
+                action_type=TeachingAction.MOVE_AND_HOVER,
+                target_app=app,
+                fallback_screen_coords=(120.0, 12.0),
+                spotlight_bounds=(10.0, 0.0, 240.0, 24.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=3,
+                title="Move Pointer Toward Dock",
+                instruction="Move cursor down toward the bottom of your screen to inspect Dock applications.",
+                explanation="Hovering over Dock items reveals application titles and active indicators.",
+                action_type=TeachingAction.MOVE_AND_HOVER,
+                target_app=app,
+                fallback_screen_coords=(640.0, 760.0),
+                spotlight_bounds=(480.0, 720.0, 320.0, 70.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=4,
+                title="Target Lock Beacon",
+                instruction="Observe the glowing beacon confirming accurate cursor lock.",
+                explanation="Clio emits a visual beacon ring to confirm the pointer has accurately reached its target.",
+                action_type=TeachingAction.PULSE_BEACON,
+                target_app=app,
+                fallback_screen_coords=(640.0, 760.0),
+                spotlight_bounds=(600.0, 720.0, 80.0, 80.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=1.0,
+            ),
+        ]
+
+    @classmethod
+    def _generate_window_management_steps(cls, query: str, app: str) -> List[WalkthroughStep]:
+        return [
+            WalkthroughStep(
+                step_index=1,
+                title="Cycle Windows of Active App",
+                instruction="Press ⌘ + ` (Command + Backtick) to switch between open windows of the active application.",
+                explanation="Quickly alternates between multiple document or browser windows within the same app.",
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "`"],
+                target_app=app,
+                fallback_screen_coords=(640.0, 400.0),
+                spotlight_bounds=(200.0, 150.0, 880.0, 500.0),
+                pre_delay_seconds=0.4,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=2,
+                title="Switch Between Applications",
+                instruction="Press ⌘ + Tab (Command + Tab) to switch to your most recently used application.",
+                explanation="Holding Command while tapping Tab opens the App Switcher to jump between running apps.",
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["cmd", "tab"],
+                target_app=app,
+                fallback_screen_coords=(640.0, 400.0),
+                spotlight_bounds=(300.0, 350.0, 680.0, 100.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=3,
+                title="Swipe Between Desktops & Spaces",
+                instruction="Swipe horizontally with three fingers on your trackpad or press Control + Right Arrow.",
+                explanation="Glides seamlessly between macOS virtual desktops and full-screen applications.",
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["ctrl", "right"],
+                target_app=app,
+                fallback_screen_coords=(640.0, 400.0),
+                spotlight_bounds=(100.0, 100.0, 1080.0, 600.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=4,
+                title="Open Mission Control",
+                instruction="Swipe up with three fingers on trackpad or press Control + Up Arrow.",
+                explanation="Displays a panoramic overview of all open windows, workspaces, and full-screen apps.",
+                action_type=TeachingAction.DEMONSTRATE_HOTKEY,
+                hotkey_combo=["ctrl", "up"],
+                target_app=app,
+                fallback_screen_coords=(640.0, 200.0),
+                spotlight_bounds=(100.0, 50.0, 1080.0, 700.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=1.0,
+            ),
+        ]
+
+    @classmethod
+    def _generate_button_click_steps(cls, query: str, app: str) -> List[WalkthroughStep]:
+        return [
+            WalkthroughStep(
+                step_index=1,
+                title="Hover Over Target Button",
+                instruction="Move your cursor directly over the clickable button or control.",
+                explanation="Buttons respond with hover states and tooltips indicating their primary action.",
+                action_type=TeachingAction.MOVE_AND_HOVER,
+                target_app=app,
+                fallback_screen_coords=(640.0, 450.0),
+                spotlight_bounds=(580.0, 430.0, 120.0, 40.0),
+                pre_delay_seconds=0.4,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=2,
+                title="Perform Primary Left Click",
+                instruction="Click the left mouse button (or press down on trackpad) to trigger the action.",
+                explanation="The primary click selects items, confirms dialogs, and activates buttons.",
+                action_type=TeachingAction.DEMONSTRATE_CLICK,
+                target_app=app,
+                fallback_screen_coords=(640.0, 450.0),
+                spotlight_bounds=(580.0, 430.0, 120.0, 40.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=3,
+                title="Perform Contextual Right Click",
+                instruction="Click with two fingers on trackpad or hold Control and click to open the context menu.",
+                explanation="Reveals context-sensitive menus and secondary options for the clicked element.",
+                action_type=TeachingAction.DEMONSTRATE_RIGHT_CLICK,
+                target_app=app,
+                fallback_screen_coords=(640.0, 450.0),
+                spotlight_bounds=(580.0, 430.0, 180.0, 140.0),
+                pre_delay_seconds=0.5,
+                post_delay_seconds=0.8,
+            ),
+            WalkthroughStep(
+                step_index=4,
+                title="Execute Double Click",
+                instruction="Click twice rapidly to trigger default document opening or word selection.",
+                explanation="Double clicking activates items or expands selection without opening a menu.",
+                action_type=TeachingAction.DEMONSTRATE_DOUBLE_CLICK,
+                target_app=app,
+                fallback_screen_coords=(640.0, 450.0),
+                spotlight_bounds=(580.0, 430.0, 120.0, 40.0),
                 pre_delay_seconds=0.5,
                 post_delay_seconds=1.0,
             ),
