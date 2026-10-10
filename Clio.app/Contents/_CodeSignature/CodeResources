@@ -178,11 +178,11 @@
 		</data>
 		<key>Resources/src/server/web/index.html</key>
 		<data>
-		ATcPsAcVaYSGLwpQVzYWMxWFlJY=
+		P0RkyvNa41OOycpynGkCwK+PBR0=
 		</data>
 		<key>Resources/src/ui/ClioBar.swift</key>
 		<data>
-		cBHwhHUTylnAM1wu9jvTq0utavw=
+		AtkmP+mgobQW7IxmIy8OscBiNyQ=
 		</data>
 		<key>Resources/src/ui/Info.plist</key>
 		<data>
@@ -239,7 +239,7 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			nJLZZhXuNHT1D2XGN4HJIylHk7I=
+			yEt2TyEEiiPOEArytIGDcqu/I+8=
 			</data>
 			<key>requirement</key>
 			<string>identifier "clio-bar" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: min.aaronnguyen@gmail.com (48CU82S8GW)" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */</string>
@@ -576,14 +576,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			VyXLdI87N30Kv0OUxLP0FdQkCGo4nWZ+ynV0pw9bURw=
+			TFqicHL/5zYLgEZfplkpNnfi1z8jOwSXfvHSPbMYfd8=
 			</data>
 		</dict>
 		<key>Resources/src/ui/ClioBar.swift</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			tU33Q76Gmq1tpld7sLg6BQUxeLxOWYSviX+rSPBg/Lc=
+			Px8UVmS1fxZMcbu0kEbYMfTuQo5G1Waq1Bz6ucFYRUo=
 			</data>
 		</dict>
 		<key>Resources/src/ui/Info.plist</key>

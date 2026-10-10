@@ -1796,21 +1796,21 @@ final class WalkthroughOverlayManager: ObservableObject {
 // MARK: - Settings Tab Navigation
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case usage = "Usage & Quota"
-    case ai = "AI & Models"
-    case walkthrough = "Walkthrough"
-    case safety = "Automation & Safety"
-    case storage = "Memory & Storage"
+    case usage = "Quota"
+    case ai = "Models"
+    case walkthrough = "Tutor"
+    case safety = "Safety"
+    case storage = "Storage"
 
     var id: String { rawValue }
 
     var icon: String {
         switch self {
-        case .usage: return "speedometer"
+        case .usage: return "chart.pie.fill"
         case .ai: return "sparkles"
-        case .walkthrough: return "graduationcap"
-        case .safety: return "shield.checkered"
-        case .storage: return "cylinder.split.1x2"
+        case .walkthrough: return "graduationcap.fill"
+        case .safety: return "shield.fill"
+        case .storage: return "internaldrive.fill"
         }
     }
 }
@@ -4153,15 +4153,15 @@ struct ClioBarView: View {
             switch vm.selectedSettingsTab {
             case .usage:
                 let hasBanner = (vm.usageLimitReachedBanner != nil || vm.walkthroughExhausted || vm.automationExhausted || vm.geminiRateLimited)
-                return base + (hasBanner ? 315 : 265)
+                return base + (hasBanner ? 215 : 180)
             case .ai:
-                return base + 295
+                return base + 145
             case .walkthrough:
-                return base + 265
+                return base + 125
             case .safety:
-                return base + 245
+                return base + 155
             case .storage:
-                return base + 235
+                return base + 115
             }
         }
         if vm.isHelpCommand {
@@ -5522,46 +5522,31 @@ extension ClioBarView {
         VStack(spacing: 0) {
             // Header
             HStack(spacing: 6) {
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(ObsidianTheme.platinum)
+                Circle()
+                    .fill(Color(red: 0.06, green: 0.73, blue: 0.51))
+                    .frame(width: 5, height: 5)
                 Text("USAGE LIMITS & GEMINI FREE-TIER QUOTA")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.platinum)
-
-                Text("FREE TIER • STRICT DAILY CEILING: 25 USES")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                     .foregroundColor(ObsidianTheme.platinumDim)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(ObsidianTheme.surfaceElevated)
-                    .cornerRadius(4)
 
                 Spacer()
-
-                HStack(spacing: 4) {
-                    Image(systemName: "clock")
-                        .font(.system(size: 9))
-                    Text("RESETS IN \(vm.usageResetFormatted)")
-                        .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                }
-                .foregroundColor(ObsidianTheme.slate)
 
                 HStack(spacing: 3) {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 7.5))
-                    Text("NON-NEGOTIABLE")
+                    Text("CAP 25 • FIXED")
                         .font(.system(size: 8, weight: .bold, design: .monospaced))
                 }
                 .foregroundColor(ObsidianTheme.platinumDim)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2.5)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
                 .background(ObsidianTheme.surfaceElevated.opacity(0.8))
                 .cornerRadius(4)
+                .help("NON-NEGOTIABLE • STRICT DAILY CEILING: 25 USES")
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .background(ObsidianTheme.surfaceElevated.opacity(0.35))
+            .padding(.vertical, 6)
+            .background(ObsidianTheme.surfaceElevated.opacity(0.25))
 
             Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
 
@@ -5575,112 +5560,59 @@ extension ClioBarView {
                 usageFeatureQuotaCard(
                     featureKey: "walkthrough",
                     title: "WALKTHROUGH USES",
-                    subtitle: "Interactive Guided Tutor & Step Dissection",
                     iconName: "graduationcap.fill",
                     used: vm.walkthroughUsed,
                     remaining: vm.walkthroughRemaining,
                     dailyLimit: vm.walkthroughDailyLimit,
-                    rpmUsed: vm.walkthroughRpmUsed,
-                    rpmLimit: vm.walkthroughRpmLimit,
-                    cloudUsed: vm.walkthroughCloudUsed,
-                    localUsed: vm.walkthroughLocalUsed,
                     exhausted: vm.walkthroughExhausted
                 )
 
                 usageFeatureQuotaCard(
                     featureKey: "automation",
                     title: "AUTOMATION USES",
-                    subtitle: "Autonomous Workflow & Command Execution",
                     iconName: "bolt.fill",
                     used: vm.automationUsed,
                     remaining: vm.automationRemaining,
                     dailyLimit: vm.automationDailyLimit,
-                    rpmUsed: vm.automationRpmUsed,
-                    rpmLimit: vm.automationRpmLimit,
-                    cloudUsed: vm.automationCloudUsed,
-                    localUsed: vm.automationLocalUsed,
                     exhausted: vm.automationExhausted
                 )
             }
             .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
 
-            // Gemini Free API Key Telemetry Strip
-            HStack(spacing: 10) {
-                HStack(spacing: 5) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(ObsidianTheme.platinum)
-                    Text("GEMINI FREE API:")
-                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.slate)
-                    Text(vm.geminiActiveModel)
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.platinum)
-                }
-
-                Text("•")
+            // Minimal Gemini Telemetry Strip
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
                     .font(.system(size: 9))
-                    .foregroundColor(ObsidianTheme.slateDark)
-
-                Text("BURST: \(vm.geminiRpmUsed)/\(vm.geminiRpmLimit) RPM")
-                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.platinumDim)
-
+                    .foregroundColor(ObsidianTheme.platinum)
+                Text(vm.geminiActiveModel)
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
                 Text("•")
-                    .font(.system(size: 9))
                     .foregroundColor(ObsidianTheme.slateDark)
-
-                Text("API CALLS TODAY: \(vm.geminiCallsToday)/\(vm.geminiDailyLimit)")
-                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                Text("\(vm.geminiCallsToday)/\(vm.geminiDailyLimit) calls")
+                    .font(.system(size: 8.5, design: .monospaced))
                     .foregroundColor(ObsidianTheme.platinumDim)
-
                 Spacer()
-
-                Text(vm.geminiRateLimited ? "429 COOLDOWN (\(vm.geminiCooldownSeconds)s)" : "PROTECTED • LOCAL FALLBACK READY")
+                Text(vm.geminiRateLimited ? "Cooldown (\(vm.geminiCooldownSeconds)s)" : "Ready")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(vm.geminiRateLimited ? Color.orange : ObsidianTheme.platinum)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2.5)
-                    .background(vm.geminiRateLimited ? Color.orange.opacity(0.15) : ObsidianTheme.surfaceElevated)
-                    .cornerRadius(4)
+                    .foregroundColor(vm.geminiRateLimited ? Color.orange : Color(red: 0.06, green: 0.73, blue: 0.51))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(ObsidianTheme.surfaceElevated)
+                    .cornerRadius(3)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(ObsidianTheme.surface.opacity(0.85))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(ObsidianTheme.surface.opacity(0.8))
             .overlay(
-                RoundedRectangle(cornerRadius: 7)
+                RoundedRectangle(cornerRadius: 6)
                     .stroke(ObsidianTheme.borderSubtle, lineWidth: 1)
             )
-            .cornerRadius(7)
+            .cornerRadius(6)
             .padding(.horizontal, 14)
-            .padding(.bottom, 10)
-
-            Divider().background(ObsidianTheme.borderSubtle.opacity(0.35))
-
-            // Footer
-            HStack {
-                Text("🔒 Non-negotiable API quota. System enforces strict limits to protect your free Gemini key.")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.slate)
-
-                Spacer()
-
-                Button(action: {
-                    vm.isUsageLimitPanelOpen = false
-                    vm.usageLimitReachedBanner = nil
-                    vm.query = ""
-                }) {
-                    Text("Dismiss (Esc)")
-                        .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.slateDark)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 5)
-            .background(ObsidianTheme.surfaceElevated.opacity(0.2))
+            .padding(.bottom, 8)
         }
         .background(ObsidianTheme.cardGlass)
     }
@@ -5688,32 +5620,32 @@ extension ClioBarView {
     @ViewBuilder
     private var usageLimitWarningBannerView: some View {
         let message = vm.usageLimitReachedBanner ?? (
-            vm.walkthroughExhausted ? "Daily Walkthrough limit reached (\(vm.walkthroughUsed)/\(vm.walkthroughDailyLimit) uses today)." :
-            (vm.automationExhausted ? "Daily Automation limit reached (\(vm.automationUsed)/\(vm.automationDailyLimit) uses today)." :
-             "Gemini Free API key is in rate-limit cooldown (\(vm.geminiCooldownSeconds)s) — Local deterministic engine active.")
+            vm.walkthroughExhausted ? "Daily Walkthrough limit reached (\(vm.walkthroughUsed)/\(vm.walkthroughDailyLimit))." :
+            (vm.automationExhausted ? "Daily Automation limit reached (\(vm.automationUsed)/\(vm.automationDailyLimit))." :
+             "Gemini rate limit cooldown (\(vm.geminiCooldownSeconds)s) — Local engine active.")
         )
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 11, weight: .bold))
+                .font(.system(size: 10, weight: .bold))
                 .foregroundColor(Color.orange)
 
             Text(message)
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                 .foregroundColor(ObsidianTheme.platinum)
                 .lineLimit(1)
 
             Spacer()
 
-            Text("AUTO-RESETS AT MIDNIGHT")
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
+            Text("RESETS MIDNIGHT")
+                .font(.system(size: 7.5, weight: .bold, design: .monospaced))
                 .foregroundColor(ObsidianTheme.platinumDim)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2.5)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
                 .background(ObsidianTheme.surfaceElevated)
-                .cornerRadius(4)
+                .cornerRadius(3)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 7)
+        .padding(.vertical, 5)
         .background(Color.orange.opacity(0.12))
     }
 
@@ -5721,15 +5653,10 @@ extension ClioBarView {
     private func usageFeatureQuotaCard(
         featureKey: String,
         title: String,
-        subtitle: String,
         iconName: String,
         used: Int,
         remaining: Int,
         dailyLimit: Int,
-        rpmUsed: Int,
-        rpmLimit: Int,
-        cloudUsed: Int,
-        localUsed: Int,
         exhausted: Bool
     ) -> some View {
         let ratio = CGFloat(max(0, min(remaining, dailyLimit))) / CGFloat(max(1, dailyLimit))
@@ -5737,52 +5664,35 @@ extension ClioBarView {
         let barColor: Color = exhausted
             ? Color.red.opacity(0.85)
             : (isLow ? Color.orange.opacity(0.9) : ObsidianTheme.platinum)
-        let statusLabel = exhausted ? "LIMIT REACHED" : (isLow ? "LOW QUOTA" : "AVAILABLE")
 
-        VStack(alignment: .leading, spacing: 8) {
-            // Card Header
-            HStack(spacing: 6) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(ObsidianTheme.surfaceElevated)
-                        .frame(width: 24, height: 24)
-                    Image(systemName: iconName)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(exhausted ? Color.red.opacity(0.85) : ObsidianTheme.platinum)
-                }
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.platinum)
-                    Text(subtitle)
-                        .font(.system(size: 8.5, weight: .regular))
-                        .foregroundColor(ObsidianTheme.slate)
-                        .lineLimit(1)
-                }
-
+        VStack(alignment: .leading, spacing: 6) {
+            // Header
+            HStack(spacing: 5) {
+                Image(systemName: iconName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(exhausted ? Color.red.opacity(0.85) : ObsidianTheme.platinum)
+                Text(title)
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.platinum)
                 Spacer()
-
-                Text(statusLabel)
-                    .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(exhausted ? Color.white : (isLow ? Color.orange : ObsidianTheme.surface))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(exhausted ? Color.red.opacity(0.8) : (isLow ? Color.orange.opacity(0.18) : ObsidianTheme.platinum))
-                    .cornerRadius(4)
+                if exhausted {
+                    Text("0 LEFT")
+                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color.red)
+                }
             }
 
-            // Large Remaining Uses Counter
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
+            // Numbers
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text("\(remaining)")
-                    .font(.system(size: 20, weight: .bold, design: .monospaced))
+                    .font(.system(size: 19, weight: .bold, design: .monospaced))
                     .foregroundColor(exhausted ? Color.red.opacity(0.9) : ObsidianTheme.platinum)
-                Text("/ \(dailyLimit) USES LEFT")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                Text("/ \(dailyLimit) left")
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                     .foregroundColor(ObsidianTheme.platinumDim)
                 Spacer()
-                Text("\(used) USED TODAY")
-                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                Text("\(used) used")
+                    .font(.system(size: 8.5, design: .monospaced))
                     .foregroundColor(ObsidianTheme.slate)
             }
 
@@ -5793,45 +5703,28 @@ extension ClioBarView {
                         .fill(Color.white.opacity(0.10))
                     Capsule()
                         .fill(barColor)
-                        .frame(width: max(4, geo.size.width * ratio))
+                        .frame(width: max(3, geo.size.width * ratio))
                 }
             }
-            .frame(height: 6)
+            .frame(height: 4)
 
-            // Breakdown & Immutable System Ceiling Badge
-            HStack(spacing: 6) {
-                Text("AI: \(cloudUsed) • Local: \(localUsed) • \(rpmUsed)/\(rpmLimit) RPM")
-                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.slate)
-                    .lineLimit(1)
-
+            // Badge
+            HStack {
                 Spacer()
-
-                HStack(spacing: 3) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 8))
-                        .foregroundColor(ObsidianTheme.platinumDim)
-
-                    Text("CAP \(dailyLimit) • FIXED")
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.platinumDim)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(ObsidianTheme.surfaceElevated)
-                        .cornerRadius(3)
-                }
-                .help("Strict daily limit of \(dailyLimit) invocations is managed by system policy.")
+                Text("CAP \(dailyLimit) • FIXED")
+                    .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(ObsidianTheme.slate)
+                    .help("NON-NEGOTIABLE • STRICT DAILY CEILING: 25 USES")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(9)
         .frame(maxWidth: .infinity)
-        .background(ObsidianTheme.surface.opacity(0.9))
+        .background(ObsidianTheme.surface.opacity(0.85))
         .overlay(
-            RoundedRectangle(cornerRadius: 9)
+            RoundedRectangle(cornerRadius: 8)
                 .stroke(exhausted ? Color.red.opacity(0.45) : ObsidianTheme.borderSubtle, lineWidth: 1)
         )
-        .cornerRadius(9)
+        .cornerRadius(8)
     }
 
     @ViewBuilder
@@ -5898,7 +5791,7 @@ extension ClioBarView {
                 .buttonStyle(.plain)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            .padding(.vertical, 6)
             .background(ObsidianTheme.surfaceElevated.opacity(0.35))
 
             Divider().background(ObsidianTheme.borderSubtle.opacity(0.4))
@@ -5921,16 +5814,16 @@ extension ClioBarView {
 
             // Footer
             HStack {
-                Text("⌘, Toggle Settings • Esc Dismiss • ⌘9 Direct Quota")
-                    .font(.system(size: 9, design: .monospaced))
+                Text("ESC Close • TAB Next • ⌘, Settings & Preferences")
+                    .font(.system(size: 8.5, design: .monospaced))
                     .foregroundColor(ObsidianTheme.slate)
                 Spacer()
-                Text("SETTINGS & PREFERENCES")
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                Text("Clio")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(ObsidianTheme.slateDark)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 4)
+            .padding(.vertical, 3.5)
             .background(ObsidianTheme.surfaceElevated.opacity(0.2))
         }
         .background(ObsidianTheme.cardGlass)
@@ -5938,475 +5831,388 @@ extension ClioBarView {
 
     @ViewBuilder
     private var settingsAIModelsView: some View {
-        VStack(spacing: 10) {
-            // Active Provider
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(ObsidianTheme.platinum)
-                Text("AI PROVIDER & VISION ENGINE")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.platinum)
-                Spacer()
-                Text("GOOGLE GEMINI • FREE KEY ACTIVE")
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.platinum)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2.5)
-                    .background(ObsidianTheme.surfaceElevated)
-                    .cornerRadius(4)
+        VStack(spacing: 8) {
+            // 3 Model Cards
+            HStack(spacing: 6) {
+                modelSelectCard(
+                    modelId: "gemini-2.5-flash",
+                    title: "Gemini 2.5 Flash",
+                    tag: "Fast",
+                    isSelected: vm.geminiActiveModel == "gemini-2.5-flash"
+                )
+                modelSelectCard(
+                    modelId: "gemini-2.5-flash-lite",
+                    title: "Flash-Lite",
+                    tag: "Instant",
+                    isSelected: vm.geminiActiveModel == "gemini-2.5-flash-lite"
+                )
+                modelSelectCard(
+                    modelId: "gemini-1.5-pro",
+                    title: "1.5 Pro",
+                    tag: "Deep",
+                    isSelected: vm.geminiActiveModel == "gemini-1.5-pro"
+                )
             }
             .padding(.horizontal, 14)
-            .padding(.top, 10)
-
-            // Model Selection Cards
-            VStack(spacing: 6) {
-                HStack(spacing: 8) {
-                    modelSelectCard(
-                        modelId: "gemini-2.5-flash",
-                        title: "Gemini 2.5 Flash",
-                        tag: "RECOMMENDED",
-                        desc: "High-speed multimodal video & action dissection (15 RPM / 250 RPD)",
-                        isSelected: vm.geminiActiveModel == "gemini-2.5-flash"
-                    )
-                    modelSelectCard(
-                        modelId: "gemini-2.5-flash-lite",
-                        title: "Gemini 2.5 Flash-Lite",
-                        tag: "LOW LATENCY",
-                        desc: "Fastest response times for lightweight command matching",
-                        isSelected: vm.geminiActiveModel == "gemini-2.5-flash-lite"
-                    )
-                }
-                HStack(spacing: 8) {
-                    modelSelectCard(
-                        modelId: "gemini-1.5-pro",
-                        title: "Gemini 1.5 Pro",
-                        tag: "DEEP REASONING",
-                        desc: "Complex desktop navigation and multi-step plan verification",
-                        isSelected: vm.geminiActiveModel == "gemini-1.5-pro"
-                    )
-                }
-            }
-            .padding(.horizontal, 14)
+            .padding(.top, 8)
 
             // API Key & Test Connection
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Text("API KEY:")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+            HStack(spacing: 6) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(ObsidianTheme.slate)
+
+                if vm.aiKeyObscured {
+                    SecureField("Gemini API Key...", text: $vm.aiApiKeyInput)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                } else {
+                    TextField("Gemini API Key...", text: $vm.aiApiKeyInput)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                }
+
+                Button(action: { vm.aiKeyObscured.toggle() }) {
+                    Image(systemName: vm.aiKeyObscured ? "eye.slash" : "eye")
+                        .font(.system(size: 9.5))
                         .foregroundColor(ObsidianTheme.slate)
-                    if vm.aiKeyObscured {
-                        SecureField("Enter Gemini API Key (saved securely in Keychain)...", text: $vm.aiApiKeyInput)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(ObsidianTheme.platinum)
-                    } else {
-                        TextField("Enter Gemini API Key (saved securely in Keychain)...", text: $vm.aiApiKeyInput)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(ObsidianTheme.platinum)
-                    }
-                    Button(action: { vm.aiKeyObscured.toggle() }) {
-                        Image(systemName: vm.aiKeyObscured ? "eye.slash" : "eye")
-                            .font(.system(size: 10))
-                            .foregroundColor(ObsidianTheme.slate)
-                    }
-                    .buttonStyle(.plain)
+                }
+                .buttonStyle(.plain)
 
-                    Button(action: {
-                        Task { await vm.testAIConnection(apiKey: vm.aiApiKeyInput) }
-                    }) {
-                        HStack(spacing: 4) {
-                            if vm.isTestingAIKey {
-                                ProgressView().scaleEffect(0.5)
-                            }
-                            Text("Test Connection")
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                Button(action: {
+                    Task { await vm.testAIConnection(apiKey: vm.aiApiKeyInput) }
+                }) {
+                    HStack(spacing: 3) {
+                        if vm.isTestingAIKey {
+                            ProgressView().scaleEffect(0.4)
                         }
-                        .foregroundColor(ObsidianTheme.surface)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3.5)
-                        .background(ObsidianTheme.platinum)
-                        .cornerRadius(4)
+                        Text("Test")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
                     }
-                    .buttonStyle(.plain)
+                    .foregroundColor(ObsidianTheme.surface)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(ObsidianTheme.platinum)
+                    .cornerRadius(4)
                 }
-                .padding(8)
-                .background(ObsidianTheme.surface)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                .cornerRadius(6)
-
-                if !vm.aiTestStatusText.isEmpty {
-                    Text(vm.aiTestStatusText)
-                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(vm.aiTestStatusText.contains("CONNECTED") ? Color(red: 0.06, green: 0.73, blue: 0.51) : Color.orange)
-                }
+                .buttonStyle(.plain)
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(ObsidianTheme.surface)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+            .cornerRadius(6)
             .padding(.horizontal, 14)
-            .padding(.bottom, 10)
+
+            if !vm.aiTestStatusText.isEmpty {
+                HStack {
+                    Text(vm.aiTestStatusText)
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(vm.aiTestStatusText.contains("CONNECTED") ? Color(red: 0.06, green: 0.73, blue: 0.51) : Color.orange)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+            }
         }
+        .padding(.bottom, 8)
     }
 
     @ViewBuilder
-    private func modelSelectCard(modelId: String, title: String, tag: String, desc: String, isSelected: Bool) -> some View {
+    private func modelSelectCard(modelId: String, title: String, tag: String, isSelected: Bool) -> some View {
         Button(action: {
             Task { await vm.saveAIModelConfig(model: modelId) }
         }) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(title)
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                         .foregroundColor(ObsidianTheme.platinum)
+                        .lineLimit(1)
                     Spacer()
-                    Text(tag)
-                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(isSelected ? ObsidianTheme.surface : ObsidianTheme.slate)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1.5)
-                        .background(isSelected ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                        .cornerRadius(3)
+                    if isSelected {
+                        Circle()
+                            .fill(Color.cyan)
+                            .frame(width: 4, height: 4)
+                    }
                 }
-                Text(desc)
-                    .font(.system(size: 8.5))
-                    .foregroundColor(ObsidianTheme.slate)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                Text(tag)
+                    .font(.system(size: 7.5, weight: .semibold, design: .monospaced))
+                    .foregroundColor(isSelected ? ObsidianTheme.surface : ObsidianTheme.slate)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(isSelected ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                    .cornerRadius(3)
             }
-            .padding(8)
+            .padding(7)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? ObsidianTheme.surfaceElevated.opacity(0.8) : ObsidianTheme.surface.opacity(0.6))
+            .background(isSelected ? ObsidianTheme.surfaceElevated.opacity(0.8) : ObsidianTheme.surface.opacity(0.5))
             .overlay(
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(isSelected ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: isSelected ? 1.5 : 1)
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isSelected ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1)
             )
-            .cornerRadius(7)
+            .cornerRadius(6)
         }
         .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private var settingsWalkthroughView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Mode Selection
+        VStack(spacing: 8) {
+            // Mode Switcher Pills
             HStack(spacing: 8) {
-                Image(systemName: "graduationcap")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(ObsidianTheme.platinum)
-                Text("WALKTHROUGH & INTERACTION MODE")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.platinum)
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-
-            HStack(spacing: 10) {
                 Button(action: { vm.walkthroughDefaultMode = "guided_demo" }) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Guided Demonstration")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(ObsidianTheme.platinum)
-                            Spacer()
-                            if vm.walkthroughDefaultMode == "guided_demo" {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(ObsidianTheme.platinum)
-                            }
+                    HStack(spacing: 5) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 10))
+                        Text("Guided Demo")
+                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        Spacer()
+                        if vm.walkthroughDefaultMode == "guided_demo" {
+                            Circle().fill(Color.cyan).frame(width: 4, height: 4)
                         }
-                        Text("Clio's Virtual Cursor visibly highlights controls and auto-advances through the steps.")
-                            .font(.system(size: 8.5))
-                            .foregroundColor(ObsidianTheme.slate)
                     }
-                    .padding(8)
-                    .frame(maxWidth: .infinity)
-                    .background(vm.walkthroughDefaultMode == "guided_demo" ? ObsidianTheme.surfaceElevated : ObsidianTheme.surface)
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(vm.walkthroughDefaultMode == "guided_demo" ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1))
-                    .cornerRadius(7)
+                    .foregroundColor(vm.walkthroughDefaultMode == "guided_demo" ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(vm.walkthroughDefaultMode == "guided_demo" ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                    .cornerRadius(6)
                 }
                 .buttonStyle(.plain)
 
                 Button(action: { vm.walkthroughDefaultMode = "interactive" }) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Interactive Tutor")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(ObsidianTheme.platinum)
-                            Spacer()
-                            if vm.walkthroughDefaultMode == "interactive" {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(ObsidianTheme.platinum)
-                            }
+                    HStack(spacing: 5) {
+                        Image(systemName: "hand.tap.fill")
+                            .font(.system(size: 10))
+                        Text("Interactive")
+                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        Spacer()
+                        if vm.walkthroughDefaultMode == "interactive" {
+                            Circle().fill(Color.cyan).frame(width: 4, height: 4)
                         }
-                        Text("Clio points to where you should click and waits for your confirmation on each step.")
-                            .font(.system(size: 8.5))
-                            .foregroundColor(ObsidianTheme.slate)
                     }
-                    .padding(8)
-                    .frame(maxWidth: .infinity)
-                    .background(vm.walkthroughDefaultMode == "interactive" ? ObsidianTheme.surfaceElevated : ObsidianTheme.surface)
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(vm.walkthroughDefaultMode == "interactive" ? ObsidianTheme.platinum : ObsidianTheme.borderSubtle, lineWidth: 1))
-                    .cornerRadius(7)
+                    .foregroundColor(vm.walkthroughDefaultMode == "interactive" ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(vm.walkthroughDefaultMode == "interactive" ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                    .cornerRadius(6)
                 }
                 .buttonStyle(.plain)
             }
             .padding(.horizontal, 14)
+            .padding(.top, 8)
 
-            // Step Advance Delay & Audio Chimes
+            // Step Delay & Audio Chimes in one clean row
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("STEP AUTO-ADVANCE DELAY:")
+                HStack(spacing: 4) {
+                    Text("Delay:")
                         .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                         .foregroundColor(ObsidianTheme.slate)
-                    HStack(spacing: 4) {
-                        ForEach([1.5, 2.5, 4.0], id: \.self) { d in
-                            Button(action: { vm.walkthroughAdvanceDelay = d }) {
-                                Text("\(String(format: "%.1f", d))s")
-                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                    .foregroundColor(vm.walkthroughAdvanceDelay == d ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 3)
-                                    .background(vm.walkthroughAdvanceDelay == d ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                                    .cornerRadius(4)
-                            }
-                            .buttonStyle(.plain)
+                    ForEach([1.5, 2.5, 4.0], id: \.self) { d in
+                        Button(action: { vm.walkthroughAdvanceDelay = d }) {
+                            Text("\(String(format: "%.1f", d))s")
+                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(vm.walkthroughAdvanceDelay == d ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2.5)
+                                .background(vm.walkthroughAdvanceDelay == d ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                                .cornerRadius(3)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
 
                 Spacer()
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("AUDIO CHIMES & SPEECH:")
-                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.slate)
-                    Button(action: { vm.audioChimesEnabled.toggle() }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: vm.audioChimesEnabled ? "speaker.wave.2.fill" : "speaker.slash")
-                                .font(.system(size: 9))
-                            Text(vm.audioChimesEnabled ? "CHIMES ON" : "SILENT")
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        }
-                        .foregroundColor(vm.audioChimesEnabled ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3.5)
-                        .background(vm.audioChimesEnabled ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                        .cornerRadius(4)
+                Button(action: { vm.audioChimesEnabled.toggle() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: vm.audioChimesEnabled ? "speaker.wave.2.fill" : "speaker.slash")
+                            .font(.system(size: 8.5))
+                        Text(vm.audioChimesEnabled ? "Chimes: On" : "Silent")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                     }
-                    .buttonStyle(.plain)
+                    .foregroundColor(vm.audioChimesEnabled ? ObsidianTheme.surface : ObsidianTheme.platinum)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(vm.audioChimesEnabled ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                    .cornerRadius(4)
                 }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 14)
-            .padding(.bottom, 10)
+            .padding(.bottom, 8)
         }
     }
 
     @ViewBuilder
     private var settingsSafetyView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "shield.checkered")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(ObsidianTheme.platinum)
-                Text("AUTOMATION SAFETY & INTERRUPTS")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.platinum)
+        VStack(spacing: 6) {
+            // Corner Stop
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "hand.raised.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text("Corner Stop")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                }
                 Spacer()
-                Text("PROTECTION ACTIVE")
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                Button(action: { vm.cornerFailsafeEnabled.toggle() }) {
+                    Text(vm.cornerFailsafeEnabled ? "ON" : "OFF")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(vm.cornerFailsafeEnabled ? ObsidianTheme.surface : ObsidianTheme.slate)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(vm.cornerFailsafeEnabled ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                        .cornerRadius(3)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(ObsidianTheme.surface)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+            .cornerRadius(6)
+
+            // Background Mode
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "shield.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text("Background Sandbox")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                }
+                Spacer()
+                Button(action: { vm.isBackgroundMode.toggle() }) {
+                    Text(vm.isBackgroundMode ? "ON" : "OFF")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(vm.isBackgroundMode ? ObsidianTheme.surface : ObsidianTheme.slate)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(vm.isBackgroundMode ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
+                        .cornerRadius(3)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(ObsidianTheme.surface)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+            .cornerRadius(6)
+
+            // Zero Drift Invariant
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "cursorarrow.motionlines")
+                        .font(.system(size: 10))
+                        .foregroundColor(ObsidianTheme.platinum)
+                    Text("Zero Drift Invariant")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                }
+                Spacer()
+                Text("0.0px Active")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(Color(red: 0.06, green: 0.73, blue: 0.51))
-                    .padding(.horizontal, 6)
+                    .padding(.horizontal, 5)
                     .padding(.vertical, 2)
                     .background(Color(red: 0.06, green: 0.73, blue: 0.51).opacity(0.12))
-                    .cornerRadius(4)
+                    .cornerRadius(3)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-
-            VStack(spacing: 6) {
-                // Failsafe Corner
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Corner Emergency Failsafe")
-                            .font(.system(size: 10.5, weight: .bold))
-                            .foregroundColor(ObsidianTheme.platinum)
-                        Text("Slamming your mouse cursor into the top-left screen corner instantly terminates any running automation.")
-                            .font(.system(size: 8.5))
-                            .foregroundColor(ObsidianTheme.slate)
-                    }
-                    Spacer()
-                    Button(action: { vm.cornerFailsafeEnabled.toggle() }) {
-                        Text(vm.cornerFailsafeEnabled ? "ENABLED" : "DISABLED")
-                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                            .foregroundColor(vm.cornerFailsafeEnabled ? ObsidianTheme.surface : ObsidianTheme.slate)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3.5)
-                            .background(vm.cornerFailsafeEnabled ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                            .cornerRadius(4)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(8)
-                .background(ObsidianTheme.surface)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                .cornerRadius(6)
-
-                // Background Execution
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Background Execution Mode")
-                            .font(.system(size: 10.5, weight: .bold))
-                            .foregroundColor(ObsidianTheme.platinum)
-                        Text("Directs actions via AX and synthetic events without stealing mouse or keyboard focus from your active apps.")
-                            .font(.system(size: 8.5))
-                            .foregroundColor(ObsidianTheme.slate)
-                    }
-                    Spacer()
-                    Button(action: { vm.isBackgroundMode.toggle() }) {
-                        Text(vm.isBackgroundMode ? "BACKGROUND: ON" : "STANDARD")
-                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                            .foregroundColor(vm.isBackgroundMode ? ObsidianTheme.surface : ObsidianTheme.platinum)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3.5)
-                            .background(vm.isBackgroundMode ? ObsidianTheme.platinum : ObsidianTheme.surfaceElevated)
-                            .cornerRadius(4)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(8)
-                .background(ObsidianTheme.surface)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                .cornerRadius(6)
-
-                // Zero Displacement Invariant
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Zero Hardware Cursor Displacement")
-                            .font(.system(size: 10.5, weight: .bold))
-                            .foregroundColor(ObsidianTheme.platinum)
-                        Text("Clio never displaces or grabs your physical mouse cursor (strictly 0.0px delta invariant).")
-                            .font(.system(size: 8.5))
-                            .foregroundColor(ObsidianTheme.slate)
-                    }
-                    Spacer()
-                    Text("ENFORCED (0.0px)")
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(red: 0.06, green: 0.73, blue: 0.51))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2.5)
-                        .background(Color(red: 0.06, green: 0.73, blue: 0.51).opacity(0.12))
-                        .cornerRadius(4)
-                }
-                .padding(8)
-                .background(ObsidianTheme.surface)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                .cornerRadius(6)
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(ObsidianTheme.surface)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+            .cornerRadius(6)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
 
     @ViewBuilder
     private var settingsStorageView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: "cylinder.split.1x2")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(ObsidianTheme.platinum)
-                Text("STORAGE & REPOSITORY FOOTPRINT")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.platinum)
-                Spacer()
-                Text(vm.storageStatusSummary)
-                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                    .foregroundColor(ObsidianTheme.slate)
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("WORKFLOWS IN MEMORY")
-                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.slate)
-                    Text("\(vm.allSavedWorkflows.count)")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.platinum)
-                    Text("Indexed in SQLite database")
-                        .font(.system(size: 8))
-                        .foregroundColor(ObsidianTheme.slateDark)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(ObsidianTheme.surface)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                .cornerRadius(6)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("RECORDING VIDEO CACHE")
-                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.slate)
-                    let recSize = vm.storageMetrics["recordings_size_mb"] as? Double ?? 0.0
-                    Text("\(String(format: "%.1f", recSize)) MB")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(ObsidianTheme.platinum)
-                    Text("~/.clio/recordings")
-                        .font(.system(size: 8))
-                        .foregroundColor(ObsidianTheme.slateDark)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(ObsidianTheme.surface)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
-                .cornerRadius(6)
-            }
-            .padding(.horizontal, 14)
-
-            HStack {
-                Button(action: {
-                    let homeRec = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".clio/recordings")
-                    NSWorkspace.shared.open(homeRec)
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 9))
-                        Text("Open Recordings in Finder")
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                // Workflows tile
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Workflows")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                        Text("\(vm.allSavedWorkflows.count)")
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.platinum)
                     }
-                    .foregroundColor(ObsidianTheme.platinum)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(ObsidianTheme.surfaceElevated)
-                    .cornerRadius(4)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Button(action: {
-                    Task { await vm.clearStorageCache() }
-                }) {
-                    HStack(spacing: 4) {
-                        if vm.isClearingStorage {
-                            ProgressView().scaleEffect(0.5)
-                        } else {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 9))
+                    Spacer()
+                    Button(action: {
+                        let homeRec = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".clio/recordings")
+                        NSWorkspace.shared.open(homeRec)
+                    }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 8.5))
+                            Text("Finder")
+                                .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
                         }
-                        Text("Re-index & Clear Empty Caches")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(ObsidianTheme.platinum)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(ObsidianTheme.surfaceElevated)
+                        .cornerRadius(3)
                     }
-                    .foregroundColor(ObsidianTheme.surface)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(ObsidianTheme.platinum)
-                    .cornerRadius(4)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+                .padding(8)
+                .frame(maxWidth: .infinity)
+                .background(ObsidianTheme.surface)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                .cornerRadius(6)
+
+                // Cache tile
+                let recSize = vm.storageMetrics["recordings_size_mb"] as? Double ?? 0.0
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Cache")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.slate)
+                        Text("\(String(format: "%.1f", recSize)) MB")
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                            .foregroundColor(ObsidianTheme.platinum)
+                    }
+                    Spacer()
+                    Button(action: {
+                        Task { await vm.clearStorageCache() }
+                    }) {
+                        HStack(spacing: 3) {
+                            if vm.isClearingStorage {
+                                ProgressView().scaleEffect(0.4)
+                            } else {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 8.5))
+                            }
+                            Text("Clear")
+                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        }
+                        .foregroundColor(ObsidianTheme.surface)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(ObsidianTheme.platinum)
+                        .cornerRadius(3)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity)
+                .background(ObsidianTheme.surface)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ObsidianTheme.borderSubtle, lineWidth: 1))
+                .cornerRadius(6)
             }
             .padding(.horizontal, 14)
-            .padding(.bottom, 10)
+            .padding(.vertical, 8)
         }
     }
 

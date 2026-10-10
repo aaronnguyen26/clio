@@ -519,15 +519,15 @@
     <div class="panel-divider"></div>
 
     <!-- Settings & Preferences HUD Drawer (Includes Usage Limits & Quota) -->
-    <section class="execution-drawer" id="usage-limits-drawer" style="display: none; gap: 10px;">
+    <section class="execution-drawer" id="usage-limits-drawer" style="display: none; gap: 8px;">
       <!-- Tab Navigation Row -->
-      <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px;">
-        <div style="display: flex; gap: 6px;">
-          <button class="tab-btn active" id="tab-btn-usage" data-tab="usage" style="background: #f5f6f8; color: #08090a; border: none; border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">📊 Usage & Quota</button>
-          <button class="tab-btn" id="tab-btn-ai" data-tab="ai" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">✨ AI & Models</button>
-          <button class="tab-btn" id="tab-btn-walkthrough" data-tab="walkthrough" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">🎓 Walkthrough</button>
-          <button class="tab-btn" id="tab-btn-safety" data-tab="safety" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">🛡️ Safety</button>
-          <button class="tab-btn" id="tab-btn-storage" data-tab="storage" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">💾 Storage</button>
+      <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 6px;">
+        <div style="display: flex; gap: 4px;">
+          <button class="tab-btn active" id="tab-btn-usage" data-tab="usage" style="background: #f5f6f8; color: #08090a; border: none; border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">Quota</button>
+          <button class="tab-btn" id="tab-btn-ai" data-tab="ai" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">Models</button>
+          <button class="tab-btn" id="tab-btn-walkthrough" data-tab="walkthrough" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">Tutor</button>
+          <button class="tab-btn" id="tab-btn-safety" data-tab="safety" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">Safety</button>
+          <button class="tab-btn" id="tab-btn-storage" data-tab="storage" style="background: rgba(245, 246, 248, 0.06); color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 4px 10px; font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; cursor: pointer;">Storage</button>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
           <div class="pill-badge" id="quota-pill-btn" style="cursor: default;" title="Live Usage Status">
@@ -539,154 +539,148 @@
       </div>
 
       <!-- Tab 1: Usage Limits & Gemini Free-Tier Quota -->
-      <div id="settings-tab-usage-content" style="display: flex; flex-direction: column; gap: 10px;">
-        <div class="exec-header">
-          <div class="exec-title-row">
-            <span class="exec-title" style="font-size: 11px; letter-spacing: 0.5px;">USAGE LIMITS & GEMINI FREE-TIER QUOTA</span>
-            <span class="badge-tag" id="quota-tier-badge" style="font-family: ui-monospace, monospace; font-size: 10px;">GEMINI FREE KEY • 15 RPM / 25 DAILY</span>
+      <div id="settings-tab-usage-content" style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 6px; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">
+            <span style="color: #10b981;">●</span>
+            <span style="color: var(--text-main); font-weight: 700;">GEMINI FREE</span>
+            <span>• 15 RPM • RESETS MIDNIGHT</span>
+            <span style="display: none;">USAGE LIMITS & GEMINI FREE-TIER QUOTA</span>
           </div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span id="quota-reset-timer" style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">RESETS IN 24H 00M</span>
-            <span class="badge-tag" style="font-family: ui-monospace, monospace; font-size: 9px; background: rgba(255, 255, 255, 0.08); color: var(--text-muted); border: 1px solid var(--border-subtle); display: inline-flex; align-items: center; gap: 4px;">🔒 SYSTEM ENFORCED</span>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span class="badge-tag" id="quota-tier-badge" style="display: none;">GEMINI FREE KEY • 15 RPM / 25 DAILY</span>
+            <span id="quota-reset-timer" style="display: none;">RESETS IN 24H 00M</span>
+            <span class="badge-tag" style="font-family: ui-monospace, monospace; font-size: 9px; background: rgba(255, 255, 255, 0.08); color: var(--text-muted); border: 1px solid var(--border-subtle);">🔒 SYSTEM ENFORCED</span>
           </div>
         </div>
 
-        <div id="quota-warning-banner" style="display: none; padding: 8px 12px; border-radius: 8px; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.35); font-size: 11px; font-family: ui-monospace, monospace; color: #f5f6f8;">
-          ⚠️ Daily feature usage limit reached. Strict daily ceiling enforced. Resets automatically at 00:00 UTC.
+        <div id="quota-warning-banner" style="display: none; padding: 6px 10px; border-radius: 6px; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.35); font-size: 10px; font-family: ui-monospace, monospace; color: #f5f6f8;">
+          ⚠️ Strict daily ceiling enforced. Resets automatically at 00:00 UTC.
         </div>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
           <!-- Walkthrough Quota Card -->
-          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
             <div style="display: flex; align-items: center; justify-content: space-between;">
-              <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">🎓 WALKTHROUGH USES</span>
-              <span class="badge-tag" id="wt-quota-status" style="font-size: 9px; font-family: ui-monospace, monospace;">AVAILABLE</span>
+              <span style="font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">WALKTHROUGH USES</span>
+              <span class="badge-tag" id="wt-quota-status" style="font-size: 8.5px; font-family: ui-monospace, monospace;">AVAILABLE</span>
             </div>
             <div style="display: flex; align-items: baseline; justify-content: space-between;">
               <div>
-                <span id="wt-remaining-count" style="font-size: 20px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">25</span>
-                <span id="wt-daily-limit" style="font-size: 11px; font-family: ui-monospace, monospace; color: var(--text-muted);">/ 25 USES LEFT</span>
+                <span id="wt-remaining-count" style="font-size: 19px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">25</span>
+                <span id="wt-daily-limit" style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">/ 25 left</span>
               </div>
-              <span id="wt-used-label" style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-sub);">0 USED TODAY</span>
+              <span id="wt-used-label" style="font-size: 9.5px; font-family: ui-monospace, monospace; color: var(--text-sub);">0 used</span>
             </div>
-            <div class="progress-track" style="height: 5px;">
+            <div class="progress-track" style="height: 4px;">
               <div class="progress-bar" id="wt-quota-bar" style="width: 100%;"></div>
             </div>
-            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">
-              <span id="wt-breakdown-text">AI: 0 • Local: 0 • 0/5 RPM</span>
-              <span style="font-size: 9px; color: var(--text-muted);">🔒 CAP 25 • FIXED</span>
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 9px; font-family: ui-monospace, monospace; color: var(--text-muted);">
+              <span id="wt-breakdown-text">Unlimited local</span>
+              <span>🔒 FIXED 25/DAY</span>
             </div>
           </div>
 
           <!-- Automation Quota Card -->
-          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
             <div style="display: flex; align-items: center; justify-content: space-between;">
-              <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">⚡ AUTOMATION USES</span>
-              <span class="badge-tag" id="auto-quota-status" style="font-size: 9px; font-family: ui-monospace, monospace;">AVAILABLE</span>
+              <span style="font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">AUTOMATION USES</span>
+              <span class="badge-tag" id="auto-quota-status" style="font-size: 8.5px; font-family: ui-monospace, monospace;">AVAILABLE</span>
             </div>
             <div style="display: flex; align-items: baseline; justify-content: space-between;">
               <div>
-                <span id="auto-remaining-count" style="font-size: 20px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">25</span>
-                <span id="auto-daily-limit" style="font-size: 11px; font-family: ui-monospace, monospace; color: var(--text-muted);">/ 25 USES LEFT</span>
+                <span id="auto-remaining-count" style="font-size: 19px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">25</span>
+                <span id="auto-daily-limit" style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">/ 25 left</span>
               </div>
-              <span id="auto-used-label" style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-sub);">0 USED TODAY</span>
+              <span id="auto-used-label" style="font-size: 9.5px; font-family: ui-monospace, monospace; color: var(--text-sub);">0 used</span>
             </div>
-            <div class="progress-track" style="height: 5px;">
+            <div class="progress-track" style="height: 4px;">
               <div class="progress-bar" id="auto-quota-bar" style="width: 100%;"></div>
             </div>
-            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">
-              <span id="auto-breakdown-text">AI: 0 • Local: 0 • 0/5 RPM</span>
-              <span style="font-size: 9px; color: var(--text-muted);">🔒 CAP 25 • FIXED</span>
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 9px; font-family: ui-monospace, monospace; color: var(--text-muted);">
+              <span id="auto-breakdown-text">● Ready</span>
+              <span>🔒 FIXED 25/DAY</span>
             </div>
           </div>
         </div>
 
         <!-- Gemini API Telemetry Strip -->
-        <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; background: rgba(13, 14, 16, 0.9); border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">
-          <span id="gemini-telemetry-text">✨ GEMINI FREE API: gemini-2.5-flash • BURST: 0/15 RPM • CALLS TODAY: 0/250</span>
-          <span id="gemini-health-badge" style="color: var(--text-main); font-weight: 600;">PROTECTED • LOCAL FALLBACK READY</span>
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(13, 14, 16, 0.9); border: 1px solid var(--border-subtle); border-radius: 6px; font-size: 9.5px; font-family: ui-monospace, monospace; color: var(--text-muted);">
+          <span id="gemini-telemetry-text">✨ Gemini Free • 15 RPM • Resets midnight</span>
+          <span id="gemini-health-badge" style="color: #10b981; font-weight: 600;">Ready</span>
         </div>
       </div>
 
       <!-- Tab 2: AI & Models Content -->
-      <div id="settings-tab-ai-content" style="display: none; flex-direction: column; gap: 10px;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">MULTIMODAL AI MODEL SELECTION</span>
-          <span class="badge-tag" style="font-family: ui-monospace, monospace; font-size: 10px;">GOOGLE GEMINI</span>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
-          <div class="model-card active" data-model="gemini-2.5-flash" style="background: rgba(245, 246, 248, 0.08); border: 1px solid var(--accent); border-radius: 8px; padding: 10px; cursor: pointer;">
-            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Gemini 2.5 Flash</div>
-            <div style="font-size: 9px; color: var(--text-sub); margin-top: 3px;">High-speed multimodal video & action dissection (Recommended)</div>
+      <div id="settings-tab-ai-content" style="display: none; flex-direction: column; gap: 8px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px;">
+          <div class="model-card active" data-model="gemini-2.5-flash" style="background: rgba(245, 246, 248, 0.08); border: 1px solid var(--accent); border-radius: 6px; padding: 8px; cursor: pointer;">
+            <div style="font-size: 10.5px; font-weight: 700; color: var(--text-main);">Gemini 2.5 Flash</div>
+            <div style="font-size: 8.5px; color: var(--text-sub); margin-top: 2px;">Fast · 0.8s</div>
           </div>
-          <div class="model-card" data-model="gemini-2.5-flash-lite" style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; cursor: pointer;">
-            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Gemini 2.5 Flash-Lite</div>
-            <div style="font-size: 9px; color: var(--text-sub); margin-top: 3px;">Lowest latency for quick command synthesis</div>
+          <div class="model-card" data-model="gemini-2.5-flash-lite" style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px; cursor: pointer;">
+            <div style="font-size: 10.5px; font-weight: 700; color: var(--text-main);">Flash-Lite</div>
+            <div style="font-size: 8.5px; color: var(--text-sub); margin-top: 2px;">Instant · 0.4s</div>
           </div>
-          <div class="model-card" data-model="gemini-1.5-pro" style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; cursor: pointer;">
-            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Gemini 1.5 Pro</div>
-            <div style="font-size: 9px; color: var(--text-sub); margin-top: 3px;">Deep multi-step reasoning for complex workflows</div>
+          <div class="model-card" data-model="gemini-1.5-pro" style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px; cursor: pointer;">
+            <div style="font-size: 10.5px; font-weight: 700; color: var(--text-main);">1.5 Pro</div>
+            <div style="font-size: 8.5px; color: var(--text-sub); margin-top: 2px;">Deep · 2.1s</div>
           </div>
         </div>
-        <div style="display: flex; gap: 8px; align-items: center; background: rgba(13, 14, 16, 0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
-          <span style="font-size: 10px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-muted);">API KEY:</span>
-          <input type="password" id="settings-api-key-input" placeholder="Configure Gemini API key..." style="flex: 1; background: transparent; border: none; outline: none; font-size: 11px; font-family: ui-monospace, monospace; color: var(--text-main);" />
-          <button class="cancel-btn" id="test-ai-key-btn" style="color: #08090a; background: #f5f6f8; font-weight: 600;">Test Connection</button>
+        <div style="display: flex; gap: 6px; align-items: center; background: rgba(13, 14, 16, 0.85); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+          <span style="font-size: 9.5px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-muted);">API KEY:</span>
+          <input type="password" id="settings-api-key-input" placeholder="Configure Gemini API key..." style="flex: 1; background: transparent; border: none; outline: none; font-size: 10.5px; font-family: ui-monospace, monospace; color: var(--text-main);" />
+          <button class="cancel-btn" id="test-ai-key-btn" style="color: #08090a; background: #f5f6f8; font-weight: 600; padding: 3px 8px; font-size: 10px;">Test</button>
         </div>
-        <div id="ai-test-result" style="font-size: 10px; font-family: ui-monospace, monospace; color: #10b981; display: none;"></div>
+        <div id="ai-test-result" style="font-size: 9.5px; font-family: ui-monospace, monospace; color: #10b981; display: none;"></div>
       </div>
 
       <!-- Tab 3: Walkthrough Preferences Content -->
-      <div id="settings-tab-walkthrough-content" style="display: none; flex-direction: column; gap: 10px;">
-        <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">WALKTHROUGH & INTERACTION SETTINGS</span>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px;">
-            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Default Mode</div>
-            <div style="font-size: 9.5px; color: var(--text-sub); margin-top: 2px;">Guided Demonstration (Virtual cursor highlights actions)</div>
+      <div id="settings-tab-walkthrough-content" style="display: none; flex-direction: column; gap: 8px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px;">
+            <div style="font-size: 10.5px; font-weight: 700; color: var(--text-main);">Guided Demo</div>
+            <div style="font-size: 8.5px; color: var(--text-sub); margin-top: 1px;">Auto-advance</div>
           </div>
-          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px;">
-            <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Auto-Advance Delay</div>
-            <div style="font-size: 9.5px; color: var(--text-sub); margin-top: 2px;">Standard: 2.5s per completed step</div>
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px;">
+            <div style="font-size: 10.5px; font-weight: 700; color: var(--text-main);">Interactive</div>
+            <div style="font-size: 8.5px; color: var(--text-sub); margin-top: 1px;">Step confirm</div>
           </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">
+          <span>Delay:</span>
+          <span class="badge-tag" style="background: rgba(245, 246, 248, 0.1);">1.5s</span>
+          <span class="badge-tag" style="background: #f5f6f8; color: #08090a; font-weight: 700;">2.5s</span>
+          <span class="badge-tag" style="background: rgba(245, 246, 248, 0.1);">4.0s</span>
         </div>
       </div>
 
       <!-- Tab 4: Automation & Safety Content -->
-      <div id="settings-tab-safety-content" style="display: none; flex-direction: column; gap: 10px;">
-        <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">SAFETY & EMERGENCY CONTROLS</span>
-        <div style="display: flex; flex-direction: column; gap: 8px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(13, 14, 16, 0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
-            <div>
-              <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Top-Left Corner Emergency Stop</div>
-              <div style="font-size: 9.5px; color: var(--text-sub);">Moving mouse to screen corner (0,0) immediately halts all automation</div>
-            </div>
-            <span class="badge-tag" style="background: rgba(16, 185, 129, 0.15); color: #10b981; font-family: ui-monospace, monospace;">ACTIVE</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(13, 14, 16, 0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
-            <div>
-              <div style="font-size: 11px; font-weight: 700; color: var(--text-main);">Strict Zero-Displacement Invariant</div>
-              <div style="font-size: 9.5px; color: var(--text-sub);">Hardware cursor position remains 100% untampered during synthetic background execution</div>
-            </div>
-            <span class="badge-tag" style="background: rgba(16, 185, 129, 0.15); color: #10b981; font-family: ui-monospace, monospace;">0.0px INVARIANT</span>
-          </div>
+      <div id="settings-tab-safety-content" style="display: none; flex-direction: column; gap: 6px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(13, 14, 16, 0.85); padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+          <span style="font-size: 10.5px; font-weight: 600; color: var(--text-main);">Corner Stop</span>
+          <span class="badge-tag" style="background: rgba(16, 185, 129, 0.15); color: #10b981; font-family: ui-monospace, monospace;">ACTIVE</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(13, 14, 16, 0.85); padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+          <span style="font-size: 10.5px; font-weight: 600; color: var(--text-main);">Strict Zero-Displacement Invariant</span>
+          <span class="badge-tag" style="background: rgba(16, 185, 129, 0.15); color: #10b981; font-family: ui-monospace, monospace;">0.0px INVARIANT</span>
         </div>
       </div>
 
       <!-- Tab 5: Storage & Memory Content -->
-      <div id="settings-tab-storage-content" style="display: none; flex-direction: column; gap: 10px;">
-        <span style="font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main);">STORAGE FOOTPRINT & MAINTENANCE</span>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px;">
-            <div style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">WORKFLOWS REMEMBERED</div>
-            <div id="storage-workflow-count" style="font-size: 18px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main); margin-top: 4px;">4 Workflows</div>
+      <div id="settings-tab-storage-content" style="display: none; flex-direction: column; gap: 8px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px;">
+            <div style="font-size: 9.5px; font-family: ui-monospace, monospace; color: var(--text-muted);">WORKFLOWS</div>
+            <div id="storage-workflow-count" style="font-size: 15px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main); margin-top: 2px;">4</div>
           </div>
-          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px;">
-            <div style="font-size: 10px; font-family: ui-monospace, monospace; color: var(--text-muted);">RECORDINGS DISK FOOTPRINT</div>
-            <div id="storage-recordings-mb" style="font-size: 18px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main); margin-top: 4px;">12.0 MB</div>
+          <div style="background: rgba(13, 14, 16, 0.85); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px;">
+            <div style="font-size: 9.5px; font-family: ui-monospace, monospace; color: var(--text-muted);">CACHE</div>
+            <div id="storage-recordings-mb" style="font-size: 15px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--text-main); margin-top: 2px;">12.0 MB</div>
           </div>
         </div>
         <div style="display: flex; justify-content: flex-end;">
-          <button class="cancel-btn" id="clear-cache-btn" style="color: #08090a; background: #f5f6f8; font-weight: 600;">↺ Re-index & Clear Empty Caches</button>
+          <button class="cancel-btn" id="clear-cache-btn" style="color: #08090a; background: #f5f6f8; font-weight: 600; padding: 3px 8px; font-size: 10px;">Clear Cache</button>
         </div>
       </div>
     </section>
